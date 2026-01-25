@@ -73,39 +73,85 @@ def benchmark(func: Callable[[], None], iterations: int = 10000) -> dict:
 
 
 # =============================================================================
-# SELECT Query Benchmarks
+# SELECT simple: SELECT * FROM users
 # =============================================================================
 
 
 def bench_select_simple():
-    """SELECT * FROM users"""
+    """ORM: SELECT * FROM users"""
     query = SelectQuery[User](None, (User,))
-    query.build()
+    return query.build()
+
+
+def bench_native_select_simple():
+    """Native: SELECT * FROM users"""
+    sql = "SELECT users.* FROM users"
+    params: list = []
+    return sql, params
+
+
+# =============================================================================
+# SELECT columns: SELECT id, name, email FROM users
+# =============================================================================
 
 
 def bench_select_columns():
-    """SELECT id, name, email FROM users"""
+    """ORM: SELECT id, name, email FROM users"""
     query = SelectQuery[User](None, (User.c.id, User.c.name, User.c.email))
     query.from_(User)
-    query.build()
+    return query.build()
+
+
+# =============================================================================
+# SELECT WHERE =: SELECT * FROM users WHERE id = $1
+# =============================================================================
 
 
 def bench_select_where_simple():
-    """SELECT * FROM users WHERE id = $1"""
+    """ORM: SELECT * FROM users WHERE id = $1"""
     query = SelectQuery[User](None, (User,))
     query.where(eq(User.c.id, 1))
-    query.build()
+    return query.build()
+
+
+def bench_native_select_where_simple():
+    """Native: SELECT * FROM users WHERE id = $1"""
+    params: list = []
+    params.append(1)
+    sql = f"SELECT users.* FROM users WHERE (users.id = ${len(params)})"
+    return sql, params
+
+
+# =============================================================================
+# SELECT WHERE AND: SELECT * FROM users WHERE name = $1 AND age > $2
+# =============================================================================
 
 
 def bench_select_where_and():
-    """SELECT * FROM users WHERE name = $1 AND age > $2"""
+    """ORM: SELECT * FROM users WHERE name = $1 AND age > $2"""
     query = SelectQuery[User](None, (User,))
     query.where(and_(eq(User.c.name, "Alice"), gt(User.c.age, 18)))
-    query.build()
+    return query.build()
+
+
+def bench_native_select_where_and():
+    """Native: SELECT * FROM users WHERE name = $1 AND age > $2"""
+    params: list = []
+    params.append("Alice")
+    p1 = f"${len(params)}"
+    params.append(18)
+    p2 = f"${len(params)}"
+    sql = f"SELECT users.* FROM users WHERE ((users.name = {p1}) AND (users.age > {p2}))"
+    return sql, params
+
+
+# =============================================================================
+# SELECT WHERE complex: nested AND/OR conditions
+# =============================================================================
 
 
 def bench_select_where_complex():
-    """SELECT with complex nested AND/OR conditions"""
+    """ORM: SELECT with complex nested AND/OR conditions"""
     query = SelectQuery[User](None, (User,))
     query.where(
         and_(
@@ -118,74 +164,187 @@ def bench_select_where_complex():
             ),
         )
     )
-    query.build()
+    return query.build()
+
+
+def bench_native_select_where_complex():
+    """Native: SELECT with complex nested AND/OR conditions"""
+    params: list = []
+    params.append("Alice")
+    p1 = f"${len(params)}"
+    params.append("Bob")
+    p2 = f"${len(params)}"
+    params.append(18)
+    p3 = f"${len(params)}"
+    params.append(65)
+    p4 = f"${len(params)}"
+    params.append("%@gmail.com")
+    p5 = f"${len(params)}"
+    params.append("%@yahoo.com")
+    p6 = f"${len(params)}"
+    sql = (
+        f"SELECT users.* FROM users WHERE "
+        f"(((users.name = {p1}) OR (users.name = {p2})) AND "
+        f"(users.age > {p3}) AND (users.age < {p4}) AND "
+        f"((users.email LIKE {p5}) OR (users.email LIKE {p6})))"
+    )
+    return sql, params
+
+
+# =============================================================================
+# SELECT WHERE IN (10): SELECT * FROM users WHERE id IN ($1, ..., $10)
+# =============================================================================
 
 
 def bench_select_where_in():
-    """SELECT * FROM users WHERE id IN ($1, $2, ..., $10)"""
+    """ORM: SELECT * FROM users WHERE id IN ($1, $2, ..., $10)"""
     query = SelectQuery[User](None, (User,))
     query.where(in_(User.c.id, list(range(1, 11))))
-    query.build()
+    return query.build()
+
+
+def bench_native_select_where_in():
+    """Native: SELECT * FROM users WHERE id IN ($1, $2, ..., $10)"""
+    params: list = []
+    placeholders = []
+    for i in range(1, 11):
+        params.append(i)
+        placeholders.append(f"${len(params)}")
+    sql = f"SELECT users.* FROM users WHERE (users.id IN ({', '.join(placeholders)}))"
+    return sql, params
+
+
+# =============================================================================
+# SELECT WHERE IN (100): SELECT * FROM users WHERE id IN ($1, ..., $100)
+# =============================================================================
 
 
 def bench_select_where_in_large():
-    """SELECT * FROM users WHERE id IN ($1, $2, ..., $100)"""
+    """ORM: SELECT * FROM users WHERE id IN ($1, $2, ..., $100)"""
     query = SelectQuery[User](None, (User,))
     query.where(in_(User.c.id, list(range(1, 101))))
-    query.build()
+    return query.build()
+
+
+def bench_native_select_where_in_large():
+    """Native: SELECT * FROM users WHERE id IN ($1, $2, ..., $100)"""
+    params: list = []
+    placeholders = []
+    for i in range(1, 101):
+        params.append(i)
+        placeholders.append(f"${len(params)}")
+    sql = f"SELECT users.* FROM users WHERE (users.id IN ({', '.join(placeholders)}))"
+    return sql, params
+
+
+# =============================================================================
+# SELECT ORDER/LIMIT: SELECT * FROM users ORDER BY created_at DESC LIMIT 10 OFFSET 20
+# =============================================================================
 
 
 def bench_select_order_limit():
-    """SELECT * FROM users ORDER BY created_at DESC LIMIT 10 OFFSET 20"""
+    """ORM: SELECT * FROM users ORDER BY created_at DESC LIMIT 10 OFFSET 20"""
     query = SelectQuery[User](None, (User,))
     query.order_by(User.c.created_at, "DESC")
     query.limit(10)
     query.offset(20)
-    query.build()
+    return query.build()
+
+
+# =============================================================================
+# SELECT JOIN: SELECT with INNER JOIN
+# =============================================================================
 
 
 def bench_select_join():
-    """SELECT with INNER JOIN"""
+    """ORM: SELECT with INNER JOIN"""
     query = SelectQuery[Post](None, (Post, User.c.name))
     query.from_(Post)
     query.inner_join(User, eq(Post.c.author_id, User.c.id))
-    query.build()
+    return query.build()
+
+
+def bench_native_select_join():
+    """Native: SELECT with INNER JOIN"""
+    params: list = []
+    sql = "SELECT posts.*, users.name FROM posts INNER JOIN users ON (posts.author_id = users.id)"
+    return sql, params
+
+
+# =============================================================================
+# SELECT multi-JOIN: SELECT with multiple JOINs
+# =============================================================================
 
 
 def bench_select_multi_join():
-    """SELECT with multiple JOINs"""
+    """ORM: SELECT with multiple JOINs"""
     query = SelectQuery[Comment](None, (Comment, Post.c.title, User.c.name))
     query.from_(Comment)
     query.inner_join(Post, eq(Comment.c.post_id, Post.c.id))
     query.inner_join(User, eq(Comment.c.user_id, User.c.id))
-    query.build()
+    return query.build()
+
+
+# =============================================================================
+# SELECT full query: SELECT with WHERE, JOIN, ORDER BY, LIMIT
+# =============================================================================
 
 
 def bench_select_full():
-    """SELECT with WHERE, JOIN, ORDER BY, LIMIT"""
+    """ORM: SELECT with WHERE, JOIN, ORDER BY, LIMIT"""
     query = SelectQuery[Post](None, (Post, User.c.name))
     query.from_(Post)
     query.inner_join(User, eq(Post.c.author_id, User.c.id))
     query.where(and_(gt(Post.c.views, 100), lte(Post.c.views, 10000)))
     query.order_by(Post.c.views, "DESC")
     query.limit(20)
-    query.build()
+    return query.build()
+
+
+def bench_native_select_full():
+    """Native: SELECT with WHERE, JOIN, ORDER BY, LIMIT"""
+    params: list = []
+    params.append(100)
+    p1 = f"${len(params)}"
+    params.append(10000)
+    p2 = f"${len(params)}"
+    sql = (
+        f"SELECT posts.*, users.name FROM posts "
+        f"INNER JOIN users ON (posts.author_id = users.id) "
+        f"WHERE ((posts.views > {p1}) AND (posts.views <= {p2})) "
+        f"ORDER BY posts.views DESC LIMIT 20"
+    )
+    return sql, params
 
 
 # =============================================================================
-# INSERT Query Benchmarks
+# INSERT simple: INSERT with 2 columns
 # =============================================================================
 
 
 def bench_insert_simple():
-    """INSERT with 2 columns"""
+    """ORM: INSERT with 2 columns"""
     query = InsertQuery[User](None, User)
     query.values(name="Alice", email="alice@example.com")
-    query.build()
+    return query.build()
+
+
+def bench_native_insert_simple():
+    """Native: INSERT with 2 columns"""
+    params: list = []
+    params.append("Alice")
+    params.append("alice@example.com")
+    sql = "INSERT INTO users (name, email) VALUES ($1, $2)"
+    return sql, params
+
+
+# =============================================================================
+# INSERT many columns: INSERT with all columns
+# =============================================================================
 
 
 def bench_insert_many_columns():
-    """INSERT with all columns"""
+    """ORM: INSERT with all columns"""
     query = InsertQuery[User](None, User)
     query.values(
         name="Alice",
@@ -193,40 +352,74 @@ def bench_insert_many_columns():
         age=30,
         bio="Software engineer",
     )
-    query.build()
+    return query.build()
 
 
-def bench_insert_returning():
-    """INSERT ... RETURNING *"""
-    query = InsertQuery[User](None, User)
-    query.values(name="Alice", email="alice@example.com")
-    query.returning(User)
-    query.build()
+def bench_native_insert_many_columns():
+    """Native: INSERT with all columns"""
+    params: list = []
+    params.extend(["Alice", "alice@example.com", 30, "Software engineer"])
+    sql = "INSERT INTO users (name, email, age, bio) VALUES ($1, $2, $3, $4)"
+    return sql, params
 
 
 # =============================================================================
-# UPDATE Query Benchmarks
+# INSERT RETURNING: INSERT ... RETURNING *
+# =============================================================================
+
+
+def bench_insert_returning():
+    """ORM: INSERT ... RETURNING *"""
+    query = InsertQuery[User](None, User)
+    query.values(name="Alice", email="alice@example.com")
+    query.returning(User)
+    return query.build()
+
+
+# =============================================================================
+# UPDATE simple: UPDATE with single SET and WHERE
 # =============================================================================
 
 
 def bench_update_simple():
-    """UPDATE with single SET and WHERE"""
+    """ORM: UPDATE with single SET and WHERE"""
     query = UpdateQuery[User](None, User)
     query.set(name="Bob")
     query.where(eq(User.c.id, 1))
-    query.build()
+    return query.build()
+
+
+def bench_native_update_simple():
+    """Native: UPDATE with single SET and WHERE"""
+    params: list = []
+    params.append("Bob")
+    p1 = f"${len(params)}"
+    params.append(1)
+    p2 = f"${len(params)}"
+    sql = f"UPDATE users SET name = {p1} WHERE (users.id = {p2})"
+    return sql, params
+
+
+# =============================================================================
+# UPDATE many columns: UPDATE with multiple SET columns
+# =============================================================================
 
 
 def bench_update_many_columns():
-    """UPDATE with multiple SET columns"""
+    """ORM: UPDATE with multiple SET columns"""
     query = UpdateQuery[User](None, User)
     query.set(name="Bob", email="bob@example.com", age=25, bio="Updated bio")
     query.where(eq(User.c.id, 1))
-    query.build()
+    return query.build()
+
+
+# =============================================================================
+# UPDATE complex WHERE: UPDATE with complex WHERE
+# =============================================================================
 
 
 def bench_update_complex_where():
-    """UPDATE with complex WHERE"""
+    """ORM: UPDATE with complex WHERE"""
     query = UpdateQuery[User](None, User)
     query.set(age=0)
     query.where(
@@ -235,23 +428,36 @@ def bench_update_complex_where():
             or_(eq(User.c.name, "Test"), like(User.c.email, "%@test.com")),
         )
     )
-    query.build()
+    return query.build()
 
 
 # =============================================================================
-# DELETE Query Benchmarks
+# DELETE simple: DELETE with simple WHERE
 # =============================================================================
 
 
 def bench_delete_simple():
-    """DELETE with simple WHERE"""
+    """ORM: DELETE with simple WHERE"""
     query = DeleteQuery[User](None, User)
     query.where(eq(User.c.id, 1))
-    query.build()
+    return query.build()
+
+
+def bench_native_delete_simple():
+    """Native: DELETE with simple WHERE"""
+    params: list = []
+    params.append(1)
+    sql = f"DELETE FROM users WHERE (users.id = ${len(params)})"
+    return sql, params
+
+
+# =============================================================================
+# DELETE complex WHERE: DELETE with complex WHERE
+# =============================================================================
 
 
 def bench_delete_complex_where():
-    """DELETE with complex WHERE"""
+    """ORM: DELETE with complex WHERE"""
     query = DeleteQuery[User](None, User)
     query.where(
         and_(
@@ -259,22 +465,22 @@ def bench_delete_complex_where():
             or_(eq(User.c.age, None), lt(User.c.age, 0)),
         )
     )
-    query.build()
+    return query.build()
 
 
 # =============================================================================
-# DDL Generation Benchmarks
+# DDL Generation
 # =============================================================================
 
 
 def bench_ddl_simple():
-    """Generate DDL for simple table"""
-    User.to_ddl()
+    """ORM: Generate DDL for simple table"""
+    return User.to_ddl()
 
 
 def bench_ddl_complex():
-    """Generate DDL for table with more columns"""
-    Post.to_ddl()
+    """ORM: Generate DDL for table with more columns"""
+    return Post.to_ddl()
 
 
 # =============================================================================
@@ -332,8 +538,61 @@ def run_benchmarks():
     print("Legend: μs = microseconds, Ops/sec = operations per second")
     print()
 
+    # Run comparison benchmarks
+    run_comparison_benchmarks()
 
+
+def run_comparison_benchmarks():
+    """Run side-by-side comparison of ORM vs native SQL."""
+    comparisons = [
+        ("SELECT simple", bench_select_simple, bench_native_select_simple),
+        ("SELECT WHERE =", bench_select_where_simple, bench_native_select_where_simple),
+        ("SELECT WHERE AND", bench_select_where_and, bench_native_select_where_and),
+        ("SELECT WHERE complex", bench_select_where_complex, bench_native_select_where_complex),
+        ("SELECT WHERE IN (10)", bench_select_where_in, bench_native_select_where_in),
+        ("SELECT WHERE IN (100)", bench_select_where_in_large, bench_native_select_where_in_large),
+        ("SELECT JOIN", bench_select_join, bench_native_select_join),
+        ("SELECT full query", bench_select_full, bench_native_select_full),
+        ("INSERT simple", bench_insert_simple, bench_native_insert_simple),
+        ("INSERT many cols", bench_insert_many_columns, bench_native_insert_many_columns),
+        ("UPDATE simple", bench_update_simple, bench_native_update_simple),
+        ("DELETE simple", bench_delete_simple, bench_native_delete_simple),
+    ]
+
+    print("=" * 95)
+    print("ORM vs Native SQL Comparison")
+    print("=" * 95)
+    print()
+    print(f"{'Benchmark':<25} {'ORM (μs)':>12} {'Native (μs)':>12} {'Overhead':>12} {'Ratio':>10}")
+    print("-" * 95)
+
+    for name, orm_func, native_func in comparisons:
+        orm_results = benchmark(orm_func, iterations=10000)
+        native_results = benchmark(native_func, iterations=10000)
+
+        orm_mean = orm_results["mean_us"]
+        native_mean = native_results["mean_us"]
+        overhead = orm_mean - native_mean
+        ratio = orm_mean / native_mean if native_mean > 0 else float("inf")
+
+        print(
+            f"{name:<25} {orm_mean:>12.2f} {native_mean:>12.2f} {overhead:>+12.2f} {ratio:>10.1f}x"
+        )
+
+    print("-" * 95)
+    print()
+    print("Legend: Overhead = ORM - Native (μs), Ratio = ORM / Native")
+    print("        Lower overhead and ratio closer to 1.0x is better")
+    print()
+
+
+# =============================================================================
 # Pytest-benchmark compatible functions
+# =============================================================================
+
+# ORM benchmarks
+
+
 def test_select_simple(benchmark):
     benchmark(bench_select_simple)
 
@@ -372,6 +631,45 @@ def test_delete_simple(benchmark):
 
 def test_ddl_simple(benchmark):
     benchmark(bench_ddl_simple)
+
+
+# Native SQL benchmarks (for comparison)
+
+
+def test_native_select_simple(benchmark):
+    benchmark(bench_native_select_simple)
+
+
+def test_native_select_where_simple(benchmark):
+    benchmark(bench_native_select_where_simple)
+
+
+def test_native_select_where_complex(benchmark):
+    benchmark(bench_native_select_where_complex)
+
+
+def test_native_select_where_in_large(benchmark):
+    benchmark(bench_native_select_where_in_large)
+
+
+def test_native_select_join(benchmark):
+    benchmark(bench_native_select_join)
+
+
+def test_native_select_full(benchmark):
+    benchmark(bench_native_select_full)
+
+
+def test_native_insert_simple(benchmark):
+    benchmark(bench_native_insert_simple)
+
+
+def test_native_update_simple(benchmark):
+    benchmark(bench_native_update_simple)
+
+
+def test_native_delete_simple(benchmark):
+    benchmark(bench_native_delete_simple)
 
 
 if __name__ == "__main__":
