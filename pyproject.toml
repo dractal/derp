@@ -1,0 +1,33 @@
+[project]
+name = "dribble"
+version = "0.1.0"
+description = "A strongly-typed async Python ORM for PostgreSQL inspired by Drizzle ORM and SQLModel"
+readme = "README.md"
+authors = [{ name = "hilly12", email = "aahilmehta12@gmail.com" }]
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0",
+    "asyncpg>=0.29",
+    "typer>=0.15",
+]
+
+[project.scripts]
+dribble = "dribble.cli.main:app"
+
+[build-system]
+requires = ["uv_build>=0.9.21,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "ty>=0.0.1a5",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
