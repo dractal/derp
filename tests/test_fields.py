@@ -1,6 +1,9 @@
 """Tests for field types."""
 
 from dribble.fields import (
+    JSON,
+    JSONB,
+    UUID,
     Array,
     BigInt,
     BigSerial,
@@ -10,8 +13,6 @@ from dribble.fields import (
     DoublePrecision,
     Integer,
     Interval,
-    JSON,
-    JSONB,
     Numeric,
     Real,
     Serial,
@@ -19,7 +20,6 @@ from dribble.fields import (
     Text,
     Time,
     Timestamp,
-    UUID,
     Varchar,
 )
 
