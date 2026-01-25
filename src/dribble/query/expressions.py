@@ -3,10 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from dribble.fields import FieldInfo
+
+
+class LogicalOperator(StrEnum):
+    """SQL logical operators."""
+
+    AND = "AND"
+    OR = "OR"
+
+
+class ComparisonOperator(StrEnum):
+    """SQL comparison operators."""
+
+    EQ = "="
+    NE = "<>"
+    GT = ">"
+    GTE = ">="
+    LT = "<"
+    LTE = "<="
 
 
 @dataclass
@@ -52,7 +71,7 @@ class BinaryOp(Expression):
     """Binary operator expression (e.g., a = b)."""
 
     left: Expression | FieldInfo | Any
-    operator: str
+    operator: ComparisonOperator | str
     right: Expression | FieldInfo | Any
 
     def to_sql(self, params: list[Any]) -> str:
@@ -77,12 +96,12 @@ class UnaryOp(Expression):
 class LogicalOp(Expression):
     """Logical combination of expressions (AND/OR)."""
 
-    operator: str  # "AND" or "OR"
+    operator: LogicalOperator
     conditions: tuple[Expression, ...]
 
     def to_sql(self, params: list[Any]) -> str:
         if not self.conditions:
-            return "TRUE" if self.operator == "AND" else "FALSE"
+            return "TRUE" if self.operator == LogicalOperator.AND else "FALSE"
         parts = [_expr_to_sql(c, params) for c in self.conditions]
         return f"({f' {self.operator} '.join(parts)})"
 
@@ -183,32 +202,32 @@ def _to_expr(value: Expression | FieldInfo | Any) -> Expression | FieldInfo:
 
 def eq(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
     """Equal (=) comparison."""
-    return BinaryOp(_to_expr(left), "=", _to_expr(right))
+    return BinaryOp(_to_expr(left), ComparisonOperator.EQ, _to_expr(right))
 
 
 def ne(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
     """Not equal (<>) comparison."""
-    return BinaryOp(_to_expr(left), "<>", _to_expr(right))
+    return BinaryOp(_to_expr(left), ComparisonOperator.NE, _to_expr(right))
 
 
 def gt(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
     """Greater than (>) comparison."""
-    return BinaryOp(_to_expr(left), ">", _to_expr(right))
+    return BinaryOp(_to_expr(left), ComparisonOperator.GT, _to_expr(right))
 
 
 def gte(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
     """Greater than or equal (>=) comparison."""
-    return BinaryOp(_to_expr(left), ">=", _to_expr(right))
+    return BinaryOp(_to_expr(left), ComparisonOperator.GTE, _to_expr(right))
 
 
 def lt(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
     """Less than (<) comparison."""
-    return BinaryOp(_to_expr(left), "<", _to_expr(right))
+    return BinaryOp(_to_expr(left), ComparisonOperator.LT, _to_expr(right))
 
 
 def lte(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
     """Less than or equal (<=) comparison."""
-    return BinaryOp(_to_expr(left), "<=", _to_expr(right))
+    return BinaryOp(_to_expr(left), ComparisonOperator.LTE, _to_expr(right))
 
 
 # Logical operators
@@ -216,12 +235,12 @@ def lte(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any)
 
 def and_(*conditions: Expression) -> LogicalOp:
     """Logical AND of conditions."""
-    return LogicalOp("AND", conditions)
+    return LogicalOp(LogicalOperator.AND, conditions)
 
 
 def or_(*conditions: Expression) -> LogicalOp:
     """Logical OR of conditions."""
-    return LogicalOp("OR", conditions)
+    return LogicalOp(LogicalOperator.OR, conditions)
 
 
 def not_(condition: Expression) -> UnaryOp:

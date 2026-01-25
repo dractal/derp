@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from enum import StrEnum
 from typing import Any
+
+
+class ForeignKeyAction(StrEnum):
+    """Actions for foreign key ON DELETE / ON UPDATE clauses."""
+
+    CASCADE = "CASCADE"
+    SET_NULL = "SET NULL"
+    SET_DEFAULT = "SET DEFAULT"
+    RESTRICT = "RESTRICT"
+    NO_ACTION = "NO ACTION"
 
 
 @dataclass
@@ -229,8 +240,8 @@ class ForeignKey:
     """Foreign key reference to another table.column."""
 
     reference: str  # e.g., "users.id"
-    on_delete: str | None = None  # CASCADE, SET NULL, RESTRICT, etc.
-    on_update: str | None = None
+    on_delete: ForeignKeyAction | None = None
+    on_update: ForeignKeyAction | None = None
 
     def to_sql(self) -> str:
         """Generate SQL for foreign key constraint."""

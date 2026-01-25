@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from dribble.fields import FieldInfo
@@ -13,11 +14,28 @@ if TYPE_CHECKING:
     import asyncpg
 
 
+class JoinType(StrEnum):
+    """SQL JOIN types."""
+
+    INNER = "INNER"
+    LEFT = "LEFT"
+    RIGHT = "RIGHT"
+    FULL = "FULL OUTER"
+    CROSS = "CROSS"
+
+
+class SortOrder(StrEnum):
+    """SQL ORDER BY directions."""
+
+    ASC = "ASC"
+    DESC = "DESC"
+
+
 @dataclass
 class JoinClause:
     """Represents a JOIN clause."""
 
-    join_type: str  # INNER, LEFT, RIGHT, FULL
+    join_type: JoinType
     table: type[Table]
     condition: Expression
 
@@ -27,7 +45,7 @@ class OrderByClause:
     """Represents an ORDER BY clause."""
 
     column: FieldInfo | str
-    direction: str = "ASC"  # ASC or DESC
+    direction: SortOrder = SortOrder.ASC
 
 
 class SelectQuery[T: Table]:
@@ -64,27 +82,36 @@ class SelectQuery[T: Table]:
 
     def inner_join(self, table: type[Table], condition: Expression) -> SelectQuery[T]:
         """Add INNER JOIN."""
-        self._joins.append(JoinClause("INNER", table, condition))
+        self._joins.append(JoinClause(JoinType.INNER, table, condition))
         return self
 
     def left_join(self, table: type[Table], condition: Expression) -> SelectQuery[T]:
         """Add LEFT JOIN."""
-        self._joins.append(JoinClause("LEFT", table, condition))
+        self._joins.append(JoinClause(JoinType.LEFT, table, condition))
         return self
 
     def right_join(self, table: type[Table], condition: Expression) -> SelectQuery[T]:
         """Add RIGHT JOIN."""
-        self._joins.append(JoinClause("RIGHT", table, condition))
+        self._joins.append(JoinClause(JoinType.RIGHT, table, condition))
         return self
 
     def full_join(self, table: type[Table], condition: Expression) -> SelectQuery[T]:
         """Add FULL OUTER JOIN."""
-        self._joins.append(JoinClause("FULL OUTER", table, condition))
+        self._joins.append(JoinClause(JoinType.FULL, table, condition))
         return self
 
-    def order_by(self, column: FieldInfo | str, direction: str = "ASC") -> SelectQuery[T]:
+    def cross_join(self, table: type[Table], condition: Expression) -> SelectQuery[T]:
+        """Add CROSS JOIN."""
+        self._joins.append(JoinClause(JoinType.CROSS, table, condition))
+        return self
+
+    def order_by(
+        self, column: FieldInfo | str, direction: SortOrder | str = SortOrder.ASC
+    ) -> SelectQuery[T]:
         """Add ORDER BY clause."""
-        self._order_by.append(OrderByClause(column, direction.upper()))
+        if isinstance(direction, str):
+            direction = SortOrder(direction.upper())
+        self._order_by.append(OrderByClause(column, direction))
         return self
 
     def limit(self, n: int) -> SelectQuery[T]:

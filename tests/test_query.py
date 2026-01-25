@@ -126,9 +126,7 @@ def test_insert():
 def test_insert_returning():
     """Test INSERT with RETURNING."""
     query = (
-        InsertQuery[User](None, User)
-        .values(name="Bob", email="bob@example.com")
-        .returning(User)
+        InsertQuery[User](None, User).values(name="Bob", email="bob@example.com").returning(User)
     )
     sql, params = query.build()
 

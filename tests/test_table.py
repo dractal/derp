@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from dribble import Field, ForeignKey, Table
+from dribble import Field, ForeignKey, ForeignKeyAction, Table
 from dribble.fields import Integer, Serial, Timestamp, Varchar
 
 
@@ -17,7 +17,9 @@ class Post(Table, table_name="posts"):
     id: int = Field(Serial(), primary_key=True)
     title: str = Field(Varchar(255))
     content: str = Field(Varchar(10000), nullable=True)
-    author_id: int = Field(Integer(), foreign_key=ForeignKey("users.id", on_delete="CASCADE"))
+    author_id: int = Field(
+        Integer(), foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE)
+    )
 
 
 def test_table_name():
@@ -53,7 +55,7 @@ def test_foreign_key():
     post_columns = Post.get_columns()
     assert post_columns["author_id"].foreign_key is not None
     assert post_columns["author_id"].foreign_key.reference == "users.id"
-    assert post_columns["author_id"].foreign_key.on_delete == "CASCADE"
+    assert post_columns["author_id"].foreign_key.on_delete == ForeignKeyAction.CASCADE
 
 
 def test_ddl_generation():

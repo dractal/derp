@@ -38,6 +38,7 @@ from dribble.fields import (
     Field,
     FieldInfo,
     ForeignKey,
+    ForeignKeyAction,
     Integer,
     Interval,
     Numeric,
@@ -50,6 +51,10 @@ from dribble.fields import (
     Varchar,
 )
 from dribble.query import (
+    ComparisonOperator,
+    JoinType,
+    LogicalOperator,
+    SortOrder,
     and_,
     between,
     eq,
@@ -79,6 +84,7 @@ __all__ = [
     "Field",
     "FieldInfo",
     "ForeignKey",
+    "ForeignKeyAction",
     # Field types
     "Serial",
     "BigSerial",
@@ -100,6 +106,11 @@ __all__ = [
     "JSON",
     "JSONB",
     "Array",
+    # Query enums
+    "JoinType",
+    "SortOrder",
+    "LogicalOperator",
+    "ComparisonOperator",
     # Query operators
     "eq",
     "ne",

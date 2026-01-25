@@ -1,8 +1,17 @@
 """Query builder module for Dribble ORM."""
 
-from dribble.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
+from dribble.query.builder import (
+    DeleteQuery,
+    InsertQuery,
+    JoinType,
+    SelectQuery,
+    SortOrder,
+    UpdateQuery,
+)
 from dribble.query.expressions import (
+    ComparisonOperator,
     Expression,
+    LogicalOperator,
     and_,
     between,
     eq,
@@ -28,6 +37,11 @@ __all__ = [
     "InsertQuery",
     "UpdateQuery",
     "DeleteQuery",
+    # Enums
+    "JoinType",
+    "SortOrder",
+    "LogicalOperator",
+    "ComparisonOperator",
     # Expressions
     "Expression",
     "eq",
