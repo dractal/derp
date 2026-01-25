@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 import re
 import tomllib
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated
@@ -28,53 +30,91 @@ app = typer.Typer(
 
 CONFIG_FILE = "dribble.toml"
 MIGRATIONS_TABLE = "_dribble_migrations"
+DEFAULT_DATABASE_URL_ENV = "DATABASE_URL"
+DEFAULT_MIGRATIONS_DIR = "./migrations"
 
 
-def load_config() -> dict:
-    """Load configuration from dribble.toml."""
-    config_path = Path(CONFIG_FILE)
-    if not config_path.exists():
-        typer.echo(f"Error: {CONFIG_FILE} not found in current directory.", err=True)
-        typer.echo("Create a dribble.toml with:", err=True)
-        typer.echo(
-            """
+@dataclass
+class DatabaseConfig:
+    """Database configuration."""
+
+    env: str = DEFAULT_DATABASE_URL_ENV
+
+    def get_url(self) -> str:
+        """Get database URL from the configured environment variable."""
+        url = os.environ.get(self.env)
+        if not url:
+            typer.echo(
+                f"Error: {self.env} environment variable not set.\n"
+                f"Set it with: export {self.env}=postgresql://user:pass@localhost:5432/mydb",
+                err=True,
+            )
+            raise typer.Exit(1)
+        return url
+
+
+@dataclass
+class MigrationsConfig:
+    """Migrations configuration."""
+
+    dir: str = DEFAULT_MIGRATIONS_DIR
+    schema: str | None = None
+
+    @property
+    def directory(self) -> Path:
+        """Get migrations directory as Path."""
+        return Path(self.dir)
+
+    def get_schema_path(self) -> str:
+        """Get schema module path, raising error if not configured."""
+        if not self.schema:
+            typer.echo("Error: migrations.schema not configured in dribble.toml", err=True)
+            raise typer.Exit(1)
+        return self.schema
+
+
+@dataclass
+class Config:
+    """Dribble configuration loaded from dribble.toml."""
+
+    database: DatabaseConfig
+    migrations: MigrationsConfig
+
+    @classmethod
+    def load(cls) -> Config:
+        """Load configuration from dribble.toml."""
+        config_path = Path(CONFIG_FILE)
+        if not config_path.exists():
+            typer.echo(f"Error: {CONFIG_FILE} not found in current directory.", err=True)
+            typer.echo("Create a dribble.toml with:", err=True)
+            typer.echo(
+                """
 [database]
-url = "postgresql://user:pass@localhost:5432/mydb"
+env = "DATABASE_URL"  # Environment variable containing the database URL
 
 [migrations]
 dir = "./migrations"
 schema = "src/myapp/schema.py"
 """,
-            err=True,
+                err=True,
+            )
+            raise typer.Exit(1)
+
+        with open(config_path, "rb") as f:
+            data = tomllib.load(f)
+
+        db_data = data.get("database", {})
+        migrations_data = data.get("migrations", {})
+
+        return cls(
+            database=DatabaseConfig(
+                env=db_data.get("env", DEFAULT_DATABASE_URL_ENV),
+            ),
+            migrations=MigrationsConfig(
+                dir=migrations_data.get("dir", DEFAULT_MIGRATIONS_DIR),
+                schema=migrations_data.get("schema"),
+            ),
         )
-        raise typer.Exit(1)
-
-    with open(config_path, "rb") as f:
-        return tomllib.load(f)
-
-
-def get_database_url(config: dict) -> str:
-    """Get database URL from config."""
-    url = config.get("database", {}).get("url")
-    if not url:
-        typer.echo("Error: database.url not configured in dribble.toml", err=True)
-        raise typer.Exit(1)
-    return url
-
-
-def get_migrations_dir(config: dict) -> Path:
-    """Get migrations directory from config."""
-    dir_path = config.get("migrations", {}).get("dir", "./migrations")
-    return Path(dir_path)
-
-
-def get_schema_path(config: dict) -> str:
-    """Get schema module path from config."""
-    schema = config.get("migrations", {}).get("schema")
-    if not schema:
-        typer.echo("Error: migrations.schema not configured in dribble.toml", err=True)
-        raise typer.Exit(1)
-    return schema
 
 
 async def ensure_migrations_table(pool: asyncpg.Pool) -> None:
@@ -152,10 +192,10 @@ def generate(
     name: Annotated[str, typer.Option("--name", "-n", help="Migration name")] = "migration",
 ) -> None:
     """Generate a new migration from schema diff."""
-    config = load_config()
-    db_url = get_database_url(config)
-    migrations_dir = get_migrations_dir(config)
-    schema_path = get_schema_path(config)
+    config = Config.load()
+    db_url = config.database.get_url()
+    migrations_dir = config.migrations.directory
+    schema_path = config.migrations.get_schema_path()
 
     # Load tables from schema
     try:
@@ -213,9 +253,9 @@ def generate(
 @app.command()
 def migrate() -> None:
     """Apply pending migrations."""
-    config = load_config()
-    db_url = get_database_url(config)
-    migrations_dir = get_migrations_dir(config)
+    config = Config.load()
+    db_url = config.database.get_url()
+    migrations_dir = config.migrations.directory
 
     migrations = get_migration_files(migrations_dir)
     if not migrations:
@@ -258,9 +298,9 @@ def migrate() -> None:
 @app.command()
 def push() -> None:
     """Push schema directly to database (dev mode, no migration files)."""
-    config = load_config()
-    db_url = get_database_url(config)
-    schema_path = get_schema_path(config)
+    config = Config.load()
+    db_url = config.database.get_url()
+    schema_path = config.migrations.get_schema_path()
 
     # Load tables from schema
     try:
@@ -303,9 +343,9 @@ def push() -> None:
 @app.command()
 def status() -> None:
     """Show migration status."""
-    config = load_config()
-    db_url = get_database_url(config)
-    migrations_dir = get_migrations_dir(config)
+    config = Config.load()
+    db_url = config.database.get_url()
+    migrations_dir = config.migrations.directory
 
     migrations = get_migration_files(migrations_dir)
 
@@ -342,9 +382,9 @@ def rollback(
     ] = 1,
 ) -> None:
     """Rollback the last migration(s)."""
-    config = load_config()
-    db_url = get_database_url(config)
-    migrations_dir = get_migrations_dir(config)
+    config = Config.load()
+    db_url = config.database.get_url()
+    migrations_dir = config.migrations.directory
 
     async def _rollback() -> int:
         pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
@@ -397,7 +437,7 @@ def init() -> None:
 
     default_config = """\
 [database]
-url = "postgresql://user:password@localhost:5432/dbname"
+env = "DATABASE_URL"  # Environment variable containing the database URL
 
 [migrations]
 dir = "./migrations"
@@ -406,7 +446,9 @@ schema = "src/schema.py"
 
     config_path.write_text(default_config)
     typer.echo(f"Created {CONFIG_FILE}")
-    typer.echo("\nEdit the configuration and then run:")
+    typer.echo("\nSet your database URL:")
+    typer.echo(f"  export {DEFAULT_DATABASE_URL_ENV}=postgresql://user:pass@localhost:5432/dbname")
+    typer.echo("\nThen run:")
     typer.echo("  dribble generate --name initial")
     typer.echo("  dribble migrate")
 
