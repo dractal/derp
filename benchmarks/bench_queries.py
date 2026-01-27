@@ -249,7 +249,7 @@ async def benchmark_async(
 
 async def bench_select_simple_orm(db: DatabaseClient) -> None:
     """ORM: SELECT * FROM users"""
-    await db.select(User).execute()
+    _ = await db.select(User).execute()
 
 
 async def bench_select_simple_asyncpg(pool: asyncpg.Pool) -> None:
@@ -261,19 +261,23 @@ async def bench_select_simple_asyncpg(pool: asyncpg.Pool) -> None:
 
 async def bench_select_where_orm(db: DatabaseClient) -> None:
     """ORM: SELECT * FROM users WHERE id = $1"""
-    await db.select(User).where(User.c.id == 1).execute()
+    _ = await db.select(User).where(User.c.id == 1).execute()
 
 
 async def bench_select_where_asyncpg(pool: asyncpg.Pool) -> None:
     """AsyncPG: SELECT * FROM users WHERE id = $1"""
     async with pool.acquire() as conn:
         rows = await conn.fetch("SELECT * FROM users WHERE id = $1", 1)
-        [User.model_validate(dict(row)) for row in rows]
+        _ = [User.model_validate(dict(row)) for row in rows]
 
 
 async def bench_select_where_and_orm(db: DatabaseClient) -> None:
     """ORM: SELECT * FROM users WHERE name = $1 AND age > $2"""
-    await db.select(User).where((User.c.name == "User 1") & (User.c.age > 18)).execute()
+    _ = (
+        await db.select(User)
+        .where((User.c.name == "User 1") & (User.c.age > 18))
+        .execute()
+    )
 
 
 async def bench_select_where_and_asyncpg(pool: asyncpg.Pool) -> None:
@@ -287,7 +291,7 @@ async def bench_select_where_and_asyncpg(pool: asyncpg.Pool) -> None:
 
 async def bench_select_where_complex_orm(db: DatabaseClient) -> None:
     """ORM: SELECT with complex nested AND/OR conditions"""
-    await (
+    _ = await (
         db.select(User)
         .where(
             ((User.c.name == "User 1") | (User.c.name == "User 2"))
@@ -312,13 +316,13 @@ async def bench_select_where_complex_asyncpg(pool: asyncpg.Pool) -> None:
         rows = await conn.fetch(
             query, "User 1", "User 2", 18, 65, "%@example.com", "%@test.com"
         )
-        [User.model_validate(dict(row)) for row in rows]
+        _ = [User.model_validate(dict(row)) for row in rows]
 
 
 async def bench_select_where_in_orm(db: DatabaseClient) -> None:
     """ORM: SELECT * FROM users WHERE id IN ($1, ..., $10)"""
     ids = list(range(1, 11))
-    await db.select(User).where(User.c.id.in_(ids)).execute()
+    _ = await db.select(User).where(User.c.id.in_(ids)).execute()
 
 
 async def bench_select_where_in_asyncpg(pool: asyncpg.Pool) -> None:
@@ -329,12 +333,12 @@ async def bench_select_where_in_asyncpg(pool: asyncpg.Pool) -> None:
         rows = await conn.fetch(
             f"SELECT * FROM users WHERE id IN ({placeholders})", *ids
         )
-        [User.model_validate(dict(row)) for row in rows]
+        _ = [User.model_validate(dict(row)) for row in rows]
 
 
 async def bench_select_join_orm(db: DatabaseClient) -> None:
     """ORM: SELECT with INNER JOIN"""
-    await (
+    _ = await (
         db.select(Post, User.c.name)
         .from_(Post)
         .inner_join(User, Post.c.author_id == User.c.id)
@@ -350,12 +354,12 @@ async def bench_select_join_asyncpg(pool: asyncpg.Pool) -> None:
             "INNER JOIN users ON (posts.author_id = users.id)"
         )
         rows = await conn.fetch(query)
-        [dict(row) for row in rows]
+        _ = [dict(row) for row in rows]
 
 
 async def bench_select_full_orm(db: DatabaseClient) -> None:
     """ORM: SELECT with WHERE, JOIN, ORDER BY, LIMIT"""
-    await (
+    _ = await (
         db.select(Post, User.c.name)
         .from_(Post)
         .inner_join(User, Post.c.author_id == User.c.id)
@@ -376,7 +380,7 @@ async def bench_select_full_asyncpg(pool: asyncpg.Pool) -> None:
             "ORDER BY posts.views DESC LIMIT 20"
         )
         rows = await conn.fetch(query, 100, 10000)
-        [dict(row) for row in rows]
+        _ = [dict(row) for row in rows]
 
 
 # =============================================================================
@@ -387,14 +391,14 @@ async def bench_select_full_asyncpg(pool: asyncpg.Pool) -> None:
 async def bench_insert_simple_orm(db: DatabaseClient) -> None:
     """ORM: INSERT with 2 columns"""
     email = f"test{random.randint(1000000, 9999999)}@example.com"
-    await db.insert(User).values(name="Test User", email=email).execute()
+    _ = await db.insert(User).values(name="Test User", email=email).execute()
 
 
 async def bench_insert_simple_asyncpg(pool: asyncpg.Pool) -> None:
     """AsyncPG: INSERT with 2 columns"""
     email = f"test{random.randint(1000000, 9999999)}@example.com"
     async with pool.acquire() as conn:
-        await conn.fetchrow(
+        _ = await conn.fetchrow(
             "INSERT INTO users (name, email) VALUES ($1, $2)", "Test User", email
         )
 
@@ -402,7 +406,7 @@ async def bench_insert_simple_asyncpg(pool: asyncpg.Pool) -> None:
 async def bench_insert_returning_orm(db: DatabaseClient) -> None:
     """ORM: INSERT ... RETURNING *"""
     email = f"test{random.randint(10000, 99999)}@example.com"
-    await (
+    _ = await (
         db.insert(User).values(name="Test User", email=email).returning(User).execute()
     )
 
@@ -415,7 +419,7 @@ async def bench_insert_returning_asyncpg(pool: asyncpg.Pool) -> None:
             "Test User",
             f"test{random.randint(10000, 99999)}@example.com",
         )
-        User.model_validate(dict(row))
+        _ = User.model_validate(dict(row))
 
 
 # =============================================================================
@@ -425,13 +429,13 @@ async def bench_insert_returning_asyncpg(pool: asyncpg.Pool) -> None:
 
 async def bench_update_simple_orm(db: DatabaseClient) -> None:
     """ORM: UPDATE with single SET and WHERE"""
-    await db.update(User).set(name="Updated Name").where(User.c.id == 1).execute()
+    _ = await db.update(User).set(name="Updated Name").where(User.c.id == 1).execute()
 
 
 async def bench_update_simple_asyncpg(pool: asyncpg.Pool) -> None:
     """AsyncPG: UPDATE with single SET and WHERE"""
     async with pool.acquire() as conn:
-        await conn.execute(
+        _ = await conn.execute(
             "UPDATE users SET name = $1 WHERE (users.id = $2)", "Updated Name", 1
         )
 
@@ -439,7 +443,7 @@ async def bench_update_simple_asyncpg(pool: asyncpg.Pool) -> None:
 async def bench_update_many_columns_orm(db: DatabaseClient) -> None:
     """ORM: UPDATE with multiple SET columns"""
     email = f"updated{random.randint(10000, 99999)}@example.com"
-    await (
+    _ = await (
         db.update(User)
         .set(name="Updated Name", email=email, age=25, bio="Updated bio")
         .where(User.c.id == 1)
@@ -454,7 +458,7 @@ async def bench_update_many_columns_asyncpg(pool: asyncpg.Pool) -> None:
             "UPDATE users SET name = $1, email = $2, age = $3, bio = $4 "
             "WHERE (users.id = $5)"
         )
-        await conn.execute(
+        _ = await conn.execute(
             query,
             "Updated Name",
             f"updated{random.randint(10000, 99999)}@example.com",
@@ -469,7 +473,7 @@ async def bench_update_many_columns_asyncpg(pool: asyncpg.Pool) -> None:
 # =============================================================================
 
 
-async def bench_delete_simple_orm(db: DatabaseClient) -> None:
+async def bench_insert_delete_simple_orm(db: DatabaseClient) -> None:
     """ORM: DELETE with simple WHERE"""
     # Insert a test user first to delete
     email = f"delete{random.randint(100000, 999999)}@example.com"
@@ -479,10 +483,10 @@ async def bench_delete_simple_orm(db: DatabaseClient) -> None:
         .returning(User)
         .execute()
     )
-    await db.delete(User).where(User.c.id == user.id).execute()
+    _ = await db.delete(User).where(User.c.id == user.id).execute()
 
 
-async def bench_delete_simple_asyncpg(pool: asyncpg.Pool) -> None:
+async def bench_insert_delete_simple_asyncpg(pool: asyncpg.Pool) -> None:
     """AsyncPG: DELETE with simple WHERE"""
     async with pool.acquire() as conn:
         # Insert a test user first to delete
@@ -491,7 +495,9 @@ async def bench_delete_simple_asyncpg(pool: asyncpg.Pool) -> None:
             "Delete Me",
             f"delete{random.randint(100000, 999999)}@example.com",
         )
-        await conn.execute("DELETE FROM users WHERE (users.id = $1)", dict(row)["id"])
+        _ = await conn.execute(
+            "DELETE FROM users WHERE (users.id = $1)", dict(row)["id"]
+        )
 
 
 # =============================================================================
@@ -575,7 +581,11 @@ async def run_benchmarks(database_url: str | None = None) -> None:
                 bench_update_many_columns_orm,
                 bench_update_many_columns_asyncpg,
             ),
-            ("DELETE simple", bench_delete_simple_orm, bench_delete_simple_asyncpg),
+            (
+                "INSERT DELETE simple",
+                bench_insert_delete_simple_orm,
+                bench_insert_delete_simple_asyncpg,
+            ),
         ]
 
         for name, orm_func, asyncpg_func in comparisons:

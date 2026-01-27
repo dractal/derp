@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, overload
 
 import asyncpg
 
 from derp.orm.fields import FieldInfo
-from derp.orm.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
+from derp.orm.query.builder import (
+    DeleteQuery,
+    InsertQuery,
+    SelectQuery,
+    UpdateQuery,
+)
 from derp.orm.table import Table
 
 if TYPE_CHECKING:
     from types import TracebackType
-
-T = TypeVar("T", bound=Table)
 
 
 class Transaction:
@@ -115,30 +118,42 @@ class DatabaseClient:
             )
         return self._pool
 
-    def select(self, *columns: type[Table] | FieldInfo) -> SelectQuery[Any]:
+    # Single table selection - returns model instances
+    @overload
+    def select[T: Table](self, table: type[T], /) -> SelectQuery[T]: ...
+
+    # Fallback for column selections and mixed cases - returns dicts
+    @overload
+    def select(
+        self, *columns: type[Table] | FieldInfo[Any]
+    ) -> SelectQuery[dict[str, Any]]: ...
+
+    def select(self, *columns: type[Table] | FieldInfo[Any]) -> SelectQuery[Any]:
         """Start a SELECT query.
 
         Args:
             *columns: Table classes or FieldInfo columns to select
 
         Returns:
-            SelectQuery builder
+            Typed SelectQuery builder:
+            - SelectQuery[T] when selecting a single Table class (returns list[T])
+            - SelectQuery[dict[str, Any]] for column selections (returns list[dict])
 
         Examples:
-            # Select all columns from User
+            # Select all columns from User - returns list[User]
             db.select(User).where(User.c.id == 1)
 
-            # Select specific columns
-            db.select(User.id, User.name)
+            # Select specific columns - returns list[dict[str, Any]]
+            db.select(User.c.id, User.c.name)
 
             # Join queries
-            db.select(Post, User.name)
+            db.select(Post, User.c.name)
               .from_(Post)
               .inner_join(User, Post.c.author_id == User.c.id)
         """
         return SelectQuery(self._pool, columns)
 
-    def insert(self, table: type[T]) -> InsertQuery[T]:
+    def insert[T: Table](self, table: type[T]) -> InsertQuery[T]:
         """Start an INSERT query.
 
         Args:
@@ -157,7 +172,7 @@ class DatabaseClient:
         """
         return InsertQuery(self._pool, table)
 
-    def update(self, table: type[T]) -> UpdateQuery[T]:
+    def update[T: Table](self, table: type[T]) -> UpdateQuery[T]:
         """Start an UPDATE query.
 
         Args:
@@ -171,7 +186,7 @@ class DatabaseClient:
         """
         return UpdateQuery(self._pool, table)
 
-    def delete(self, table: type[T]) -> DeleteQuery[T]:
+    def delete[T: Table](self, table: type[T]) -> DeleteQuery[T]:
         """Start a DELETE query.
 
         Args:

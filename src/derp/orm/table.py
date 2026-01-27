@@ -12,10 +12,10 @@ from derp.orm.fields import FieldInfo
 class ColumnAccessor:
     """Provides attribute access to table columns for query building."""
 
-    def __init__(self, columns: dict[str, FieldInfo]):
+    def __init__(self, columns: dict[str, FieldInfo[Any]]):
         self._columns = columns
 
-    def __getattr__(self, name: str) -> FieldInfo:
+    def __getattr__(self, name: str) -> FieldInfo[Any]:
         if name.startswith("_"):
             raise AttributeError(name)
         if name not in self._columns:
@@ -48,7 +48,7 @@ class TableMeta(type(BaseModel)):
             namespace["__table_name__"] = name.lower()
 
         # Extract FieldInfo objects BEFORE Pydantic processes them
-        field_infos: dict[str, FieldInfo] = {}
+        field_infos: dict[str, FieldInfo[Any]] = {}
         annotations = namespace.get("__annotations__", {})
 
         for field_name, type_hint in annotations.items():
@@ -77,15 +77,17 @@ class TableMeta(type(BaseModel)):
     @staticmethod
     def _process_fields(cls: Any) -> None:
         """Process FieldInfo annotations and set up column metadata."""
-        columns: dict[str, FieldInfo] = {}
+        columns: dict[str, FieldInfo[Any]] = {}
         table_name = getattr(cls, "__table_name__", cls.__name__.lower())
 
         # Get the stored field infos
-        field_infos = getattr(cls, "__derp_field_infos__", {})
+        field_infos: dict[str, FieldInfo[Any]] = getattr(
+            cls, "__derp_field_infos__", {}
+        )
 
         for field_name, info in field_infos.items():
             # Clone FieldInfo with table/field name set
-            field_info = FieldInfo(
+            field_info: FieldInfo[Any] = FieldInfo(
                 field_type=info.field_type,
                 primary_key=info.primary_key,
                 unique=info.unique,
@@ -116,7 +118,7 @@ class Table(BaseModel, metaclass=TableMeta):
     """
 
     __table_name__: ClassVar[str]
-    __columns__: ClassVar[dict[str, FieldInfo]]
+    __columns__: ClassVar[dict[str, FieldInfo[Any]]]
     c: ClassVar[ColumnAccessor]
 
     model_config = {"from_attributes": True}
@@ -127,12 +129,12 @@ class Table(BaseModel, metaclass=TableMeta):
         return cls.__table_name__
 
     @classmethod
-    def get_columns(cls) -> dict[str, FieldInfo]:
+    def get_columns(cls) -> dict[str, FieldInfo[Any]]:
         """Get all column definitions."""
         return getattr(cls, "__columns__", {})
 
     @classmethod
-    def get_primary_key(cls) -> tuple[str, FieldInfo] | None:
+    def get_primary_key(cls) -> tuple[str, FieldInfo[Any]] | None:
         """Get the primary key column if any."""
         for name, info in cls.get_columns().items():
             if info.primary_key:
@@ -206,7 +208,7 @@ class Table(BaseModel, metaclass=TableMeta):
         return ddl
 
 
-def get_column_ref(table: type[Table], column_name: str) -> FieldInfo:
+def get_column_ref(table: type[Table], column_name: str) -> FieldInfo[Any]:
     """Get a column reference for query building."""
     columns = table.get_columns()
     if column_name not in columns:

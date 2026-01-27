@@ -14,6 +14,7 @@ from derp.orm.query.types import Row, T
 __all__ = [
     # Query builders
     "SelectQuery",
+    # Other queries
     "InsertQuery",
     "UpdateQuery",
     "DeleteQuery",

@@ -50,7 +50,12 @@ from derp.orm.fields import (
     Timestamp,
     Varchar,
 )
-from derp.orm.query import ComparisonOperator, JoinType, LogicalOperator, SortOrder
+from derp.orm.query import (
+    ComparisonOperator,
+    JoinType,
+    LogicalOperator,
+    SortOrder,
+)
 from derp.orm.table import Table
 
 __version__ = "0.1.0"

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import abc
 import dataclasses
+import datetime
 import enum as enum_lib
 import re
+import uuid as uuid_lib
 from collections.abc import Sequence
+from decimal import Decimal
 from typing import Any
 
 from etils import epy
@@ -26,8 +29,8 @@ class ForeignKeyAction(enum_lib.StrEnum):
 
 
 @dataclasses.dataclass
-class FieldType(abc.ABC):
-    """Base class for all PostgreSQL field types."""
+class FieldType[T](abc.ABC):
+    """Base class for PostgreSQL field types, parameterized by Python type."""
 
     @abc.abstractmethod
     def sql_type(self) -> str:
@@ -38,7 +41,7 @@ class FieldType(abc.ABC):
 
 
 @dataclasses.dataclass
-class Serial(FieldType):
+class Serial(FieldType[int]):
     """Auto-incrementing 4-byte integer."""
 
     def sql_type(self) -> str:
@@ -46,7 +49,7 @@ class Serial(FieldType):
 
 
 @dataclasses.dataclass
-class BigSerial(FieldType):
+class BigSerial(FieldType[int]):
     """Auto-incrementing 8-byte integer."""
 
     def sql_type(self) -> str:
@@ -54,7 +57,7 @@ class BigSerial(FieldType):
 
 
 @dataclasses.dataclass
-class SmallInt(FieldType):
+class SmallInt(FieldType[int]):
     """2-byte signed integer."""
 
     def sql_type(self) -> str:
@@ -62,7 +65,7 @@ class SmallInt(FieldType):
 
 
 @dataclasses.dataclass
-class Integer(FieldType):
+class Integer(FieldType[int]):
     """4-byte signed integer."""
 
     def sql_type(self) -> str:
@@ -70,7 +73,7 @@ class Integer(FieldType):
 
 
 @dataclasses.dataclass
-class BigInt(FieldType):
+class BigInt(FieldType[int]):
     """8-byte signed integer."""
 
     def sql_type(self) -> str:
@@ -81,7 +84,7 @@ class BigInt(FieldType):
 
 
 @dataclasses.dataclass
-class Varchar(FieldType):
+class Varchar(FieldType[str]):
     """Variable-length string with limit."""
 
     length: int
@@ -91,7 +94,7 @@ class Varchar(FieldType):
 
 
 @dataclasses.dataclass
-class Char(FieldType):
+class Char(FieldType[str]):
     """Fixed-length string."""
 
     length: int
@@ -101,7 +104,7 @@ class Char(FieldType):
 
 
 @dataclasses.dataclass
-class Text(FieldType):
+class Text(FieldType[str]):
     """Variable unlimited length string."""
 
     def sql_type(self) -> str:
@@ -112,7 +115,7 @@ class Text(FieldType):
 
 
 @dataclasses.dataclass
-class Boolean(FieldType):
+class Boolean(FieldType[bool]):
     """Boolean type."""
 
     def sql_type(self) -> str:
@@ -123,7 +126,7 @@ class Boolean(FieldType):
 
 
 @dataclasses.dataclass
-class Timestamp(FieldType):
+class Timestamp(FieldType[datetime.datetime]):
     """Timestamp without timezone."""
 
     with_timezone: bool = False
@@ -135,7 +138,7 @@ class Timestamp(FieldType):
 
 
 @dataclasses.dataclass
-class Date(FieldType):
+class Date(FieldType[datetime.date]):
     """Date type."""
 
     def sql_type(self) -> str:
@@ -143,7 +146,7 @@ class Date(FieldType):
 
 
 @dataclasses.dataclass
-class Time(FieldType):
+class Time(FieldType[datetime.time]):
     """Time without timezone."""
 
     with_timezone: bool = False
@@ -155,7 +158,7 @@ class Time(FieldType):
 
 
 @dataclasses.dataclass
-class Interval(FieldType):
+class Interval(FieldType[datetime.timedelta]):
     """Time interval."""
 
     def sql_type(self) -> str:
@@ -166,7 +169,7 @@ class Interval(FieldType):
 
 
 @dataclasses.dataclass
-class Numeric(FieldType):
+class Numeric(FieldType[Decimal]):
     """Exact numeric with precision and scale."""
 
     precision: int | None = None
@@ -181,7 +184,7 @@ class Numeric(FieldType):
 
 
 @dataclasses.dataclass
-class Real(FieldType):
+class Real(FieldType[float]):
     """4-byte floating point."""
 
     def sql_type(self) -> str:
@@ -189,7 +192,7 @@ class Real(FieldType):
 
 
 @dataclasses.dataclass
-class DoublePrecision(FieldType):
+class DoublePrecision(FieldType[float]):
     """8-byte floating point."""
 
     def sql_type(self) -> str:
@@ -200,7 +203,7 @@ class DoublePrecision(FieldType):
 
 
 @dataclasses.dataclass
-class UUID(FieldType):
+class UUID(FieldType[uuid_lib.UUID]):
     """UUID type."""
 
     def sql_type(self) -> str:
@@ -211,10 +214,10 @@ class UUID(FieldType):
 
 
 @dataclasses.dataclass
-class Enum(FieldType):
+class Enum[E: enum_lib.Enum](FieldType[E]):
     """Enum type."""
 
-    enum: type[enum_lib.Enum]
+    enum: type[E]
 
     def sql_type(self) -> str:
         return _to_snake_case(self.enum.__name__)
@@ -224,7 +227,7 @@ class Enum(FieldType):
 
 
 @dataclasses.dataclass
-class JSON(FieldType):
+class JSON(FieldType[Any]):
     """JSON type."""
 
     def sql_type(self) -> str:
@@ -232,7 +235,7 @@ class JSON(FieldType):
 
 
 @dataclasses.dataclass
-class JSONB(FieldType):
+class JSONB(FieldType[Any]):
     """Binary JSON type (more efficient for queries)."""
 
     def sql_type(self) -> str:
@@ -243,10 +246,10 @@ class JSONB(FieldType):
 
 
 @dataclasses.dataclass
-class Array(FieldType):
+class Array[E](FieldType[list[E]]):
     """Array of another type."""
 
-    element_type: FieldType
+    element_type: FieldType[E]
 
     def sql_type(self) -> str:
         return f"{self.element_type.sql_type()}[]"
@@ -255,7 +258,7 @@ class Array(FieldType):
 # Vector Types
 
 @dataclasses.dataclass
-class Vector(FieldType):
+class Vector(FieldType[list[float]]):
     """Vector type."""
 
     dim: int
@@ -265,14 +268,14 @@ class Vector(FieldType):
 
 
 @dataclasses.dataclass
-class TSVector(FieldType):
+class TSVector(FieldType[str]):
     """TSVector type."""
 
     language: str = "english"
 
     def sql_type(self) -> str:
         return "TSVECTOR"
-    
+
     def generated(self) -> str:
         return f"to_tsvector('{self.language}')"
 
@@ -304,10 +307,10 @@ class ForeignKey:
 
 
 @dataclasses.dataclass
-class FieldInfo:
-    """Metadata for a table field/column."""
+class FieldInfo[T]:
+    """Metadata for a table field/column, parameterized by Python type."""
 
-    field_type: FieldType
+    field_type: FieldType[T]
     primary_key: bool = False
     unique: bool = False
     nullable: bool = True
@@ -399,8 +402,8 @@ class FieldInfo:
         return expressions.Between(self, low, high)
 
 
-def Field(
-    field_type: FieldType,
+def Field[T](
+    field_type: FieldType[T],
     *,
     primary_key: bool = False,
     unique: bool = False,
@@ -408,7 +411,7 @@ def Field(
     default: Any = None,
     foreign_key: ForeignKey | None = None,
     index: bool = False,
-) -> Any:
+) -> T:  # Fool the type checker into validating the type annotation.
     """Create a field definition for a table column.
 
     Args:
@@ -421,9 +424,9 @@ def Field(
         index: Whether to create an index on this column
 
     Returns:
-        FieldInfo with Pydantic field default
+        FieldInfo with Pydantic field default (typed as T for compatibility)
     """
-    return FieldInfo(
+    return FieldInfo(  # type: ignore[return-value]
         field_type=field_type,
         primary_key=primary_key,
         unique=unique,
