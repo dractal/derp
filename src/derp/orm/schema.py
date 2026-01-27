@@ -1,4 +1,4 @@
-"""Schema introspection and DDL generation for Dribble ORM."""
+"""Schema introspection and DDL generation for Derp ORM."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 
 import asyncpg
 
-from dribble.fields import FieldInfo
-from dribble.table import Table
+from derp.orm.fields import FieldInfo
+from derp.orm.table import Table
 
 
 @dataclass
@@ -34,7 +34,9 @@ class TableInfo:
     columns: dict[str, ColumnInfo]
 
 
-async def introspect_database(pool: asyncpg.Pool, schema: str = "public") -> dict[str, TableInfo]:
+async def introspect_database(
+    pool: asyncpg.Pool, schema: str = "public"
+) -> dict[str, TableInfo]:
     """Introspect the database schema and return table information.
 
     Args:
@@ -54,7 +56,7 @@ async def introspect_database(pool: asyncpg.Pool, schema: str = "public") -> dic
             FROM information_schema.tables
             WHERE table_schema = $1
               AND table_type = 'BASE TABLE'
-              AND table_name NOT LIKE '_dribble_%'
+              AND table_name NOT LIKE '_derp_%'
             ORDER BY table_name
             """,
             schema,
@@ -87,7 +89,8 @@ async def introspect_database(pool: asyncpg.Pool, schema: str = "public") -> dic
                 """
                 SELECT a.attname
                 FROM pg_index i
-                JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                JOIN pg_attribute a ON a.attrelid = i.indrelid 
+                  AND a.attnum = ANY(i.indkey)
                 JOIN pg_class c ON c.oid = i.indrelid
                 JOIN pg_namespace n ON n.oid = c.relnamespace
                 WHERE i.indisprimary
@@ -104,7 +107,8 @@ async def introspect_database(pool: asyncpg.Pool, schema: str = "public") -> dic
                 """
                 SELECT a.attname
                 FROM pg_index i
-                JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                JOIN pg_attribute a ON a.attrelid = i.indrelid 
+                  AND a.attnum = ANY(i.indkey)
                 JOIN pg_class c ON c.oid = i.indrelid
                 JOIN pg_namespace n ON n.oid = c.relnamespace
                 WHERE i.indisunique AND NOT i.indisprimary
@@ -138,7 +142,10 @@ async def introspect_database(pool: asyncpg.Pool, schema: str = "public") -> dic
                 table_name,
             )
             fk_map = {
-                row["column_name"]: (row["foreign_table_name"], row["foreign_column_name"])
+                row["column_name"]: (
+                    row["foreign_table_name"],
+                    row["foreign_column_name"],
+                )
                 for row in fk_rows
             }
 
@@ -264,7 +271,9 @@ def compare_schemas(
         # Columns to add
         new_cols = schema_column_names - db_column_names
         if new_cols:
-            columns_to_add[table_name] = [(col, schema_columns[col]) for col in new_cols]
+            columns_to_add[table_name] = [
+                (col, schema_columns[col]) for col in new_cols
+            ]
 
         # Columns to drop
         dropped_cols = db_column_names - schema_column_names
@@ -311,7 +320,9 @@ def generate_migration_sql(diff: SchemaDiff) -> tuple[str, str]:
             col_type = field_info.field_type.sql_type()
             nullable = "NULL" if field_info.nullable else "NOT NULL"
 
-            up_sql = f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type} {nullable};"
+            up_sql = (
+                f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type} {nullable};"
+            )
             up_parts.append(up_sql)
             down_parts.insert(0, f"ALTER TABLE {table_name} DROP COLUMN {col_name};")
 

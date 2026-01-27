@@ -2,9 +2,9 @@
 
 from datetime import datetime
 
-from dribble import Field, Table, and_, eq, gt, in_, like, lt, or_
-from dribble.fields import Integer, Serial, Timestamp, Varchar
-from dribble.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
+from derp.orm import Table
+from derp.orm.fields import Field, Integer, Serial, Timestamp, Varchar
+from derp.orm.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
 
 
 class User(Table, table_name="users"):
@@ -36,7 +36,7 @@ def test_select_columns():
 
 def test_select_where_eq():
     """Test SELECT with WHERE equality."""
-    query = SelectQuery[User](None, (User,)).where(eq(User.c.id, 1))
+    query = SelectQuery[User](None, (User,)).where(User.c.id == 1)
     sql, params = query.build()
 
     assert "SELECT users.* FROM users WHERE" in sql
@@ -46,7 +46,7 @@ def test_select_where_eq():
 
 def test_select_where_comparison():
     """Test SELECT with comparison operators."""
-    query = SelectQuery[User](None, (User,)).where(gt(User.c.age, 18))
+    query = SelectQuery[User](None, (User,)).where(User.c.age > 18)
     sql, params = query.build()
 
     assert "(users.age > $1)" in sql
@@ -56,7 +56,7 @@ def test_select_where_comparison():
 def test_select_where_and():
     """Test SELECT with AND condition."""
     query = SelectQuery[User](None, (User,)).where(
-        and_(eq(User.c.name, "Alice"), gt(User.c.age, 18))
+        (User.c.name == "Alice") & (User.c.age > 18)
     )
     sql, params = query.build()
 
@@ -69,7 +69,7 @@ def test_select_where_and():
 def test_select_where_or():
     """Test SELECT with OR condition."""
     query = SelectQuery[User](None, (User,)).where(
-        or_(eq(User.c.name, "Alice"), eq(User.c.name, "Bob"))
+        (User.c.name == "Alice") | (User.c.name == "Bob")
     )
     sql, params = query.build()
 
@@ -79,7 +79,7 @@ def test_select_where_or():
 
 def test_select_where_in():
     """Test SELECT with IN clause."""
-    query = SelectQuery[User](None, (User,)).where(in_(User.c.id, [1, 2, 3]))
+    query = SelectQuery[User](None, (User,)).where(User.c.id.in_([1, 2, 3]))
     sql, params = query.build()
 
     assert "IN ($1, $2, $3)" in sql
@@ -88,7 +88,7 @@ def test_select_where_in():
 
 def test_select_where_like():
     """Test SELECT with LIKE pattern."""
-    query = SelectQuery[User](None, (User,)).where(like(User.c.name, "%Alice%"))
+    query = SelectQuery[User](None, (User,)).where(User.c.name.like("%Alice%"))
     sql, params = query.build()
 
     assert "LIKE $1" in sql
@@ -97,7 +97,7 @@ def test_select_where_like():
 
 def test_select_order_by():
     """Test SELECT with ORDER BY."""
-    query = SelectQuery[User](None, (User,)).order_by(User.c.name, "DESC")
+    query = SelectQuery[User](None, (User,)).order_by(User.c.name, asc=False)
     sql, params = query.build()
 
     assert "ORDER BY users.name DESC" in sql
@@ -126,7 +126,9 @@ def test_insert():
 def test_insert_returning():
     """Test INSERT with RETURNING."""
     query = (
-        InsertQuery[User](None, User).values(name="Bob", email="bob@example.com").returning(User)
+        InsertQuery[User](None, User)
+        .values(name="Bob", email="bob@example.com")
+        .returning(User)
     )
     sql, params = query.build()
 
@@ -135,7 +137,7 @@ def test_insert_returning():
 
 def test_update():
     """Test UPDATE query building."""
-    query = UpdateQuery[User](None, User).set(name="Robert").where(eq(User.c.id, 1))
+    query = UpdateQuery[User](None, User).set(name="Robert").where(User.c.id == 1)
     sql, params = query.build()
 
     assert "UPDATE users SET name = $1" in sql
@@ -145,7 +147,7 @@ def test_update():
 
 def test_delete():
     """Test DELETE query building."""
-    query = DeleteQuery[User](None, User).where(eq(User.c.id, 1))
+    query = DeleteQuery[User](None, User).where(User.c.id == 1)
     sql, params = query.build()
 
     assert "DELETE FROM users" in sql
@@ -156,14 +158,60 @@ def test_delete():
 def test_complex_where():
     """Test complex WHERE with nested conditions."""
     query = SelectQuery[User](None, (User,)).where(
-        and_(
-            or_(eq(User.c.name, "Alice"), eq(User.c.name, "Bob")),
-            gt(User.c.age, 18),
-            lt(User.c.age, 65),
-        )
+        ((User.c.name == "Alice") | (User.c.name == "Bob"))
+        & (User.c.age > 18)
+        & (User.c.age < 65),
     )
     sql, params = query.build()
 
     assert "AND" in sql
     assert "OR" in sql
     assert params == ["Alice", "Bob", 18, 65]
+
+
+def test_field_dunder_operators():
+    """Test FieldInfo dunder methods for binary operations."""
+    # Test == operator
+    query = SelectQuery[User](None, (User,)).where(User.c.id == 1)
+    sql, params = query.build()
+    assert "(users.id = $1)" in sql
+    assert params == [1]
+
+    # Test != operator
+    query = SelectQuery[User](None, (User,)).where(User.c.id != 1)
+    sql, params = query.build()
+    assert "(users.id <> $1)" in sql
+    assert params == [1]
+
+    # Test > operator
+    query = SelectQuery[User](None, (User,)).where(User.c.age > 18)
+    sql, params = query.build()
+    assert "(users.age > $1)" in sql
+    assert params == [18]
+
+    # Test >= operator
+    query = SelectQuery[User](None, (User,)).where(User.c.age >= 18)
+    sql, params = query.build()
+    assert "(users.age >= $1)" in sql
+    assert params == [18]
+
+    # Test < operator
+    query = SelectQuery[User](None, (User,)).where(User.c.age < 65)
+    sql, params = query.build()
+    assert "(users.age < $1)" in sql
+    assert params == [65]
+
+    # Test <= operator
+    query = SelectQuery[User](None, (User,)).where(User.c.age <= 65)
+    sql, params = query.build()
+    assert "(users.age <= $1)" in sql
+    assert params == [65]
+
+    # Test complex expression with dunder operators
+    query = SelectQuery[User](None, (User,)).where(
+        (User.c.age > 18) & (User.c.age < 65)
+    )
+    sql, params = query.build()
+    assert "(users.age > $1)" in sql
+    assert "(users.age < $2)" in sql
+    assert params == [18, 65]

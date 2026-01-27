@@ -1,4 +1,4 @@
-"""Table base class for Dribble ORM using Pydantic."""
+"""Table base class for Derp ORM using Pydantic."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
-from dribble.fields import FieldInfo
+from derp.orm.fields import FieldInfo
 
 
 class ColumnAccessor:
@@ -63,7 +63,7 @@ class TableMeta(type(BaseModel)):
                 del namespace[field_name]
 
         # Store field infos for processing after class creation
-        namespace["__dribble_field_infos__"] = field_infos
+        namespace["__derp_field_infos__"] = field_infos
 
         # Create the class (Pydantic will process it)
         cls = super().__new__(mcs, name, bases, namespace, **kwargs)
@@ -81,7 +81,7 @@ class TableMeta(type(BaseModel)):
         table_name = getattr(cls, "__table_name__", cls.__name__.lower())
 
         # Get the stored field infos
-        field_infos = getattr(cls, "__dribble_field_infos__", {})
+        field_infos = getattr(cls, "__derp_field_infos__", {})
 
         for field_name, info in field_infos.items():
             # Clone FieldInfo with table/field name set
@@ -103,7 +103,7 @@ class TableMeta(type(BaseModel)):
 
 
 class Table(BaseModel, metaclass=TableMeta):
-    """Base class for all Dribble table definitions.
+    """Base class for all Derp table definitions.
 
     Example:
         class User(Table, table_name="users"):
@@ -179,7 +179,9 @@ class Table(BaseModel, metaclass=TableMeta):
             if info.foreign_key:
                 fk = info.foreign_key
                 ref_table, ref_col = fk.reference.split(".")
-                constraint = f"    FOREIGN KEY ({col_name}) REFERENCES {ref_table}({ref_col})"
+                constraint = (
+                    f"    FOREIGN KEY ({col_name}) REFERENCES {ref_table}({ref_col})"
+                )
                 if fk.on_delete:
                     constraint += f" ON DELETE {fk.on_delete}"
                 if fk.on_update:
@@ -189,7 +191,8 @@ class Table(BaseModel, metaclass=TableMeta):
             # Indexes
             if info.index:
                 indexes.append(
-                    f"CREATE INDEX idx_{table_name}_{col_name} ON {table_name}({col_name});"
+                    f"CREATE INDEX idx_{table_name}_{col_name} ON "
+                    f"{table_name}({col_name});"
                 )
 
         all_defs = column_defs + constraints

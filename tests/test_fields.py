@@ -1,6 +1,6 @@
 """Tests for field types."""
 
-from dribble.fields import (
+from derp.orm.fields import (
     JSON,
     JSONB,
     UUID,

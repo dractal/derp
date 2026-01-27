@@ -1,1 +1,1 @@
-"""Tests for Dribble ORM."""
+"""Tests for Derp ORM."""

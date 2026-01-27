@@ -1,20 +1,20 @@
-# Agent Instructions for Dribble ORM
+# Agent Instructions for Derp ORM
 
-This document provides guidance for AI agents working on the Dribble ORM codebase.
+This document provides guidance for AI agents working on the Derp ORM codebase.
 
 ## Project Overview
 
-Dribble is an async Python ORM for PostgreSQL with these core components:
+Derp is an async Python ORM for PostgreSQL with these core components:
 
 | Component | File(s) | Purpose |
 |-----------|---------|---------|
-| Field Types | `src/dribble/fields.py` | PostgreSQL column type definitions |
-| Table Base | `src/dribble/table.py` | Pydantic-based table metaclass |
-| Query Builder | `src/dribble/query/builder.py` | SELECT/INSERT/UPDATE/DELETE builders |
-| Expressions | `src/dribble/query/expressions.py` | WHERE clause operators |
-| Engine | `src/dribble/engine.py` | asyncpg connection pool wrapper |
-| Schema | `src/dribble/schema.py` | DDL generation & DB introspection |
-| CLI | `src/dribble/cli/main.py` | Typer migration commands |
+| Field Types | `src/derp/fields.py` | PostgreSQL column type definitions |
+| Table Base | `src/derp/table.py` | Pydantic-based table metaclass |
+| Query Builder | `src/derp/query/builder.py` | SELECT/INSERT/UPDATE/DELETE builders |
+| Expressions | `src/derp/query/expressions.py` | WHERE clause operators |
+| Engine | `src/derp/engine.py` | asyncpg connection pool wrapper |
+| Schema | `src/derp/schema.py` | DDL generation & DB introspection |
+| CLI | `src/derp/cli/main.py` | Typer migration commands |
 
 ## Architecture Patterns
 
@@ -68,7 +68,7 @@ BinaryOp(left=FieldInfo(...), operator="=", right=Literal(1))
 
 ### Adding a New Field Type
 
-1. Add dataclass in `src/dribble/fields.py`:
+1. Add dataclass in `src/derp/fields.py`:
 ```python
 @dataclass
 class MyType(FieldType):
@@ -79,12 +79,12 @@ class MyType(FieldType):
         return f"MYTYPE({self.some_param})"
 ```
 
-2. Export in `src/dribble/__init__.py`
+2. Export in `src/derp/__init__.py`
 3. Add tests in `tests/test_fields.py`
 
 ### Adding a New Expression Operator
 
-1. Add expression class in `src/dribble/query/expressions.py`:
+1. Add expression class in `src/derp/query/expressions.py`:
 ```python
 @dataclass
 class MyOp(Expression):
@@ -101,19 +101,19 @@ def my_op(column: FieldInfo | Expression, value: Any) -> MyOp:
     return MyOp(_to_expr(column), value)
 ```
 
-2. Export in `src/dribble/query/__init__.py`
-3. Export in `src/dribble/__init__.py`
+2. Export in `src/derp/query/__init__.py`
+3. Export in `src/derp/__init__.py`
 4. Add tests in `tests/test_query.py`
 
 ### Adding a New Query Method
 
-1. Add method to relevant builder class in `src/dribble/query/builder.py`
+1. Add method to relevant builder class in `src/derp/query/builder.py`
 2. Update `build()` method to include new clause in SQL generation
 3. Add tests in `tests/test_query.py`
 
 ### Adding a New CLI Command
 
-1. Add command in `src/dribble/cli/main.py`:
+1. Add command in `src/derp/cli/main.py`:
 ```python
 @app.command()
 def my_command(
@@ -170,7 +170,7 @@ uv run pytest tests/         # Tests
 The CLI uses strongly-typed configuration:
 
 ```python
-# src/dribble/cli/main.py
+# src/derp/cli/main.py
 @dataclass
 class DatabaseConfig:
     env: str = "DATABASE_URL"  # Env var name, not the URL itself

@@ -1,4 +1,4 @@
-"""Typer CLI commands for Dribble ORM migrations."""
+"""Typer CLI commands for Derp ORM migrations."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from typing import Annotated
 import asyncpg
 import typer
 
-from dribble.schema import (
+from derp.orm.schema import (
     compare_schemas,
     generate_migration_sql,
     introspect_database,
@@ -23,13 +23,13 @@ from dribble.schema import (
 )
 
 app = typer.Typer(
-    name="dribble",
-    help="Dribble ORM - A strongly-typed async Python ORM for PostgreSQL",
+    name="derp",
+    help="Derp ORM - A strongly-typed async Python ORM for PostgreSQL",
     no_args_is_help=True,
 )
 
-CONFIG_FILE = "dribble.toml"
-MIGRATIONS_TABLE = "_dribble_migrations"
+CONFIG_FILE = "derp.toml"
+MIGRATIONS_TABLE = "_derp_migrations"
 DEFAULT_DATABASE_URL_ENV = "DATABASE_URL"
 DEFAULT_MIGRATIONS_DIR = "./migrations"
 
@@ -68,25 +68,29 @@ class MigrationsConfig:
     def get_schema_path(self) -> str:
         """Get schema module path, raising error if not configured."""
         if not self.schema:
-            typer.echo("Error: migrations.schema not configured in dribble.toml", err=True)
+            typer.echo(
+                "Error: migrations.schema not configured in derp.toml", err=True
+            )
             raise typer.Exit(1)
         return self.schema
 
 
 @dataclass
 class Config:
-    """Dribble configuration loaded from dribble.toml."""
+    """Derp configuration loaded from derp.toml."""
 
     database: DatabaseConfig
     migrations: MigrationsConfig
 
     @classmethod
     def load(cls) -> Config:
-        """Load configuration from dribble.toml."""
+        """Load configuration from derp.toml."""
         config_path = Path(CONFIG_FILE)
         if not config_path.exists():
-            typer.echo(f"Error: {CONFIG_FILE} not found in current directory.", err=True)
-            typer.echo("Create a dribble.toml with:", err=True)
+            typer.echo(
+                f"Error: {CONFIG_FILE} not found in current directory.", err=True
+            )
+            typer.echo("Create a derp.toml with:", err=True)
             typer.echo(
                 """
 [database]
@@ -135,7 +139,9 @@ async def ensure_migrations_table(pool: asyncpg.Pool) -> None:
 async def get_applied_migrations(pool: asyncpg.Pool) -> dict[str, str]:
     """Get dict of applied migration names to their hashes."""
     async with pool.acquire() as conn:
-        rows = await conn.fetch(f"SELECT name, hash FROM {MIGRATIONS_TABLE} ORDER BY id")
+        rows = await conn.fetch(
+            f"SELECT name, hash FROM {MIGRATIONS_TABLE} ORDER BY id"
+        )
         return {row["name"]: row["hash"] for row in rows}
 
 
@@ -189,7 +195,9 @@ def get_next_migration_number(migrations_dir: Path) -> int:
 
 @app.command()
 def generate(
-    name: Annotated[str, typer.Option("--name", "-n", help="Migration name")] = "migration",
+    name: Annotated[
+        str, typer.Option("--name", "-n", help="Migration name")
+    ] = "migration",
 ) -> None:
     """Generate a new migration from schema diff."""
     config = Config.load()
@@ -236,7 +244,9 @@ def generate(
 
     up_path = migrations_dir / f"{filename}.sql"
     up_path.write_text(
-        f"-- Migration: {name}\n-- Generated at: {datetime.now(UTC).isoformat()}\n\n{up_sql}\n"
+        f"-- Migration: {name}\n"
+        f"-- Generated at: {datetime.now(UTC).isoformat()}\n"
+        f"\n{up_sql}\n"
     )
 
     if down_sql.strip():
@@ -247,7 +257,7 @@ def generate(
     else:
         typer.echo(f"Created: {up_path}")
 
-    typer.echo("\nReview the migration and run 'dribble migrate' to apply.")
+    typer.echo("\nReview the migration and run 'derp migrate' to apply.")
 
 
 @app.command()
@@ -399,13 +409,17 @@ def rollback(
 
             # Get migrations in reverse order
             applied_list = list(applied.keys())
-            to_rollback = applied_list[-steps:] if steps <= len(applied_list) else applied_list
+            to_rollback = (
+                applied_list[-steps:] if steps <= len(applied_list) else applied_list
+            )
             to_rollback.reverse()
 
             for name in to_rollback:
                 down_path = migrations_dir / f"{name}.down.sql"
                 if not down_path.exists():
-                    typer.echo(f"Warning: No rollback file for {name}, skipping", err=True)
+                    typer.echo(
+                        f"Warning: No rollback file for {name}, skipping", err=True
+                    )
                     continue
 
                 typer.echo(f"Rolling back: {name}")
@@ -429,7 +443,7 @@ def rollback(
 
 @app.command()
 def init() -> None:
-    """Initialize a new dribble.toml configuration file."""
+    """Initialize a new derp.toml configuration file."""
     config_path = Path(CONFIG_FILE)
     if config_path.exists():
         typer.echo(f"{CONFIG_FILE} already exists.")
@@ -447,10 +461,12 @@ schema = "src/schema.py"
     config_path.write_text(default_config)
     typer.echo(f"Created {CONFIG_FILE}")
     typer.echo("\nSet your database URL:")
-    typer.echo(f"  export {DEFAULT_DATABASE_URL_ENV}=postgresql://user:pass@localhost:5432/dbname")
+    typer.echo(
+        f"  export {DEFAULT_DATABASE_URL_ENV}=postgresql://user:pass@localhost:5432/dbname"
+    )
     typer.echo("\nThen run:")
-    typer.echo("  dribble generate --name initial")
-    typer.echo("  dribble migrate")
+    typer.echo("  derp generate --name initial")
+    typer.echo("  derp migrate")
 
 
 if __name__ == "__main__":

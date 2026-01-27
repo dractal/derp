@@ -1,9 +1,9 @@
-"""Dribble ORM - A strongly-typed async Python ORM for PostgreSQL.
+"""Derp ORM - A strongly-typed async Python ORM for PostgreSQL.
 
 Example usage:
 
-    from dribble import Dribble, Table, Field, eq
-    from dribble.fields import Serial, Varchar, Timestamp
+    from derp import Derp, Table, Field, eq
+    from derp.fields import Serial, Varchar, Timestamp
 
     # Define tables
     class User(Table, table_name="users"):
@@ -13,8 +13,8 @@ Example usage:
         created_at: datetime = Field(Timestamp(), default="now()")
 
     # Query using .c accessor for columns
-    async with Dribble("postgresql://...") as db:
-        users = await db.select(User).where(eq(User.c.name, "Alice")).execute()
+    async with Derp("postgresql://...") as db:
+        users = await db.select(User).where(User.c.name == "Alice").execute()
         new_user = await (
             db.insert(User)
             .values(name="Bob", email="bob@example.com")
@@ -23,8 +23,8 @@ Example usage:
         )
 """
 
-from dribble.engine import Dribble
-from dribble.fields import (
+from derp.orm.engine import DatabaseClient
+from derp.orm.fields import (
     JSON,
     JSONB,
     UUID,
@@ -50,35 +50,14 @@ from dribble.fields import (
     Timestamp,
     Varchar,
 )
-from dribble.query import (
-    ComparisonOperator,
-    JoinType,
-    LogicalOperator,
-    SortOrder,
-    and_,
-    between,
-    eq,
-    gt,
-    gte,
-    ilike,
-    in_,
-    is_not_null,
-    is_null,
-    like,
-    lt,
-    lte,
-    ne,
-    not_,
-    not_in,
-    or_,
-)
-from dribble.table import Table
+from derp.orm.query import ComparisonOperator, JoinType, LogicalOperator, SortOrder
+from derp.orm.table import Table
 
 __version__ = "0.1.0"
 
 __all__ = [
     # Main engine
-    "Dribble",
+    "DatabaseClient",
     # Table definition
     "Table",
     "Field",
@@ -111,21 +90,4 @@ __all__ = [
     "SortOrder",
     "LogicalOperator",
     "ComparisonOperator",
-    # Query operators
-    "eq",
-    "ne",
-    "gt",
-    "gte",
-    "lt",
-    "lte",
-    "and_",
-    "or_",
-    "not_",
-    "like",
-    "ilike",
-    "in_",
-    "not_in",
-    "is_null",
-    "is_not_null",
-    "between",
 ]

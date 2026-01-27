@@ -1,4 +1,4 @@
-# Dribble ORM
+# Derp ORM
 
 A strongly-typed async Python ORM for PostgreSQL, inspired by [Drizzle ORM](https://orm.drizzle.team/) and [SQLModel](https://sqlmodel.tiangolo.com/).
 
@@ -13,7 +13,7 @@ A strongly-typed async Python ORM for PostgreSQL, inspired by [Drizzle ORM](http
 ## Installation
 
 ```bash
-pip install dribble
+pip install derp
 ```
 
 ## Quick Start
@@ -22,8 +22,8 @@ pip install dribble
 
 ```python
 from datetime import datetime
-from dribble import Table, Field, ForeignKey
-from dribble.fields import Serial, Varchar, Integer, Timestamp
+from derp import Table, Field, ForeignKey
+from derp.fields import Serial, Varchar, Integer, Timestamp
 
 class User(Table, table_name="users"):
     id: int = Field(Serial(), primary_key=True)
@@ -40,9 +40,9 @@ class Post(Table, table_name="posts"):
 ### Query Data
 
 ```python
-from dribble import Dribble, eq, gt, and_
+from derp import Derp, eq, gt, and_
 
-async with Dribble("postgresql://user:pass@localhost:5432/mydb") as db:
+async with Derp("postgresql://user:pass@localhost:5432/mydb") as db:
     # SELECT
     users = await db.select(User).where(eq(User.c.name, "Alice")).execute()
 
@@ -119,8 +119,8 @@ async with db.transaction():
 ## Expression Operators
 
 ```python
-from dribble import eq, ne, gt, gte, lt, lte, and_, or_, not_
-from dribble import like, ilike, in_, not_in, is_null, is_not_null, between
+from derp import eq, ne, gt, gte, lt, lte, and_, or_, not_
+from derp import like, ilike, in_, not_in, is_null, is_not_null, between
 
 # Comparison
 eq(User.c.id, 1)           # id = 1
@@ -155,7 +155,7 @@ between(User.c.age, 18, 65)
 
 ### Configuration
 
-Create a `dribble.toml` in your project root:
+Create a `derp.toml` in your project root:
 
 ```toml
 [database]
@@ -176,25 +176,25 @@ export DATABASE_URL=postgresql://user:pass@localhost:5432/mydb
 
 ```bash
 # Initialize configuration
-dribble init
+derp init
 
 # Generate migration from schema changes
-dribble generate --name add_users_table
+derp generate --name add_users_table
 
 # Apply pending migrations
-dribble migrate
+derp migrate
 
 # Push schema directly (dev mode, no migration files)
-dribble push
+derp push
 
 # Show migration status
-dribble status
+derp status
 
 # Rollback last migration
-dribble rollback
+derp rollback
 
 # Rollback multiple migrations
-dribble rollback --steps 3
+derp rollback --steps 3
 ```
 
 ### Migration Files
@@ -221,7 +221,7 @@ DROP TABLE users;
 ## Project Structure
 
 ```
-src/dribble/
+src/derp/
 ├── __init__.py          # Public API exports
 ├── fields.py            # PostgreSQL type definitions
 ├── table.py             # Table base class (Pydantic-based)

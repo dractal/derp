@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
-from dribble.fields import FieldInfo
-from dribble.query.expressions import Expression
-from dribble.table import Table
+from derp.orm.fields import FieldInfo
+from derp.orm.query.expressions import Expression
+from derp.orm.table import Table
 
 if TYPE_CHECKING:
     import asyncpg
@@ -105,13 +105,11 @@ class SelectQuery[T: Table]:
         self._joins.append(JoinClause(JoinType.CROSS, table, condition))
         return self
 
-    def order_by(
-        self, column: FieldInfo | str, direction: SortOrder | str = SortOrder.ASC
-    ) -> SelectQuery[T]:
+    def order_by(self, column: FieldInfo | str, *, asc: bool = True) -> SelectQuery[T]:
         """Add ORDER BY clause."""
-        if isinstance(direction, str):
-            direction = SortOrder(direction.upper())
-        self._order_by.append(OrderByClause(column, direction))
+        self._order_by.append(
+            OrderByClause(column, SortOrder.ASC if asc else SortOrder.DESC)
+        )
         return self
 
     def limit(self, n: int) -> SelectQuery[T]:
@@ -188,7 +186,8 @@ class SelectQuery[T: Table]:
                     and ob.column._field_name
                 ):
                     order_parts.append(
-                        f"{ob.column._table_name}.{ob.column._field_name} {ob.direction}"
+                        f"{ob.column._table_name}.{ob.column._field_name} "
+                        f"{ob.direction}"
                     )
                 elif isinstance(ob.column, FieldInfo) and ob.column._field_name:
                     order_parts.append(f"{ob.column._field_name} {ob.direction}")
@@ -259,7 +258,10 @@ class InsertQuery[T: Table]:
 
         placeholders = [f"${i + 1}" for i in range(len(params))]
 
-        sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
+        sql = (
+            f"INSERT INTO {table_name} ({', '.join(columns)}) "
+            f"VALUES ({', '.join(placeholders)})"
+        )
 
         if self._returning:
             return_parts = []

@@ -2,8 +2,16 @@
 
 from datetime import datetime
 
-from dribble import Field, ForeignKey, ForeignKeyAction, Table
-from dribble.fields import Integer, Serial, Timestamp, Varchar
+from derp.orm import Table
+from derp.orm.fields import (
+    Field,
+    ForeignKey,
+    ForeignKeyAction,
+    Integer,
+    Serial,
+    Timestamp,
+    Varchar,
+)
 
 
 class User(Table, table_name="users"):
@@ -18,7 +26,8 @@ class Post(Table, table_name="posts"):
     title: str = Field(Varchar(255))
     content: str = Field(Varchar(10000), nullable=True)
     author_id: int = Field(
-        Integer(), foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE)
+        Integer(),
+        foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
     )
 
 

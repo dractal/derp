@@ -1,13 +1,14 @@
-"""WHERE clause expressions and operators for Dribble ORM."""
+"""WHERE clause expressions and operators for Derp ORM."""
 
 from __future__ import annotations
 
+import abc
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from dribble.fields import FieldInfo
+from derp.orm.fields import FieldInfo
 
 
 class LogicalOperator(StrEnum):
@@ -29,9 +30,10 @@ class ComparisonOperator(StrEnum):
 
 
 @dataclass
-class Expression:
+class Expression(abc.ABC):
     """Base class for SQL expressions."""
 
+    @abc.abstractmethod
     def to_sql(self, params: list[Any]) -> str:
         """Generate SQL string with parameterized values.
 
@@ -41,7 +43,91 @@ class Expression:
         Returns:
             SQL string with $N placeholders
         """
-        raise NotImplementedError
+
+    def __and__(self, other: Expression) -> Expression:
+        return LogicalOp(LogicalOperator.AND, (self, other))
+
+    def __or__(self, other: Expression) -> Expression:
+        return LogicalOp(LogicalOperator.OR, (self, other))
+
+    def __invert__(self) -> Expression:
+        return UnaryOp("NOT", self)
+
+    def __eq__(self, other: Any) -> Any:
+        """Equal comparison: field == value."""
+        return BinaryOp(
+            self,
+            ComparisonOperator.EQ,
+            to_expr(other),
+        )
+
+    def __ne__(self, other: Any) -> Any:
+        """Not equal comparison: field != value."""
+        return BinaryOp(
+            self,
+            ComparisonOperator.NE,
+            to_expr(other),
+        )
+
+    def __lt__(self, other: Any) -> Any:
+        """Less than comparison: field < value."""
+        return BinaryOp(
+            self,
+            ComparisonOperator.LT,
+            to_expr(other),
+        )
+
+    def __le__(self, other: Any) -> Any:
+        """Less than or equal comparison: field <= value."""
+        return BinaryOp(
+            self,
+            ComparisonOperator.LTE,
+            to_expr(other),
+        )
+
+    def __gt__(self, other: Any) -> Any:
+        """Greater than comparison: field > value."""
+        return BinaryOp(
+            self,
+            ComparisonOperator.GT,
+            to_expr(other),
+        )
+
+    def __ge__(self, other: Any) -> Any:
+        """Greater than or equal comparison: field >= value."""
+        return BinaryOp(
+            self,
+            ComparisonOperator.GTE,
+            to_expr(other),
+        )
+
+    def in_(self, values: Sequence[Any]) -> Any:
+        """IN clause."""
+        return InList(self, tuple(values), negated=False)
+
+    def not_in(self, values: Sequence[Any]) -> Any:
+        """NOT IN clause."""
+        return InList(self, tuple(values), negated=True)
+
+    def like(self, pattern: str) -> Any:
+        """LIKE pattern matching."""
+        return Like(self, pattern, case_insensitive=False)
+
+    def ilike(self, pattern: str) -> Any:
+        """ILIKE pattern matching."""
+        return Like(self, pattern, case_insensitive=True)
+
+    def is_null(self) -> Any:
+        """IS NULL check."""
+        return NullCheck(self, is_null=True)
+
+    def is_not_null(self) -> Any:
+        """IS NOT NULL check."""
+        return NullCheck(self, is_null=False)
+
+    def between(self, low: Any, high: Any) -> Any:
+        """BETWEEN range check."""
+        return Between(self, low, high)
 
 
 @dataclass
@@ -171,7 +257,6 @@ class Like(Expression):
 
 def _expr_to_sql(expr: Expression | FieldInfo | Any, params: list[Any]) -> str:
     """Convert an expression, FieldInfo, or literal to SQL."""
-    from dribble.fields import FieldInfo
 
     if isinstance(expr, Expression):
         return expr.to_sql(params)
@@ -188,108 +273,8 @@ def _expr_to_sql(expr: Expression | FieldInfo | Any, params: list[Any]) -> str:
         return f"${len(params)}"
 
 
-def _to_expr(value: Expression | FieldInfo | Any) -> Expression | FieldInfo:
+def to_expr(value: Expression | FieldInfo | Any) -> Expression | FieldInfo:
     """Ensure value is an expression or FieldInfo."""
-    from dribble.fields import FieldInfo
-
     if isinstance(value, Expression | FieldInfo):
         return value
     return Literal(value)
-
-
-# Comparison operators
-
-
-def eq(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
-    """Equal (=) comparison."""
-    return BinaryOp(_to_expr(left), ComparisonOperator.EQ, _to_expr(right))
-
-
-def ne(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
-    """Not equal (<>) comparison."""
-    return BinaryOp(_to_expr(left), ComparisonOperator.NE, _to_expr(right))
-
-
-def gt(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
-    """Greater than (>) comparison."""
-    return BinaryOp(_to_expr(left), ComparisonOperator.GT, _to_expr(right))
-
-
-def gte(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
-    """Greater than or equal (>=) comparison."""
-    return BinaryOp(_to_expr(left), ComparisonOperator.GTE, _to_expr(right))
-
-
-def lt(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
-    """Less than (<) comparison."""
-    return BinaryOp(_to_expr(left), ComparisonOperator.LT, _to_expr(right))
-
-
-def lte(left: FieldInfo | Expression | Any, right: FieldInfo | Expression | Any) -> BinaryOp:
-    """Less than or equal (<=) comparison."""
-    return BinaryOp(_to_expr(left), ComparisonOperator.LTE, _to_expr(right))
-
-
-# Logical operators
-
-
-def and_(*conditions: Expression) -> LogicalOp:
-    """Logical AND of conditions."""
-    return LogicalOp(LogicalOperator.AND, conditions)
-
-
-def or_(*conditions: Expression) -> LogicalOp:
-    """Logical OR of conditions."""
-    return LogicalOp(LogicalOperator.OR, conditions)
-
-
-def not_(condition: Expression) -> UnaryOp:
-    """Logical NOT."""
-    return UnaryOp("NOT", condition)
-
-
-# Pattern matching
-
-
-def like(column: FieldInfo | Expression, pattern: str) -> Like:
-    """Case-sensitive LIKE pattern matching."""
-    return Like(_to_expr(column), pattern, case_insensitive=False)
-
-
-def ilike(column: FieldInfo | Expression, pattern: str) -> Like:
-    """Case-insensitive ILIKE pattern matching."""
-    return Like(_to_expr(column), pattern, case_insensitive=True)
-
-
-# Membership
-
-
-def in_(column: FieldInfo | Expression, values: list[Any] | tuple[Any, ...]) -> InList:
-    """IN membership check."""
-    return InList(_to_expr(column), tuple(values), negated=False)
-
-
-def not_in(column: FieldInfo | Expression, values: list[Any] | tuple[Any, ...]) -> InList:
-    """NOT IN membership check."""
-    return InList(_to_expr(column), tuple(values), negated=True)
-
-
-# Null checks
-
-
-def is_null(column: FieldInfo | Expression) -> NullCheck:
-    """IS NULL check."""
-    return NullCheck(_to_expr(column), is_null=True)
-
-
-def is_not_null(column: FieldInfo | Expression) -> NullCheck:
-    """IS NOT NULL check."""
-    return NullCheck(_to_expr(column), is_null=False)
-
-
-# Range
-
-
-def between(column: FieldInfo | Expression, low: Any, high: Any) -> Between:
-    """BETWEEN range check."""
-    return Between(_to_expr(column), low, high)

@@ -1,4 +1,4 @@
-"""Async query engine (asyncpg wrapper) for Dribble ORM."""
+"""Async query engine (asyncpg wrapper) for Derp ORM."""
 
 from __future__ import annotations
 
@@ -8,9 +8,9 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import asyncpg
 
-from dribble.fields import FieldInfo
-from dribble.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
-from dribble.table import Table
+from derp.orm.fields import FieldInfo
+from derp.orm.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
+from derp.orm.table import Table
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -44,11 +44,11 @@ class Transaction:
             await self._transaction.commit()
 
 
-class Dribble:
-    """Main async database engine for Dribble ORM.
+class DatabaseClient:
+    """Main async database engine for Derp ORM.
 
     Example:
-        db = Dribble("postgresql://user:pass@localhost:5432/mydb")
+        db = Derp("postgresql://user:pass@localhost:5432/mydb")
 
         async with db:
             users = await db.select(User).where(eq(User.name, "Alice")).execute()
@@ -66,7 +66,7 @@ class Dribble:
         min_size: int = 2,
         max_size: int = 10,
     ):
-        """Initialize Dribble engine.
+        """Initialize Derp engine.
 
         Args:
             dsn: PostgreSQL connection string
@@ -94,7 +94,7 @@ class Dribble:
             await self._pool.close()
             self._pool = None
 
-    async def __aenter__(self) -> Dribble:
+    async def __aenter__(self) -> DatabaseClient:
         await self.connect()
         return self
 
@@ -126,13 +126,15 @@ class Dribble:
 
         Examples:
             # Select all columns from User
-            db.select(User).where(eq(User.id, 1))
+            db.select(User).where(User.c.id == 1)
 
             # Select specific columns
             db.select(User.id, User.name)
 
             # Join queries
-            db.select(Post, User.name).from_(Post).inner_join(User, eq(Post.author_id, User.id))
+            db.select(Post, User.name)
+              .from_(Post)
+              .inner_join(User, Post.c.author_id == User.c.id)
         """
         return SelectQuery(self._pool, columns)
 
@@ -183,7 +185,9 @@ class Dribble:
         """
         return DeleteQuery(self._pool, table)
 
-    async def execute(self, query: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
+    async def execute(
+        self, query: str, params: list[Any] | None = None
+    ) -> list[dict[str, Any]]:
         """Execute a raw SQL query.
 
         Args:

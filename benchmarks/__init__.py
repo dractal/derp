@@ -1,1 +1,1 @@
-"""Benchmarks for Dribble ORM."""
+"""Benchmarks for Derp ORM."""
