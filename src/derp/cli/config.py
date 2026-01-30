@@ -60,7 +60,7 @@ class MigrationsConfig:
         return Path(self.out)
 
     def get_schema_path(self) -> str:
-        """Get schema module path, raising error if not configured."""
+        """Get schema modules path, raising error if not configured."""
         if not self.schema:
             typer.echo(
                 "Error: migrations.schema not configured in derp.toml\n"

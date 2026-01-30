@@ -37,7 +37,7 @@ from derp.migrations.statements.types import (
     RenameColumnStatement,
     RenameTableStatement,
 )
-from derp.orm.schema import load_tables_from_module
+from derp.orm.loader import load_tables
 
 
 def check() -> None:
@@ -57,7 +57,7 @@ def check() -> None:
 
     # Load tables from schema module
     try:
-        tables = load_tables_from_module(schema_path)
+        tables = load_tables(schema_path)
     except FileNotFoundError:
         typer.echo(f"Error: Schema file not found: {schema_path}", err=True)
         raise typer.Exit(1)
