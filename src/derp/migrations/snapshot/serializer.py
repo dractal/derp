@@ -27,6 +27,7 @@ from derp.orm.fields import (
     BigSerial,
     Enum,
     FieldInfo,
+    FieldType,
     ForeignKey,
     Serial,
 )
@@ -73,7 +74,7 @@ def _serialize_default(default: Any) -> str | None:
     return str(default)
 
 
-def _extract_array_dimensions(field_type: Any) -> tuple[str, int]:
+def _extract_array_dimensions(field_type: FieldType[Any]) -> tuple[str, int]:
     """Extract base type and array dimensions from a field type."""
     dimensions = 0
     current = field_type
