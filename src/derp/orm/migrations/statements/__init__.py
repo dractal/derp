@@ -1,6 +1,6 @@
 """JSON statement intermediate representation for migrations."""
 
-from derp.migrations.statements.types import (
+from derp.orm.migrations.statements.types import (
     AddColumnStatement,
     AlterColumnDefaultStatement,
     AlterColumnNullableStatement,

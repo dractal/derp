@@ -10,7 +10,7 @@ import asyncpg
 import typer
 
 from derp.cli.config import MIGRATIONS_TABLE, Config
-from derp.migrations.journal import (
+from derp.orm.migrations.journal import (
     get_migration_folders,
     get_migration_sql,
     load_journal,

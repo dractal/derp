@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from derp.migrations.snapshot.differ import SnapshotDiffer
-from derp.migrations.snapshot.models import (
+from derp.orm.migrations.snapshot.differ import SnapshotDiffer
+from derp.orm.migrations.snapshot.models import (
     ColumnSnapshot,
     EnumSnapshot,
     ForeignKeyAction,
@@ -18,7 +18,7 @@ from derp.migrations.snapshot.models import (
     TableSnapshot,
     UniqueConstraintSnapshot,
 )
-from derp.migrations.statements.types import (
+from derp.orm.migrations.statements.types import (
     AddColumnStatement,
     AlterColumnDefaultStatement,
     AlterColumnNullableStatement,

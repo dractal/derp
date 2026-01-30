@@ -9,9 +9,10 @@ import asyncpg
 import typer
 
 from derp.cli.config import Config
+from derp.orm.loader import load_tables
 
 # Import all convertors to register them
-from derp.migrations.convertors import (  # noqa: F401
+from derp.orm.migrations.convertors import (  # noqa: F401
     column,
     constraint,
     enum,
@@ -22,16 +23,15 @@ from derp.migrations.convertors import (  # noqa: F401
     sequence,
     table,
 )
-from derp.migrations.convertors.base import ConvertorRegistry
-from derp.migrations.introspect.postgres import PostgresIntrospector
-from derp.migrations.safety import (
+from derp.orm.migrations.convertors.base import ConvertorRegistry
+from derp.orm.migrations.introspect.postgres import PostgresIntrospector
+from derp.orm.migrations.safety import (
     detect_destructive_operations,
     format_destructive_warnings,
     has_high_risk_operations,
 )
-from derp.migrations.snapshot.differ import SnapshotDiffer
-from derp.migrations.snapshot.serializer import serialize_schema
-from derp.orm.loader import load_tables
+from derp.orm.migrations.snapshot.differ import SnapshotDiffer
+from derp.orm.migrations.snapshot.serializer import serialize_schema
 
 
 def push(
@@ -100,7 +100,9 @@ def push(
                 typer.echo(format_destructive_warnings(destructive), err=True)
 
                 if has_high_risk_operations(destructive) and not force:
-                    if not typer.confirm("Continue with potentially destructive changes?"):
+                    if not typer.confirm(
+                        "Continue with potentially destructive changes?"
+                    ):
                         raise typer.Abort()
 
             # Generate SQL

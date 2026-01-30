@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 # Import convertors to register them
-from derp.migrations import convertors  # noqa: F401
-from derp.migrations.convertors.base import ConvertorRegistry
-from derp.migrations.statements.types import (
+from derp.orm.migrations import convertors  # noqa: F401
+from derp.orm.migrations.convertors.base import ConvertorRegistry
+from derp.orm.migrations.statements.types import (
     AddColumnStatement,
     AlterColumnDefaultStatement,
     AlterColumnNullableStatement,

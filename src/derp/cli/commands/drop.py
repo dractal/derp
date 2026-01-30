@@ -8,7 +8,7 @@ from typing import Annotated
 import typer
 
 from derp.cli.config import Config
-from derp.migrations.journal import (
+from derp.orm.migrations.journal import (
     get_migration_folders,
     load_journal,
     save_journal,

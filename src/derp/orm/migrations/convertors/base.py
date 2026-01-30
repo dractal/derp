@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import abc
 
-from derp.migrations.statements.types import JsonStatement, Statement
+from derp.orm.migrations.statements.types import JsonStatement, Statement
 
 
 class StatementConvertor[T](abc.ABC):

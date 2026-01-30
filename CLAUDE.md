@@ -18,7 +18,7 @@ uv run pytest tests/test_query.py -v
 uv run pytest tests/test_query.py::test_select_where -v
 
 # Lint and format
-uv run ruff check src/
+uv run ruff check --select I --fix src/
 uv run ruff format src/
 
 # Type check

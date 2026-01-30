@@ -1,7 +1,7 @@
 """Drizzle-style migration infrastructure for Derp ORM."""
 
-from derp.migrations.journal import JournalEntry, MigrationJournal
-from derp.migrations.snapshot.models import (
+from derp.orm.migrations.journal import JournalEntry, MigrationJournal
+from derp.orm.migrations.snapshot.models import (
     CheckConstraintSnapshot,
     ColumnSnapshot,
     EnumSnapshot,

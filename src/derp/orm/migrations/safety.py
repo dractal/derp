@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from derp.migrations.statements.types import (
+from derp.orm.migrations.statements.types import (
     AlterColumnNullableStatement,
     AlterColumnTypeStatement,
     DropColumnStatement,

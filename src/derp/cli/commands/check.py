@@ -5,11 +5,12 @@ from __future__ import annotations
 import typer
 
 from derp.cli.config import Config
-from derp.migrations.journal import load_journal, load_latest_snapshot
-from derp.migrations.snapshot.differ import SnapshotDiffer
-from derp.migrations.snapshot.models import SchemaSnapshot
-from derp.migrations.snapshot.serializer import serialize_schema
-from derp.migrations.statements.types import (
+from derp.orm.loader import load_tables
+from derp.orm.migrations.journal import load_journal, load_latest_snapshot
+from derp.orm.migrations.snapshot.differ import SnapshotDiffer
+from derp.orm.migrations.snapshot.models import SchemaSnapshot
+from derp.orm.migrations.snapshot.serializer import serialize_schema
+from derp.orm.migrations.statements.types import (
     AddColumnStatement,
     AlterColumnDefaultStatement,
     AlterColumnNullableStatement,
@@ -37,7 +38,6 @@ from derp.migrations.statements.types import (
     RenameColumnStatement,
     RenameTableStatement,
 )
-from derp.orm.loader import load_tables
 
 
 def check() -> None:

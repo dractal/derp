@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncpg
 
-from derp.migrations.snapshot.models import (
+from derp.orm.migrations.snapshot.models import (
     CheckConstraintSnapshot,
     ColumnSnapshot,
     EnumSnapshot,

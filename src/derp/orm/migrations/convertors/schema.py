@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from derp.migrations.convertors.base import (
+from derp.orm.migrations.convertors.base import (
     ConvertorRegistry,
     StatementConvertor,
     quote_identifier,
 )
-from derp.migrations.statements.types import (
+from derp.orm.migrations.statements.types import (
     CreateSchemaStatement,
     DropSchemaStatement,
 )

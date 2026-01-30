@@ -11,8 +11,8 @@ import asyncpg
 import typer
 
 from derp.cli.config import Config
-from derp.migrations.introspect.postgres import PostgresIntrospector
-from derp.migrations.journal import (
+from derp.orm.migrations.introspect.postgres import PostgresIntrospector
+from derp.orm.migrations.journal import (
     get_next_version,
     load_journal,
     save_journal,

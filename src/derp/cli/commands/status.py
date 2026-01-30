@@ -9,7 +9,7 @@ import asyncpg
 import typer
 
 from derp.cli.config import MIGRATIONS_TABLE, Config
-from derp.migrations.journal import load_journal
+from derp.orm.migrations.journal import load_journal
 
 
 def status() -> None:

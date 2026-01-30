@@ -8,9 +8,10 @@ from typing import Annotated
 import typer
 
 from derp.cli.config import Config
+from derp.orm.loader import load_tables
 
 # Import all convertors to register them
-from derp.migrations.convertors import (  # noqa: F401
+from derp.orm.migrations.convertors import (  # noqa: F401
     column,
     constraint,
     enum,
@@ -21,8 +22,8 @@ from derp.migrations.convertors import (  # noqa: F401
     sequence,
     table,
 )
-from derp.migrations.convertors.base import ConvertorRegistry
-from derp.migrations.journal import (
+from derp.orm.migrations.convertors.base import ConvertorRegistry
+from derp.orm.migrations.journal import (
     get_next_version,
     load_journal,
     load_latest_snapshot,
@@ -30,15 +31,14 @@ from derp.migrations.journal import (
     save_migration_sql,
     save_snapshot,
 )
-from derp.migrations.safety import (
+from derp.orm.migrations.safety import (
     detect_destructive_operations,
     format_destructive_warnings,
     has_high_risk_operations,
 )
-from derp.migrations.snapshot.differ import SnapshotDiffer
-from derp.migrations.snapshot.models import SchemaSnapshot
-from derp.migrations.snapshot.serializer import serialize_schema
-from derp.orm.loader import load_tables
+from derp.orm.migrations.snapshot.differ import SnapshotDiffer
+from derp.orm.migrations.snapshot.models import SchemaSnapshot
+from derp.orm.migrations.snapshot.serializer import serialize_schema
 
 
 def generate(

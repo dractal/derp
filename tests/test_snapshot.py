@@ -4,21 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from derp.migrations.snapshot.models import (
-    ColumnSnapshot,
-    ForeignKeySnapshot,
-    PrimaryKeySnapshot,
-    SchemaSnapshot,
-    TableSnapshot,
-)
-from derp.migrations.snapshot.models import (
-    ForeignKeyAction as SnapshotFKAction,
-)
-from derp.migrations.snapshot.serializer import (
-    serialize_column,
-    serialize_schema,
-    serialize_table,
-)
 from derp.orm import Table
 from derp.orm.fields import (
     Boolean,
@@ -30,6 +15,21 @@ from derp.orm.fields import (
     Text,
     Timestamp,
     Varchar,
+)
+from derp.orm.migrations.snapshot.models import (
+    ColumnSnapshot,
+    ForeignKeySnapshot,
+    PrimaryKeySnapshot,
+    SchemaSnapshot,
+    TableSnapshot,
+)
+from derp.orm.migrations.snapshot.models import (
+    ForeignKeyAction as SnapshotFKAction,
+)
+from derp.orm.migrations.snapshot.serializer import (
+    serialize_column,
+    serialize_schema,
+    serialize_table,
 )
 
 

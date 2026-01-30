@@ -9,13 +9,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from derp.migrations.snapshot.models import (
+from derp.orm.migrations.snapshot.models import (
     ColumnSnapshot,
     EnumSnapshot,
     SchemaSnapshot,
     TableSnapshot,
 )
-from derp.migrations.statements.types import (
+from derp.orm.migrations.statements.types import (
     AddColumnStatement,
     AlterColumnDefaultStatement,
     AlterColumnNullableStatement,

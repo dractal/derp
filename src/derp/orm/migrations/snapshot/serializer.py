@@ -10,18 +10,6 @@ import enum as enum_lib
 import re
 from typing import Any
 
-from derp.migrations.snapshot.models import (
-    ColumnSnapshot,
-    EnumSnapshot,
-    ForeignKeyAction,
-    ForeignKeySnapshot,
-    IndexMethod,
-    IndexSnapshot,
-    PrimaryKeySnapshot,
-    SchemaSnapshot,
-    TableSnapshot,
-    UniqueConstraintSnapshot,
-)
 from derp.orm.fields import (
     Array,
     BigSerial,
@@ -33,6 +21,18 @@ from derp.orm.fields import (
 )
 from derp.orm.fields import (
     ForeignKeyAction as OrmForeignKeyAction,
+)
+from derp.orm.migrations.snapshot.models import (
+    ColumnSnapshot,
+    EnumSnapshot,
+    ForeignKeyAction,
+    ForeignKeySnapshot,
+    IndexMethod,
+    IndexSnapshot,
+    PrimaryKeySnapshot,
+    SchemaSnapshot,
+    TableSnapshot,
+    UniqueConstraintSnapshot,
 )
 from derp.orm.table import Table
 
