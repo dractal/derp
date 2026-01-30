@@ -4,8 +4,21 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import pytest
-
+from derp.migrations.snapshot.models import (
+    ColumnSnapshot,
+    ForeignKeySnapshot,
+    PrimaryKeySnapshot,
+    SchemaSnapshot,
+    TableSnapshot,
+)
+from derp.migrations.snapshot.models import (
+    ForeignKeyAction as SnapshotFKAction,
+)
+from derp.migrations.snapshot.serializer import (
+    serialize_column,
+    serialize_schema,
+    serialize_table,
+)
 from derp.orm import Table
 from derp.orm.fields import (
     Boolean,
@@ -17,21 +30,6 @@ from derp.orm.fields import (
     Text,
     Timestamp,
     Varchar,
-)
-from derp.migrations.snapshot.models import (
-    ColumnSnapshot,
-    ForeignKeyAction as SnapshotFKAction,
-    ForeignKeySnapshot,
-    IndexSnapshot,
-    PrimaryKeySnapshot,
-    SchemaSnapshot,
-    TableSnapshot,
-    UniqueConstraintSnapshot,
-)
-from derp.migrations.snapshot.serializer import (
-    serialize_column,
-    serialize_schema,
-    serialize_table,
 )
 
 
@@ -117,6 +115,7 @@ class TestTableSnapshot:
         assert table.name == "users"
         assert "id" in table.columns
         assert "name" in table.columns
+        assert table.primary_key is not None
         assert table.primary_key.columns == ["id"]
 
     def test_table_snapshot_with_foreign_key(self):
@@ -139,7 +138,10 @@ class TestTableSnapshot:
         )
 
         assert "posts_author_id_fkey" in table.foreign_keys
-        assert table.foreign_keys["posts_author_id_fkey"].on_delete == SnapshotFKAction.CASCADE
+        assert (
+            table.foreign_keys["posts_author_id_fkey"].on_delete
+            == SnapshotFKAction.CASCADE
+        )
 
 
 class TestSchemaSnapshot:
