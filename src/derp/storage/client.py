@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from types import TracebackType
+from typing import Any
 
 import aiobotocore.session
+from aiobotocore.client import AioBaseClient
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-if TYPE_CHECKING:
-    from types import TracebackType
-
-    from aiobotocore.client import AioBaseClient
+from derp.storage.config import StorageConfig
 
 
 class StorageClient:
@@ -34,38 +33,13 @@ class StorageClient:
         await storage.disconnect()
     """
 
-    def __init__(
-        self,
-        *,
-        endpoint_url: str | None = None,
-        service_name: str = "s3",
-        access_key_id: str | None = None,
-        secret_access_key: str | None = None,
-        session_token: str | None = None,
-        region: str = "auto",
-        use_ssl: bool = True,
-        verify: bool | str = True,
-    ):
+    def __init__(self, config: StorageConfig):
         """Initialize Storage client.
 
         Args:
-            endpoint_url: Custom endpoint URL (for S3-compatible services).
-            service_name: Name of the S3-compatible service.
-            access_key_id: Access key ID.
-            secret_access_key: Secret access key.
-            session_token: Session token (for temporary credentials).
-            region: Region name. Defaults to "auto".
-            use_ssl: Whether to use SSL.
-            verify: SSL certificate verification (True, False, or path to CA bundle).
+            config: Storage configuration.
         """
-        self._endpoint_url = endpoint_url
-        self._service_name = service_name
-        self._access_key_id = access_key_id
-        self._secret_access_key = secret_access_key
-        self._session_token = session_token
-        self._region = region
-        self._use_ssl = use_ssl
-        self._verify = verify
+        self._config = config
         self._session: aiobotocore.session.AioSession | None = None
         self._client: AioBaseClient | None = None
 
@@ -77,18 +51,18 @@ class StorageClient:
         self._session = aiobotocore.session.get_session()
 
         config = Config(
-            region_name=self._region,
+            region_name=self._config.region,
             signature_version="s3v4",
         )
 
         self._client = await self._session.create_client(
-            self._service_name,
-            endpoint_url=self._endpoint_url,
-            access_key_id=self._access_key_id,
-            secret_access_key=self._secret_access_key,
-            session_token=self._session_token,
-            use_ssl=self._use_ssl,
-            verify=self._verify,
+            self._config.service_name,
+            endpoint_url=self._config.endpoint_url,
+            access_key_id=self._config.access_key_id,
+            secret_access_key=self._config.secret_access_key,
+            session_token=self._config.session_token,
+            use_ssl=self._config.use_ssl,
+            verify=self._config.verify,
             config=config,
         ).__aenter__()
 

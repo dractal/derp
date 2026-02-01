@@ -23,7 +23,8 @@ Example usage:
         )
 """
 
-from derp.orm.engine import DatabaseClient
+from derp.orm.config import DatabaseConfig
+from derp.orm.engine import DatabaseEngine
 from derp.orm.fields import (
     JSON,
     JSONB,
@@ -62,7 +63,8 @@ __version__ = "0.1.0"
 
 __all__ = [
     # Main engine
-    "DatabaseClient",
+    "DatabaseConfig",
+    "DatabaseEngine",
     # Table definition
     "Table",
     "Field",

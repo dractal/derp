@@ -80,14 +80,35 @@ class TableMeta(type(BaseModel)):
         columns: dict[str, FieldInfo[Any]] = {}
         table_name = getattr(cls, "__table_name__", cls.__name__.lower())
 
-        # Get the stored field infos
+        # Collect columns from parent classes (in MRO order, excluding Table and object)
+        for base in reversed(cls.__mro__):
+            if base is cls:
+                continue
+            base_columns = getattr(base, "__columns__", None)
+            if base_columns is not None:
+                for field_name, info in base_columns.items():
+                    # Clone FieldInfo with this class's table name
+                    field_info: FieldInfo[Any] = FieldInfo(
+                        field_type=info.field_type,
+                        primary_key=info.primary_key,
+                        unique=info.unique,
+                        nullable=info.nullable,
+                        default=info.default,
+                        foreign_key=info.foreign_key,
+                        index=info.index,
+                        _table_name=table_name,
+                        _field_name=field_name,
+                    )
+                    columns[field_name] = field_info
+
+        # Get the stored field infos for this class (may override parent fields)
         field_infos: dict[str, FieldInfo[Any]] = getattr(
             cls, "__derp_field_infos__", {}
         )
 
         for field_name, info in field_infos.items():
             # Clone FieldInfo with table/field name set
-            field_info: FieldInfo[Any] = FieldInfo(
+            field_info = FieldInfo(
                 field_type=info.field_type,
                 primary_key=info.primary_key,
                 unique=info.unique,
@@ -114,7 +135,7 @@ class Table(BaseModel, metaclass=TableMeta):
             email: str = Field(Varchar(255), unique=True)
 
         # Access columns via .c attribute for query building:
-        db.select(User).where(eq(User.c.id, 1))
+        db.select(User).where(User.c.id == 1)
     """
 
     __table_name__: ClassVar[str]

@@ -4,21 +4,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, overload
+from types import TracebackType
+from typing import Any, overload
 
 import asyncpg
 
 from derp.orm.fields import FieldInfo
-from derp.orm.query.builder import (
-    DeleteQuery,
-    InsertQuery,
-    SelectQuery,
-    UpdateQuery,
-)
+from derp.orm.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
 from derp.orm.table import Table
-
-if TYPE_CHECKING:
-    from types import TracebackType
 
 
 class Transaction:
@@ -47,11 +40,11 @@ class Transaction:
             await self._transaction.commit()
 
 
-class DatabaseClient:
+class DatabaseEngine:
     """Main async database engine for Derp ORM.
 
     Example:
-        db = Derp("postgresql://user:pass@localhost:5432/mydb")
+        db = DatabaseEngine("postgresql://user:pass@localhost:5432/mydb")
 
         async with db:
             users = await db.select(User).where(eq(User.name, "Alice")).execute()
@@ -62,13 +55,7 @@ class DatabaseClient:
         await db.disconnect()
     """
 
-    def __init__(
-        self,
-        dsn: str,
-        *,
-        min_size: int = 2,
-        max_size: int = 10,
-    ):
+    def __init__(self, dsn: str, *, min_size: int = 2, max_size: int = 10):
         """Initialize Derp engine.
 
         Args:
@@ -97,7 +84,7 @@ class DatabaseClient:
             await self._pool.close()
             self._pool = None
 
-    async def __aenter__(self) -> DatabaseClient:
+    async def __aenter__(self) -> DatabaseEngine:
         await self.connect()
         return self
 

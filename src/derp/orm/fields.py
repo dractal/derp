@@ -257,6 +257,7 @@ class Array[E](FieldType[list[E]]):
 
 # Vector Types
 
+
 @dataclasses.dataclass
 class Vector(FieldType[list[float]]):
     """Vector type."""
@@ -280,7 +281,6 @@ class TSVector(FieldType[str]):
         return f"to_tsvector('{self.language}')"
 
 
-
 # Foreign Key
 
 
@@ -288,14 +288,28 @@ class TSVector(FieldType[str]):
 class ForeignKey:
     """Foreign key reference to another table.column."""
 
-    reference: str  # e.g., "users.id"
+    reference: str | type[Any]
     on_delete: ForeignKeyAction | None = None
     on_update: ForeignKeyAction | None = None
 
     def to_sql(self) -> str:
         """Generate SQL for foreign key constraint."""
-        sql = f"REFERENCES {self.reference.replace('.', '(')}"
-        sql += ")"
+        from derp.orm.table import Table
+
+        if issubclass(self.reference, Table):
+            table: type[Table] = self.reference
+            primary_key = table.get_primary_key()
+            if primary_key is None:
+                raise ValueError(f"Table `{table.__name__}` has no primary key.")
+            pk_name, _ = primary_key
+            reference = f"{table.get_table_name()}({pk_name})"
+
+        elif not isinstance(self.reference, str):
+            raise ValueError(f"Invalid foreign key reference: {self.reference}")
+        else:
+            reference = self.reference.replace(".", "(") + ")"
+
+        sql = f"REFERENCES {reference}"
         if self.on_delete:
             sql += f" ON DELETE {self.on_delete}"
         if self.on_update:
@@ -403,7 +417,7 @@ class FieldInfo[T]:
 
 
 def Field[T](
-    field_type: FieldType[T],
+    t: FieldType[T],
     *,
     primary_key: bool = False,
     unique: bool = False,
@@ -427,7 +441,7 @@ def Field[T](
         FieldInfo with Pydantic field default (typed as T for compatibility)
     """
     return FieldInfo(  # type: ignore[return-value]
-        field_type=field_type,
+        field_type=t,
         primary_key=primary_key,
         unique=unique,
         nullable=nullable,

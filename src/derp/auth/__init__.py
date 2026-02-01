@@ -1,28 +1,123 @@
-"""OAuth2 authentication utilities for Derp ORM.
+"""Derp Auth - Authentication library for FastAPI applications."""
 
-Example usage:
+from __future__ import annotations
 
-    from derp.auth import OAuth2Client, TokenStore
+from derp.auth.client import AuthClient
+from derp.auth.config import (
+    AuthConfig,
+    EmailConfig,
+    GitHubOAuthConfig,
+    GoogleOAuthConfig,
+    JWTConfig,
+    PasswordConfig,
+)
+from derp.auth.email import EmailClient
+from derp.auth.exceptions import (
+    AuthError,
+    ConfirmationTokenExpiredError,
+    ConfirmationTokenInvalidError,
+    EmailNotConfirmedError,
+    EmailSendError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+    MagicLinkExpiredError,
+    MagicLinkUsedError,
+    OAuthError,
+    OAuthProviderError,
+    OAuthStateError,
+    PasswordValidationError,
+    RecoveryTokenExpiredError,
+    RecoveryTokenInvalidError,
+    RefreshTokenReusedError,
+    RefreshTokenRevokedError,
+    SessionExpiredError,
+    SessionNotFoundError,
+    SignupDisabledError,
+    TokenExpiredError,
+    UserAlreadyExistsError,
+    UserNotActiveError,
+    UserNotFoundError,
+)
+from derp.auth.jwt import TokenPair, TokenPayload
+from derp.auth.models import (
+    AuthMagicLink,
+    AuthProvider,
+    AuthRefreshToken,
+    AuthSession,
+    BaseUser,
+)
+from derp.auth.password import (
+    Argon2Hasher,
+    PasswordHasher,
+    PasswordValidationResult,
+    generate_secure_token,
+)
+from derp.auth.providers import (
+    BaseOAuthProvider,
+    GitHubProvider,
+    GoogleProvider,
+    OAuthUserInfo,
+)
 
-    client = OAuth2Client(
-        client_id="your-client-id",
-        client_secret="your-client-secret",
-        authorization_url="https://example.com/oauth/authorize",
-        token_url="https://example.com/oauth/token",
-        redirect_uri="https://yourapp.com/callback",
-    )
-
-    # Generate authorization URL
-    auth_url, state = client.get_authorization_url()
-
-    # Exchange authorization code for tokens
-    tokens = await client.exchange_code("authorization-code", state)
-
-    # Refresh tokens
-    new_tokens = await client.refresh_token(tokens.refresh_token)
-"""
-
-from derp.auth.client import OAuth2Client
-from derp.auth.tokens import MemoryTokenStore, TokenResponse, TokenStore
-
-__all__ = ["OAuth2Client", "TokenResponse", "TokenStore", "MemoryTokenStore"]
+__all__ = [
+    # Config
+    "AuthConfig",
+    "EmailConfig",
+    "GitHubOAuthConfig",
+    "GoogleOAuthConfig",
+    "JWTConfig",
+    "PasswordConfig",
+    # Exceptions
+    "AuthError",
+    "ConfirmationTokenExpiredError",
+    "ConfirmationTokenInvalidError",
+    "EmailNotConfirmedError",
+    "EmailSendError",
+    "InvalidCredentialsError",
+    "InvalidTokenError",
+    "MagicLinkExpiredError",
+    "MagicLinkUsedError",
+    "OAuthError",
+    "OAuthProviderError",
+    "OAuthStateError",
+    "PasswordValidationError",
+    "RecoveryTokenExpiredError",
+    "RecoveryTokenInvalidError",
+    "RefreshTokenRevokedError",
+    "RefreshTokenReusedError",
+    "SessionExpiredError",
+    "SessionNotFoundError",
+    "SignupDisabledError",
+    "TokenExpiredError",
+    "UserAlreadyExistsError",
+    "UserNotActiveError",
+    "UserNotFoundError",
+    # JWT
+    "JWTManager",
+    "TokenPair",
+    "TokenPayload",
+    # Models
+    "AuthMagicLink",
+    "AuthProvider",
+    "AuthRefreshToken",
+    "AuthSession",
+    "BaseUser",
+    # Password
+    "Argon2Hasher",
+    "BcryptHasher",
+    "CompositeHasher",
+    "PasswordHasher",
+    "PasswordValidationResult",
+    "PasswordValidator",
+    "create_default_hasher",
+    "generate_secure_token",
+    # OAuth Providers
+    "BaseOAuthProvider",
+    "GitHubProvider",
+    "GoogleProvider",
+    "OAuthUserInfo",
+    # Email
+    "EmailClient",
+    # Client
+    "AuthClient",
+]

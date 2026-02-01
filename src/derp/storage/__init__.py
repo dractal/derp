@@ -17,6 +17,6 @@ Example usage:
         content = await storage.fetch_file("remote/file.txt")
 """
 
-from .client import StorageClient
+from .client import StorageClient, StorageConfig
 
-__all__ = ["Storage"]
+__all__ = ["StorageClient", "StorageConfig"]

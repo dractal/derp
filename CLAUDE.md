@@ -75,3 +75,10 @@ CLI uses `derp.toml` with typed config in `src/derp/cli/config.py`:
 - `[database]`: env var name for DATABASE_URL (never store URLs directly)
 - `[migrations]`: migration directory, schema path
 - `[introspect]`: schema selection, table filtering
+
+
+## Code style
+
+- Write comprehensive tests before you add specific functionality.
+- Avoid using magic strings, use `enum.StrEnum` instead where possible.
+- The final API exposed to the user should be simple and minimal.

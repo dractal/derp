@@ -22,7 +22,7 @@ from typing import Any
 import asyncpg
 import testing.postgresql as tp
 
-from derp.orm import DatabaseClient, Table
+from derp.orm import DatabaseEngine, Table
 from derp.orm.fields import Field, Integer, Serial, Text, Timestamp, Varchar
 
 
@@ -151,7 +151,7 @@ async def drop_database(base_dsn: str, db_name: str) -> None:
         await conn.close()
 
 
-async def setup_schema(db: DatabaseClient) -> None:
+async def setup_schema(db: DatabaseEngine) -> None:
     """Create tables and indexes for benchmarking."""
     async with db.pool.acquire() as conn:
         # Create tables - DDL may contain multiple statements
@@ -163,7 +163,7 @@ async def setup_schema(db: DatabaseClient) -> None:
 
 
 async def seed_data(
-    db: DatabaseClient,
+    db: DatabaseEngine,
     num_users: int = 1000,
     num_posts: int = 5000,
     num_comments: int = 10000,
@@ -247,7 +247,7 @@ async def benchmark_async(
 # =============================================================================
 
 
-async def bench_select_simple_orm(db: DatabaseClient) -> None:
+async def bench_select_simple_orm(db: DatabaseEngine) -> None:
     """ORM: SELECT * FROM users"""
     _ = await db.select(User).execute()
 
@@ -259,7 +259,7 @@ async def bench_select_simple_asyncpg(pool: asyncpg.Pool) -> None:
         [User.model_validate(dict(row)) for row in rows]
 
 
-async def bench_select_where_orm(db: DatabaseClient) -> None:
+async def bench_select_where_orm(db: DatabaseEngine) -> None:
     """ORM: SELECT * FROM users WHERE id = $1"""
     _ = await db.select(User).where(User.c.id == 1).execute()
 
@@ -271,7 +271,7 @@ async def bench_select_where_asyncpg(pool: asyncpg.Pool) -> None:
         _ = [User.model_validate(dict(row)) for row in rows]
 
 
-async def bench_select_where_and_orm(db: DatabaseClient) -> None:
+async def bench_select_where_and_orm(db: DatabaseEngine) -> None:
     """ORM: SELECT * FROM users WHERE name = $1 AND age > $2"""
     _ = (
         await db.select(User)
@@ -289,7 +289,7 @@ async def bench_select_where_and_asyncpg(pool: asyncpg.Pool) -> None:
         [User.model_validate(dict(row)) for row in rows]
 
 
-async def bench_select_where_complex_orm(db: DatabaseClient) -> None:
+async def bench_select_where_complex_orm(db: DatabaseEngine) -> None:
     """ORM: SELECT with complex nested AND/OR conditions"""
     _ = await (
         db.select(User)
@@ -319,7 +319,7 @@ async def bench_select_where_complex_asyncpg(pool: asyncpg.Pool) -> None:
         _ = [User.model_validate(dict(row)) for row in rows]
 
 
-async def bench_select_where_in_orm(db: DatabaseClient) -> None:
+async def bench_select_where_in_orm(db: DatabaseEngine) -> None:
     """ORM: SELECT * FROM users WHERE id IN ($1, ..., $10)"""
     ids = list(range(1, 11))
     _ = await db.select(User).where(User.c.id.in_(ids)).execute()
@@ -336,7 +336,7 @@ async def bench_select_where_in_asyncpg(pool: asyncpg.Pool) -> None:
         _ = [User.model_validate(dict(row)) for row in rows]
 
 
-async def bench_select_join_orm(db: DatabaseClient) -> None:
+async def bench_select_join_orm(db: DatabaseEngine) -> None:
     """ORM: SELECT with INNER JOIN"""
     _ = await (
         db.select(Post, User.c.name)
@@ -357,7 +357,7 @@ async def bench_select_join_asyncpg(pool: asyncpg.Pool) -> None:
         _ = [dict(row) for row in rows]
 
 
-async def bench_select_full_orm(db: DatabaseClient) -> None:
+async def bench_select_full_orm(db: DatabaseEngine) -> None:
     """ORM: SELECT with WHERE, JOIN, ORDER BY, LIMIT"""
     _ = await (
         db.select(Post, User.c.name)
@@ -388,7 +388,7 @@ async def bench_select_full_asyncpg(pool: asyncpg.Pool) -> None:
 # =============================================================================
 
 
-async def bench_insert_simple_orm(db: DatabaseClient) -> None:
+async def bench_insert_simple_orm(db: DatabaseEngine) -> None:
     """ORM: INSERT with 2 columns"""
     email = f"test{random.randint(1000000, 9999999)}@example.com"
     _ = await db.insert(User).values(name="Test User", email=email).execute()
@@ -403,7 +403,7 @@ async def bench_insert_simple_asyncpg(pool: asyncpg.Pool) -> None:
         )
 
 
-async def bench_insert_returning_orm(db: DatabaseClient) -> None:
+async def bench_insert_returning_orm(db: DatabaseEngine) -> None:
     """ORM: INSERT ... RETURNING *"""
     email = f"test{random.randint(10000, 99999)}@example.com"
     _ = await (
@@ -427,7 +427,7 @@ async def bench_insert_returning_asyncpg(pool: asyncpg.Pool) -> None:
 # =============================================================================
 
 
-async def bench_update_simple_orm(db: DatabaseClient) -> None:
+async def bench_update_simple_orm(db: DatabaseEngine) -> None:
     """ORM: UPDATE with single SET and WHERE"""
     _ = await db.update(User).set(name="Updated Name").where(User.c.id == 1).execute()
 
@@ -440,7 +440,7 @@ async def bench_update_simple_asyncpg(pool: asyncpg.Pool) -> None:
         )
 
 
-async def bench_update_many_columns_orm(db: DatabaseClient) -> None:
+async def bench_update_many_columns_orm(db: DatabaseEngine) -> None:
     """ORM: UPDATE with multiple SET columns"""
     email = f"updated{random.randint(10000, 99999)}@example.com"
     _ = await (
@@ -473,7 +473,7 @@ async def bench_update_many_columns_asyncpg(pool: asyncpg.Pool) -> None:
 # =============================================================================
 
 
-async def bench_insert_delete_simple_orm(db: DatabaseClient) -> None:
+async def bench_insert_delete_simple_orm(db: DatabaseEngine) -> None:
     """ORM: DELETE with simple WHERE"""
     # Insert a test user first to delete
     email = f"delete{random.randint(100000, 999999)}@example.com"
@@ -507,7 +507,7 @@ async def bench_insert_delete_simple_asyncpg(pool: asyncpg.Pool) -> None:
 
 async def run_benchmarks(database_url: str | None = None) -> None:
     """Run all benchmarks and print results."""
-    db: DatabaseClient | None = None
+    db: DatabaseEngine | None = None
     pg_temp: tp.Postgresql | None = None
 
     try:
@@ -515,7 +515,7 @@ async def run_benchmarks(database_url: str | None = None) -> None:
             pg_temp = tp.Postgresql(port=7654)
             database_url = pg_temp.url()
 
-        db = DatabaseClient(database_url)
+        db = DatabaseEngine(database_url)
         try:
             await db.connect()
         except (

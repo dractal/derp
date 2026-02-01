@@ -114,3 +114,89 @@ def test_column_accessor():
         assert False, "Should have raised AttributeError"
     except AttributeError:
         pass
+
+
+class BaseEntity(Table, table_name="base_entity"):
+    """Base table with common fields."""
+
+    id: int = Field(Serial(), primary_key=True)
+    created_at: datetime = Field(Timestamp(), default="now()")
+
+
+class Employee(BaseEntity, table_name="employees"):
+    """Employee table inheriting from BaseEntity."""
+
+    name: str = Field(Varchar(255))
+    department: str = Field(Varchar(100))
+
+
+class Manager(Employee, table_name="managers"):
+    """Manager table inheriting from Employee."""
+
+    level: int = Field(Integer())
+
+
+def test_inheritance_basic():
+    """Test that child tables inherit columns from parent tables."""
+    employee_columns = Employee.get_columns()
+
+    # Should have inherited columns from BaseEntity
+    assert "id" in employee_columns
+    assert "created_at" in employee_columns
+
+    # Should have its own columns
+    assert "name" in employee_columns
+    assert "department" in employee_columns
+
+    # Should have correct table name
+    assert Employee.get_table_name() == "employees"
+
+
+def test_inheritance_column_accessor():
+    """Test that column accessor works with inherited columns."""
+    # Access inherited columns via .c
+    assert Employee.c.id._field_name == "id"
+    assert Employee.c.created_at._field_name == "created_at"
+
+    # Access own columns via .c
+    assert Employee.c.name._field_name == "name"
+    assert Employee.c.department._field_name == "department"
+
+    # Inherited columns should have the child's table name
+    assert Employee.c.id._table_name == "employees"
+    assert Employee.c.created_at._table_name == "employees"
+
+
+def test_inheritance_multi_level():
+    """Test multi-level inheritance."""
+    manager_columns = Manager.get_columns()
+
+    # Should have columns from BaseEntity
+    assert "id" in manager_columns
+    assert "created_at" in manager_columns
+
+    # Should have columns from Employee
+    assert "name" in manager_columns
+    assert "department" in manager_columns
+
+    # Should have its own columns
+    assert "level" in manager_columns
+
+    # Table name should be correct
+    assert Manager.get_table_name() == "managers"
+
+    # All columns should reference managers table
+    assert Manager.c.id._table_name == "managers"
+    assert Manager.c.name._table_name == "managers"
+    assert Manager.c.level._table_name == "managers"
+
+
+def test_inheritance_ddl():
+    """Test DDL generation for inherited tables."""
+    ddl = Employee.to_ddl()
+
+    assert "CREATE TABLE employees" in ddl
+    assert "id SERIAL PRIMARY KEY" in ddl
+    assert "created_at TIMESTAMP" in ddl
+    assert "name VARCHAR(255) NOT NULL" in ddl
+    assert "department VARCHAR(100) NOT NULL" in ddl

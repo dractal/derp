@@ -2,68 +2,101 @@
 
 from __future__ import annotations
 
-import functools
+import dataclasses
 
-from derp.auth import OAuth2Client
-from derp.orm import DatabaseClient
-from derp.storage import StorageClient
+from derp.auth import AuthClient, AuthConfig, BaseUser
+from derp.orm import DatabaseConfig, DatabaseEngine
+from derp.storage import StorageClient, StorageConfig
 
 
-class DerpClient:
+@dataclasses.dataclass(kw_only=True)
+class DerpConfig[UserT: BaseUser]:
+    """Derp configuration."""
+
+    database: DatabaseConfig
+    storage: StorageConfig | None = None
+    auth: AuthConfig[UserT] | None = None
+
+
+class DerpClient[UserT: BaseUser]:
     """Derp client for interacting with database, file storage, and more."""
 
-    def __init__(
+    def __init__(self, config: DerpConfig[UserT]):
+        self._config: DerpConfig[UserT] = config
+        self._db: DatabaseEngine = DatabaseEngine(config.database.db_url)
+        self._replica_db: DatabaseEngine | None = (
+            DatabaseEngine(config.database.replica_url)
+            if config.database.replica_url is not None
+            else None
+        )
+        self._storage: StorageClient | None = (
+            StorageClient(self._config.storage)
+            if self._config.storage is not None
+            else None
+        )
+        self._auth: AuthClient[UserT] | None = (
+            AuthClient[UserT](self._config.auth)
+            if self._config.auth is not None
+            else None
+        )
+        self._in_session = False
+
+    async def connect(self, storage: bool = True) -> None:
+        """Start a session."""
+        await self._db.connect()
+        if self._replica_db is not None:
+            await self._replica_db.connect()
+        if storage and self._storage is not None:
+            await self._storage.connect()
+        if self._auth is not None:
+            self._auth.set_db(self._db, replica_db=self._replica_db)
+
+        self._in_session = True
+
+    async def disconnect(
         self,
-        *,
-        database_url: str | None = None,
-        storage_endpoint_url: str | None = None,
-        storage_service_name: str = "s3",
-        storage_access_key_id: str | None = None,
-        storage_secret_access_key: str | None = None,
-        storage_session_token: str | None = None,
-        storage_region: str = "auto",
-        storage_use_ssl: bool = True,
-        storage_verify: bool = True,
-    ):
-        self._database_url = database_url
-        self._storage_endpoint_url = storage_endpoint_url
-        self._storage_service_name = storage_service_name
-        self._storage_access_key_id = storage_access_key_id
-        self._storage_secret_access_key = storage_secret_access_key
-        self._storage_session_token = storage_session_token
-        self._storage_region = storage_region
-        self._storage_use_ssl = storage_use_ssl
-        self._storage_verify = storage_verify
+    ) -> None:
+        """End a session."""
+        await self._db.disconnect()
+        if self._replica_db is not None:
+            await self._replica_db.disconnect()
+        if self._storage is not None:
+            await self._storage.disconnect()
+        if self._auth is not None:
+            self._auth.set_db(None, replica_db=None)
 
-    @functools.cached_property
-    def db(self) -> DatabaseClient:
-        """Get the database client."""
-        if self._database_url is None:
-            raise ValueError("Database URL is not set")
-        return DatabaseClient(self._database_url)
+        self._in_session = False
 
-    @functools.cached_property
+    @property
+    def db(self) -> DatabaseEngine:
+        """Get the database engine."""
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        return self._db
+
+    @property
+    def replica_db(self) -> DatabaseEngine:
+        """Get the replica database engine."""
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        if self._replica_db is None:
+            raise ValueError("Replica URL is not set on `DatabaseConfig`.")
+        return self._replica_db
+
+    @property
     def storage(self) -> StorageClient:
         """Get the storage client."""
-        if self._storage_endpoint_url is None:
-            raise ValueError("Storage endpoint URL is not set")
-        if self._storage_access_key_id is None:
-            raise ValueError("Storage access key ID is not set")
-        if self._storage_secret_access_key is None:
-            raise ValueError("Storage secret access key is not set")
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        if self._storage is None:
+            raise ValueError("`StorageConfig` was not passed to `DerpConfig`.")
+        return self._storage
 
-        return StorageClient(
-            endpoint_url=self._storage_endpoint_url,
-            access_key_id=self._storage_access_key_id,
-            service_name=self._storage_service_name,
-            secret_access_key=self._storage_secret_access_key,
-            session_token=self._storage_session_token,
-            region=self._storage_region,
-            use_ssl=self._storage_use_ssl,
-            verify=self._storage_verify,
-        )
-
-    @functools.cached_property
-    def auth(self) -> OAuth2Client:
-        """Get the auth client."""
-        raise NotImplementedError("Derived class must implement auth property.")
+    @property
+    def auth(self) -> AuthClient[UserT]:
+        """Get the auth service."""
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        if self._auth is None:
+            raise ValueError("`AuthConfig` was not passed to `DerpConfig`.")
+        return self._auth
