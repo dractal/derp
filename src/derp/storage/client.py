@@ -58,9 +58,9 @@ class StorageClient:
         self._client = await self._session.create_client(
             self._config.service_name,
             endpoint_url=self._config.endpoint_url,
-            access_key_id=self._config.access_key_id,
-            secret_access_key=self._config.secret_access_key,
-            session_token=self._config.session_token,
+            aws_access_key_id=self._config.access_key_id,
+            aws_secret_access_key=self._config.secret_access_key,
+            aws_session_token=self._config.session_token,
             use_ssl=self._config.use_ssl,
             verify=self._config.verify,
             config=config,

@@ -43,6 +43,7 @@ from derp.orm.migrations.statements.types import (
     DropTableStatement,
     DropUniqueConstraintStatement,
     EnableRLSStatement,
+    RenameColumnStatement,
 )
 
 
@@ -994,3 +995,292 @@ class TestSnapshotDifferComplexScenarios:
 
         assert schema_idx < enum_idx
         assert enum_idx < table_idx
+
+
+class TestSnapshotDifferColumnRename:
+    """Tests for column rename detection."""
+
+    def test_rename_column_with_resolver_confirming(self):
+        """Test that rename is detected when resolver confirms it."""
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "id": ColumnSnapshot(name="id", type="serial"),
+                        "username": ColumnSnapshot(
+                            name="username", type="varchar(255)", not_null=True
+                        ),
+                    },
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "id": ColumnSnapshot(name="id", type="serial"),
+                        "user_name": ColumnSnapshot(
+                            name="user_name", type="varchar(255)", not_null=True
+                        ),
+                    },
+                ),
+            },
+        )
+
+        # Resolver that confirms the rename
+        def resolver(obj_type: str, old_name: str, new_name: str) -> bool:
+            return (
+                obj_type == "column"
+                and old_name == "users.username"
+                and new_name == "user_name"
+            )
+
+        differ = SnapshotDiffer(old, new, rename_resolver=resolver)
+        statements = differ.diff()
+
+        rename_stmts = [s for s in statements if isinstance(s, RenameColumnStatement)]
+        drop_stmts = [s for s in statements if isinstance(s, DropColumnStatement)]
+        add_stmts = [s for s in statements if isinstance(s, AddColumnStatement)]
+
+        assert len(rename_stmts) == 1
+        assert rename_stmts[0].from_column == "username"
+        assert rename_stmts[0].to_column == "user_name"
+        assert rename_stmts[0].table_name == "users"
+        assert len(drop_stmts) == 0
+        assert len(add_stmts) == 0
+
+    def test_no_rename_without_resolver(self):
+        """Test that without resolver, drop+add is generated."""
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "username": ColumnSnapshot(
+                            name="username", type="varchar(255)", not_null=True
+                        ),
+                    },
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "user_name": ColumnSnapshot(
+                            name="user_name", type="varchar(255)", not_null=True
+                        ),
+                    },
+                ),
+            },
+        )
+
+        # No resolver passed
+        differ = SnapshotDiffer(old, new)
+        statements = differ.diff()
+
+        rename_stmts = [s for s in statements if isinstance(s, RenameColumnStatement)]
+        drop_stmts = [s for s in statements if isinstance(s, DropColumnStatement)]
+        add_stmts = [s for s in statements if isinstance(s, AddColumnStatement)]
+
+        assert len(rename_stmts) == 0
+        assert len(drop_stmts) == 1
+        assert len(add_stmts) == 1
+        assert drop_stmts[0].column_name == "username"
+        assert add_stmts[0].column.name == "user_name"
+
+    def test_no_rename_when_resolver_rejects(self):
+        """Test that drop+add is generated when resolver rejects rename."""
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "username": ColumnSnapshot(
+                            name="username", type="varchar(255)", not_null=True
+                        ),
+                    },
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "user_name": ColumnSnapshot(
+                            name="user_name", type="varchar(255)", not_null=True
+                        ),
+                    },
+                ),
+            },
+        )
+
+        # Resolver that rejects all renames
+        def resolver(obj_type: str, old_name: str, new_name: str) -> bool:
+            return False
+
+        differ = SnapshotDiffer(old, new, rename_resolver=resolver)
+        statements = differ.diff()
+
+        rename_stmts = [s for s in statements if isinstance(s, RenameColumnStatement)]
+        drop_stmts = [s for s in statements if isinstance(s, DropColumnStatement)]
+        add_stmts = [s for s in statements if isinstance(s, AddColumnStatement)]
+
+        assert len(rename_stmts) == 0
+        assert len(drop_stmts) == 1
+        assert len(add_stmts) == 1
+
+    def test_no_rename_candidate_with_different_types(self):
+        """Test that columns with different types are not rename candidates."""
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "old_col": ColumnSnapshot(
+                            name="old_col", type="varchar(255)"
+                        ),
+                    },
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "new_col": ColumnSnapshot(
+                            name="new_col", type="integer"  # Different type!
+                        ),
+                    },
+                ),
+            },
+        )
+
+        # Resolver that would accept any rename
+        def resolver(obj_type: str, old_name: str, new_name: str) -> bool:
+            return True
+
+        differ = SnapshotDiffer(old, new, rename_resolver=resolver)
+        statements = differ.diff()
+
+        # Should NOT detect a rename because types differ
+        rename_stmts = [s for s in statements if isinstance(s, RenameColumnStatement)]
+        drop_stmts = [s for s in statements if isinstance(s, DropColumnStatement)]
+        add_stmts = [s for s in statements if isinstance(s, AddColumnStatement)]
+
+        assert len(rename_stmts) == 0
+        assert len(drop_stmts) == 1
+        assert len(add_stmts) == 1
+
+    def test_no_rename_candidate_with_different_nullability(self):
+        """Test that columns with different nullability are not rename candidates."""
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "old_col": ColumnSnapshot(
+                            name="old_col", type="varchar(255)", not_null=True
+                        ),
+                    },
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "new_col": ColumnSnapshot(
+                            name="new_col", type="varchar(255)", not_null=False
+                        ),
+                    },
+                ),
+            },
+        )
+
+        # Resolver that would accept any rename
+        def resolver(obj_type: str, old_name: str, new_name: str) -> bool:
+            return True
+
+        differ = SnapshotDiffer(old, new, rename_resolver=resolver)
+        statements = differ.diff()
+
+        # Should NOT detect a rename because nullability differs
+        rename_stmts = [s for s in statements if isinstance(s, RenameColumnStatement)]
+        assert len(rename_stmts) == 0
+
+    def test_ambiguous_rename_first_match_wins(self):
+        """Test that with multiple potential matches, first confirmed wins."""
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "col_a": ColumnSnapshot(
+                            name="col_a", type="varchar(255)", not_null=True
+                        ),
+                        "col_b": ColumnSnapshot(
+                            name="col_b", type="varchar(255)", not_null=True
+                        ),
+                    },
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns={
+                        "col_x": ColumnSnapshot(
+                            name="col_x", type="varchar(255)", not_null=True
+                        ),
+                        "col_y": ColumnSnapshot(
+                            name="col_y", type="varchar(255)", not_null=True
+                        ),
+                    },
+                ),
+            },
+        )
+
+        # Resolver that confirms col_a->col_x and col_b->col_y
+        confirmed = {
+            ("users.col_a", "col_x"): True,
+            ("users.col_b", "col_y"): True,
+        }
+
+        def resolver(obj_type: str, old_name: str, new_name: str) -> bool:
+            return confirmed.get((old_name, new_name), False)
+
+        differ = SnapshotDiffer(old, new, rename_resolver=resolver)
+        statements = differ.diff()
+
+        rename_stmts = [s for s in statements if isinstance(s, RenameColumnStatement)]
+        drop_stmts = [s for s in statements if isinstance(s, DropColumnStatement)]
+        add_stmts = [s for s in statements if isinstance(s, AddColumnStatement)]
+
+        # Both renames should be confirmed
+        assert len(rename_stmts) == 2
+        assert len(drop_stmts) == 0
+        assert len(add_stmts) == 0
+
+        # Verify the rename mappings
+        renames = {s.from_column: s.to_column for s in rename_stmts}
+        assert renames == {"col_a": "col_x", "col_b": "col_y"}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -37,8 +38,114 @@ from derp.orm.migrations.safety import (
     has_high_risk_operations,
 )
 from derp.orm.migrations.snapshot.differ import SnapshotDiffer
-from derp.orm.migrations.snapshot.models import SchemaSnapshot
+from derp.orm.migrations.snapshot.models import ColumnSnapshot, SchemaSnapshot
 from derp.orm.migrations.snapshot.serializer import serialize_schema
+
+
+def _columns_match(old_col: ColumnSnapshot, new_col: ColumnSnapshot) -> bool:
+    """Check if two columns are similar enough to be a rename candidate."""
+    return (
+        old_col.type == new_col.type
+        and old_col.not_null == new_col.not_null
+        and old_col.default == new_col.default
+    )
+
+
+def _find_rename_candidates(
+    old_snapshot: SchemaSnapshot, new_snapshot: SchemaSnapshot
+) -> list[tuple[str, str, str, str]]:
+    """Find potential column renames between snapshots.
+
+    Returns list of (table_name, old_col, new_col, col_type) tuples.
+    """
+    candidates: list[tuple[str, str, str, str]] = []
+
+    # Find tables that exist in both snapshots
+    common_tables = set(old_snapshot.tables.keys()) & set(new_snapshot.tables.keys())
+
+    for table_key in common_tables:
+        old_table = old_snapshot.tables[table_key]
+        new_table = new_snapshot.tables[table_key]
+
+        old_cols = set(old_table.columns.keys())
+        new_cols = set(new_table.columns.keys())
+
+        dropped = old_cols - new_cols
+        added = new_cols - old_cols
+
+        # Find matching pairs
+        for old_name in sorted(dropped):
+            old_col = old_table.columns[old_name]
+            for new_name in sorted(added):
+                new_col = new_table.columns[new_name]
+                if _columns_match(old_col, new_col):
+                    candidates.append(
+                        (old_table.name, old_name, new_name, old_col.type)
+                    )
+
+    return candidates
+
+
+def create_rename_resolver(
+    old_snapshot: SchemaSnapshot,
+    new_snapshot: SchemaSnapshot,
+    force: bool = False,
+) -> dict[str, str]:
+    """Prompt user for potential renames and return decisions.
+
+    Returns a dict mapping "table.old_col" -> "new_col" for confirmed renames.
+    """
+    if force:
+        # In force mode, skip prompts and treat as drop+add (safe default)
+        return {}
+
+    candidates = _find_rename_candidates(old_snapshot, new_snapshot)
+    if not candidates:
+        return {}
+
+    decisions: dict[str, str] = {}
+    used_pairs: set[tuple[str, str, str]] = set()  # (table, old, new) already decided
+
+    for table_name, old_name, new_name, col_type in candidates:
+        # Skip if either column is already part of a confirmed rename
+        key = f"{table_name}.{old_name}"
+        if key in decisions:
+            continue
+
+        # Check if either column already matched in a different pair
+        skip = False
+        for t, o, n in used_pairs:
+            if t == table_name and (o == old_name or n == new_name):
+                skip = True
+                break
+        if skip:
+            continue
+
+        typer.echo("")
+        typer.echo(f"Potential rename detected in table '{table_name}':")
+        typer.echo(f"  Column '{old_name}' ({col_type}) was removed")
+        typer.echo(f"  Column '{new_name}' ({col_type}) was added")
+
+        prompt = f"Did you rename '{old_name}' to '{new_name}'?"
+        if typer.confirm(prompt, default=False):
+            decisions[key] = new_name
+            used_pairs.add((table_name, old_name, new_name))
+
+    return decisions
+
+
+def make_rename_callback(
+    decisions: dict[str, str],
+) -> Callable[[str, str, str], bool]:
+    """Create a callback function for the differ from user decisions."""
+
+    def resolver(object_type: str, old_name: str, new_name: str) -> bool:
+        if object_type != "column":
+            return False
+        # old_name is "table.column" format
+        return decisions.get(old_name) == new_name
+
+    return resolver
 
 
 def generate(
@@ -99,8 +206,14 @@ def generate(
         prev_id=prev_snapshot.id if prev_snapshot.id else None,
     )
 
+    # Prompt for potential column renames before diffing
+    rename_decisions = create_rename_resolver(prev_snapshot, current_snapshot, force)
+    rename_callback = (
+        make_rename_callback(rename_decisions) if rename_decisions else None
+    )
+
     # Diff snapshots
-    differ = SnapshotDiffer(prev_snapshot, current_snapshot)
+    differ = SnapshotDiffer(prev_snapshot, current_snapshot, rename_callback)
     statements = differ.diff()
 
     if not statements:

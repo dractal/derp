@@ -296,7 +296,7 @@ class ForeignKey:
         """Generate SQL for foreign key constraint."""
         from derp.orm.table import Table
 
-        if issubclass(self.reference, Table):
+        if isinstance(self.reference, type) and issubclass(self.reference, Table):
             table: type[Table] = self.reference
             primary_key = table.get_primary_key()
             if primary_key is None:

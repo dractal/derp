@@ -13,7 +13,7 @@ from derp.auth.config import JWTConfig
 from derp.auth.exceptions import InvalidTokenError, TokenExpiredError
 
 
-@dataclass
+@dataclass(kw_only=True)
 class TokenPayload:
     """Payload data from a decoded JWT token."""
 
@@ -26,7 +26,7 @@ class TokenPayload:
     extra: dict[str, Any] | None = None
 
 
-@dataclass
+@dataclass(kw_only=True)
 class TokenPair:
     """Access and refresh token pair."""
 
@@ -34,7 +34,7 @@ class TokenPair:
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int = 0  # Access token expiry in seconds
-    expires_at: datetime | None = None
+    expires_at: datetime
 
 
 def create_access_token(

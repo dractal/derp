@@ -12,7 +12,7 @@ import typer
 CONFIG_FILE = "derp.toml"
 MIGRATIONS_TABLE = "_derp_migrations"
 DEFAULT_DATABASE_URL_ENV = "DATABASE_URL"
-DEFAULT_MIGRATIONS_DIR = "./drizzle"
+DEFAULT_MIGRATIONS_DIR = "./migrations"
 
 
 class ConfigError(Exception):
@@ -102,7 +102,7 @@ class Config:
                 'env = "DATABASE_URL"\n'
                 "\n"
                 "[migrations]\n"
-                'dir = "./drizzle"\n'
+                'dir = "./migrations"\n'
                 'schema = "src/schema.py"\n',
                 err=True,
             )
@@ -150,9 +150,9 @@ def create_default_config() -> str:
 env = "DATABASE_URL"  # Environment variable containing the database URL
 
 [migrations]
-dir = "./drizzle"      # Directory for migration files
+dir = "./migrations"      # Directory for migration files
 schema = "src/schema.py"  # Path to your schema module
-# out = "./drizzle"    # Output directory (defaults to dir)
+# out = "./migrations"    # Output directory (defaults to dir)
 # breakpoints = true   # Add SQL breakpoints
 # strict = false       # Strict mode (fail on warnings)
 # verbose = false      # Verbose output

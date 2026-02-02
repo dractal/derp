@@ -1,19 +1,22 @@
-# Derp ORM
+# Derp
 
-A strongly-typed async Python ORM for PostgreSQL, inspired by [Drizzle ORM](https://orm.drizzle.team/) and [SQLModel](https://sqlmodel.tiangolo.com/).
+Derp is a library for building Python backends for web applications. Derp consists of the following -
+
+- A strongly-typed Python ORM inspired by [Drizzle ORM](https://orm.drizzle.team/).
+- An asynchronous strongly typed storage client.
+- An integrated authentication library built on JWT.
 
 ## Features
 
-- **Async-first** - Built on asyncpg for high-performance async PostgreSQL access
+- **Async-first** - Built on asyncpg and aibotocore for high-performance async operations
 - **Type-safe** - Pydantic-based table definitions with full type hints
-- **Fluent query builder** - Drizzle-style chainable API for SELECT, INSERT, UPDATE, DELETE
 - **Pure SQL migrations** - Simple .sql migration files like Drizzle
-- **CLI tooling** - Typer-based CLI for migration management
+- **CLI** - Typer-based CLI for migration management
 
 ## Installation
 
 ```bash
-pip install derp
+uv add derp
 ```
 
 ## Quick Start
@@ -22,8 +25,8 @@ pip install derp
 
 ```python
 from datetime import datetime
-from derp import Table, Field, ForeignKey
-from derp.fields import Serial, Varchar, Integer, Timestamp
+from derp.orm import Table, Field, ForeignKey
+from derp.orm.fields import Serial, Varchar, Integer, Timestamp
 
 class User(Table, table_name="users"):
     id: int = Field(Serial(), primary_key=True)
@@ -34,21 +37,27 @@ class User(Table, table_name="users"):
 class Post(Table, table_name="posts"):
     id: int = Field(Serial(), primary_key=True)
     title: str = Field(Varchar(255))
-    author_id: int = Field(Integer(), foreign_key=ForeignKey("users.id"))
+    author_id: int = Field(Integer(), foreign_key=ForeignKey(User))
 ```
 
 ### Query Data
 
 ```python
-from derp import Derp, eq, gt, and_
+from derp import DatabaseConfig, DerpClient, DerpConfig
 
-async with Derp("postgresql://user:pass@localhost:5432/mydb") as db:
+
+config = DerpConfig(
+    database=DatabaseConfig(db_url="postgresql://user:pass@localhost:5432/mydb")
+)
+derp = DerpClient(config)
+
+async with derp:
     # SELECT
-    users = await db.select(User).where(eq(User.c.name, "Alice")).execute()
+    users = await derp.db.select(User).where(User.c.name == "Alice").execute()
 
     # SELECT with conditions
     active_users = await (
-        db.select(User)
+        derp.db.select(User)
         .where(and_(gt(User.c.id, 5), eq(User.c.name, "Bob")))
         .order_by(User.c.created_at, "DESC")
         .limit(10)
@@ -57,7 +66,7 @@ async with Derp("postgresql://user:pass@localhost:5432/mydb") as db:
 
     # INSERT
     new_user = await (
-        db.insert(User)
+        derp.db.insert(User)
         .values(name="Charlie", email="charlie@example.com")
         .returning(User)
         .execute()
@@ -65,18 +74,18 @@ async with Derp("postgresql://user:pass@localhost:5432/mydb") as db:
 
     # UPDATE
     await (
-        db.update(User)
+        derp.db.update(User)
         .set(name="Charles")
         .where(eq(User.c.id, 1))
         .execute()
     )
 
     # DELETE
-    await db.delete(User).where(eq(User.c.id, 1)).execute()
+    await derp.db.delete(User).where(eq(User.c.id, 1)).execute()
 
     # JOINs
     posts_with_authors = await (
-        db.select(Post, User.c.name)
+        derp.db.select(Post, User.c.name)
         .from_(Post)
         .inner_join(User, eq(Post.c.author_id, User.c.id))
         .execute()
@@ -86,35 +95,117 @@ async with Derp("postgresql://user:pass@localhost:5432/mydb") as db:
 ### Transactions
 
 ```python
-async with db.transaction():
-    await db.insert(User).values(name="Alice", email="alice@example.com").execute()
-    await db.update(Post).set(title="Updated").where(eq(Post.c.id, 1)).execute()
-    # Automatically commits on success, rolls back on exception
+async with derp:
+    async with derp.db.transaction():
+        await derp.db.insert(User).values(name="Alice", email="alice@example.com").execute()
+        await derp.db.update(Post).set(title="Updated").where(Post.c.id == 1).execute()
+        # Automatically commits on success, rolls back on exception
 ```
+
+## Storage and Authentication
+
+The Derp client can be configured with storage and authentication.
+
+```python
+from derp import AuthConfig, DerpClient, DerpConfig, EmailConfig, JWTConfig, StorageConfig
+
+
+config = DerpConfig(
+    database=DatabaseConfig(db_url="postgresql://localhost:5432/mydb"),
+    storage=StorageConfig(
+        endpoint_url="http://localhost:9000",
+        access_key_id="minioadmin",
+        secret_access_key="minioadmin",
+    )
+    auth=AuthConfig[User](
+        user_table=User,
+        email=EmailConfig(
+            site_name="My Website",
+            site_url="http://localhost:3000",
+            from_email="no-reply@example.com",
+            from_name="No Reply",
+            smtp_host="smtp.example.com",
+            smtp_port=587,
+            smtp_user="smtp-user",
+            smtp_password="smtp-password",
+        ),
+        jwt=JWTConfig(secret="my-secret"),
+    ),
+)
+derp = DerpClient(config)
+```
+
+### Define tables
+
+
+```python
+from datetime import datetime
+from derp.auth import BaseUser, AuthSession, AuthRefreshToken, AuthMagicLink  # Pre-defined tables
+from derp.orm import Table, Field, ForeignKey
+from derp.orm.fields import Serial, Varchar, Integer, Timestamp
+
+class User(BaseUser, table_name="users"):
+    avatar_url: str = Field(Varchar(255), default=None)
+
+class Post(Table, table_name="posts"):
+    id: int = Field(Serial(), primary_key=True)
+    title: str = Field(Varchar(255))
+    author_id: int = Field(Integer(), foreign_key=ForeignKey(User))
+```
+
+### Authenticate Users
+
+```python
+async with derp:
+    user, _ = await derp.auth.sign_up(
+        email="test@example.com", password="password123"
+    )
+    await derp.auth.confirm_email(user.confirmation_token)
+
+    user, _ = await derp.auth.sign_in_with_password(
+        email="test@example.com", password="password123"
+    )
+```
+
+### Upload files
+
+```python
+async with derp:
+    user = await derp.auth.get_user(email="test@example.com")
+
+    if user.avatar_url
+      await derp.storage.upload_file(
+          bucket="avatars",
+          key="test.txt",
+          data=b"Hello, world!",
+          content_type="text/plain",
+      )
+```
+
 
 ## Field Types
 
-| Type | PostgreSQL | Python |
-|------|------------|--------|
-| `Serial()` | SERIAL | int |
-| `BigSerial()` | BIGSERIAL | int |
-| `SmallInt()` | SMALLINT | int |
-| `Integer()` | INTEGER | int |
-| `BigInt()` | BIGINT | int |
-| `Varchar(n)` | VARCHAR(n) | str |
-| `Text()` | TEXT | str |
-| `Char(n)` | CHAR(n) | str |
-| `Boolean()` | BOOLEAN | bool |
-| `Timestamp()` | TIMESTAMP | datetime |
-| `Date()` | DATE | date |
-| `Time()` | TIME | time |
-| `Numeric(p, s)` | NUMERIC(p, s) | Decimal |
-| `Real()` | REAL | float |
-| `DoublePrecision()` | DOUBLE PRECISION | float |
-| `UUID()` | UUID | uuid.UUID |
-| `JSON()` | JSON | dict |
-| `JSONB()` | JSONB | dict |
-| `Array(T)` | T[] | list |
+| Type                | PostgreSQL       | Python    |
+| ------------------- | ---------------- | --------- |
+| `Serial()`          | SERIAL           | int       |
+| `BigSerial()`       | BIGSERIAL        | int       |
+| `SmallInt()`        | SMALLINT         | int       |
+| `Integer()`         | INTEGER          | int       |
+| `BigInt()`          | BIGINT           | int       |
+| `Varchar(n)`        | VARCHAR(n)       | str       |
+| `Text()`            | TEXT             | str       |
+| `Char(n)`           | CHAR(n)          | str       |
+| `Boolean()`         | BOOLEAN          | bool      |
+| `Timestamp()`       | TIMESTAMP        | datetime  |
+| `Date()`            | DATE             | date      |
+| `Time()`            | TIME             | time      |
+| `Numeric(p, s)`     | NUMERIC(p, s)    | Decimal   |
+| `Real()`            | REAL             | float     |
+| `DoublePrecision()` | DOUBLE PRECISION | float     |
+| `UUID()`            | UUID             | uuid.UUID |
+| `JSON()`            | JSON             | dict      |
+| `JSONB()`           | JSONB            | dict      |
+| `Array(T)`          | T[]              | list      |
 
 ## Expression Operators
 

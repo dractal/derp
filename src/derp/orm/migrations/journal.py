@@ -13,6 +13,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+JOURNAL_FILENAME = "journal.json"
+
 
 class JournalEntry(BaseModel):
     """Single migration entry in the journal."""
@@ -111,9 +113,6 @@ class MigrationJournal(BaseModel):
                         self.entries[j] = e.model_copy(update={"idx": e.idx - 1})
                 return True
         return False
-
-
-JOURNAL_FILENAME = "_journal.json"
 
 
 def load_journal(migrations_dir: Path) -> MigrationJournal:

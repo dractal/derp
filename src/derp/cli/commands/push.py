@@ -8,6 +8,7 @@ from typing import Annotated
 import asyncpg
 import typer
 
+from derp.cli.commands.generate import create_rename_resolver, make_rename_callback
 from derp.cli.config import Config
 from derp.orm.loader import load_tables
 
@@ -83,8 +84,16 @@ def push(
             # Serialize desired schema
             desired_snapshot = serialize_schema(tables, schema="public")
 
+            # Prompt for potential column renames before diffing
+            rename_decisions = create_rename_resolver(
+                db_snapshot, desired_snapshot, force
+            )
+            rename_callback = (
+                make_rename_callback(rename_decisions) if rename_decisions else None
+            )
+
             # Diff
-            differ = SnapshotDiffer(db_snapshot, desired_snapshot)
+            differ = SnapshotDiffer(db_snapshot, desired_snapshot, rename_callback)
             statements = differ.diff()
 
             if not statements:

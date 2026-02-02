@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Messaging App</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+
+<body>
+    <!-- Auth View -->
+    <div id="auth-view" class="view">
+        <div class="auth-container">
+            <h1>Messaging App</h1>
+
+            <div class="tabs">
+                <button class="tab active" data-tab="signin">Sign In</button>
+                <button class="tab" data-tab="signup">Sign Up</button>
+            </div>
+
+            <form id="signin-form" class="auth-form">
+                <input type="email" name="email" placeholder="Email" required>
+                <input type="password" name="password" placeholder="Password" required>
+                <button type="submit">Sign In</button>
+                <p class="error" id="signin-error"></p>
+            </form>
+
+            <form id="signup-form" class="auth-form hidden">
+                <input type="email" name="email" placeholder="Email" required>
+                <input type="password" name="password" placeholder="Password (min 8 chars)" required minlength="8">
+                <button type="submit">Sign Up</button>
+                <p class="error" id="signup-error"></p>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main App View -->
+    <div id="app-view" class="view hidden">
+        <div class="app-container">
+            <!-- Sidebar -->
+            <aside class="sidebar">
+                <div class="sidebar-header">
+                    <h2>Conversations</h2>
+                    <button id="new-chat-btn" title="New conversation">+</button>
+                </div>
+                <div id="conversations-list" class="conversations-list">
+                    <!-- Conversations will be loaded here -->
+                </div>
+                <div class="sidebar-footer">
+                    <div class="user-info">
+                        <img id="user-avatar" src="" alt="" class="avatar">
+                        <span id="user-email"></span>
+                    </div>
+                    <button id="signout-btn" title="Sign out">Sign Out</button>
+                </div>
+            </aside>
+
+            <!-- Chat Area -->
+            <main class="chat-area">
+                <div id="no-chat" class="no-chat">
+                    <p>Select a conversation or start a new one</p>
+                </div>
+
+                <div id="chat-view" class="chat-view hidden">
+                    <div class="chat-header">
+                        <img id="chat-avatar" src="" alt="" class="avatar">
+                        <div class="chat-user-info">
+                            <span id="chat-user-name"></span>
+                            <span id="chat-user-email" class="email"></span>
+                        </div>
+                    </div>
+                    <div id="messages" class="messages">
+                        <!-- Messages will be loaded here -->
+                    </div>
+                    <form id="message-form" class="message-form">
+                        <input type="text" id="message-input" placeholder="Type a message..." required>
+                        <button type="submit">Send</button>
+                    </form>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- New Chat Modal -->
+    <div id="new-chat-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Start New Conversation</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="user-search" placeholder="Search users...">
+                <div id="users-list" class="users-list">
+                    <!-- Users will be loaded here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+
+</html>

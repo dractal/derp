@@ -43,6 +43,7 @@ from derp.orm.migrations.statements.types import (
     EnableRLSStatement,
     ForeignKeyDefinition,
     PrimaryKeyDefinition,
+    RenameColumnStatement,
     Statement,
     UniqueConstraintDefinition,
 )
@@ -439,13 +440,70 @@ class SnapshotDiffer:
         # Diff RLS settings
         self._diff_rls(old_table, new_table)
 
+    def _columns_match(self, old_col: ColumnSnapshot, new_col: ColumnSnapshot) -> bool:
+        """Check if two columns are similar enough to be a rename candidate.
+
+        Columns match if they have the same type, nullability, and default value.
+        """
+        return (
+            old_col.type == new_col.type
+            and old_col.not_null == new_col.not_null
+            and old_col.default == new_col.default
+        )
+
     def _diff_columns(self, old_table: TableSnapshot, new_table: TableSnapshot) -> None:
-        """Diff columns within a table."""
+        """Diff columns within a table, detecting potential renames."""
         old_cols = set(old_table.columns.keys())
         new_cols = set(new_table.columns.keys())
 
-        # Add new columns
-        for col_name in new_cols - old_cols:
+        dropped = old_cols - new_cols
+        added = new_cols - old_cols
+
+        # Find ALL potential rename pairs (may have duplicates for ambiguous cases)
+        rename_candidates: list[tuple[str, str, ColumnSnapshot, ColumnSnapshot]] = []
+        for old_name in sorted(dropped):  # sorted for deterministic order
+            old_col = old_table.columns[old_name]
+            for new_name in sorted(added):
+                new_col = new_table.columns[new_name]
+                if self._columns_match(old_col, new_col):
+                    rename_candidates.append((old_name, new_name, old_col, new_col))
+
+        # Resolve renames via callback, tracking which columns are already matched
+        confirmed_renames: dict[str, str] = {}  # old_name -> new_name
+        used_new_names: set[str] = set()
+
+        for old_name, new_name, old_col, new_col in rename_candidates:
+            # Skip if either column already matched
+            if old_name in confirmed_renames or new_name in used_new_names:
+                continue
+
+            # Ask the resolver if this is a rename
+            if self.rename_resolver is not None:
+                qualified_old = f"{old_table.name}.{old_name}"
+                if self.rename_resolver("column", qualified_old, new_name):
+                    confirmed_renames[old_name] = new_name
+                    used_new_names.add(new_name)
+                    self._statements.append(
+                        RenameColumnStatement(
+                            table_name=new_table.name,
+                            schema=new_table.schema_name,
+                            from_column=old_name,
+                            to_column=new_name,
+                        )
+                    )
+
+        # Process remaining drops (excluding confirmed renames)
+        for col_name in sorted(dropped - set(confirmed_renames.keys())):
+            self._statements.append(
+                DropColumnStatement(
+                    table_name=old_table.name,
+                    schema=old_table.schema_name,
+                    column_name=col_name,
+                )
+            )
+
+        # Process remaining adds (excluding confirmed renames)
+        for col_name in sorted(added - used_new_names):
             col = new_table.columns[col_name]
             self._statements.append(
                 AddColumnStatement(
@@ -455,17 +513,7 @@ class SnapshotDiffer:
                 )
             )
 
-        # Drop removed columns
-        for col_name in old_cols - new_cols:
-            self._statements.append(
-                DropColumnStatement(
-                    table_name=old_table.name,
-                    schema=old_table.schema_name,
-                    column_name=col_name,
-                )
-            )
-
-        # Diff existing columns
+        # Diff existing columns (same name in both old and new)
         for col_name in old_cols & new_cols:
             old_col = old_table.columns[col_name]
             new_col = new_table.columns[col_name]

@@ -77,7 +77,7 @@ class TestGenerateCommand:
         assert (migration_folder / "snapshot.json").exists()
 
         # Check journal was created
-        journal_path = migrations_dir / "_journal.json"
+        journal_path = migrations_dir / "journal.json"
         assert journal_path.exists()
 
         journal = json.loads(journal_path.read_text())
@@ -225,7 +225,7 @@ class TestPullCommand:
         assert "Created migration:" in result.stdout
 
         migrations_dir = Path(cli_env["cwd"]) / "drizzle"
-        journal_path = migrations_dir / "_journal.json"
+        journal_path = migrations_dir / "journal.json"
         assert journal_path.exists()
 
 

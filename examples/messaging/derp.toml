@@ -1,0 +1,6 @@
+[database]
+env_var = "DATABASE_URL"
+
+[migrations]
+directory = "migrations"
+schema = "app/models.py"

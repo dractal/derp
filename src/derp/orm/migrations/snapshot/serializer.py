@@ -125,15 +125,24 @@ def serialize_foreign_key(
     constraint_num: int,
 ) -> tuple[str, ForeignKeySnapshot]:
     """Serialize a foreign key constraint to snapshot."""
-    # Parse reference like "users.id"
-    ref_parts = fk.reference.split(".")
-    if len(ref_parts) == 2:
-        ref_table, ref_column = ref_parts
+    # Handle class references (e.g., ForeignKey(User))
+    if isinstance(fk.reference, Table):
+        ref_table = fk.reference.get_table_name()
+        primary_key = fk.reference.get_primary_key()
+        if primary_key is None:
+            raise ValueError(f"Table `{fk.reference.__name__}` has no primary key.")
+        ref_column = primary_key[0]
         ref_schema = "public"
-    elif len(ref_parts) == 3:
-        ref_schema, ref_table, ref_column = ref_parts
     else:
-        raise ValueError(f"Invalid foreign key reference: {fk.reference}")
+        # Parse string reference like "users.id" or "public.users.id"
+        ref_parts = fk.reference.split(".")
+        if len(ref_parts) == 2:
+            ref_table, ref_column = ref_parts
+            ref_schema = "public"
+        elif len(ref_parts) == 3:
+            ref_schema, ref_table, ref_column = ref_parts
+        else:
+            raise ValueError(f"Invalid foreign key reference: {fk.reference}")
 
     # Generate constraint name
     constraint_name = f"{table_name}_{column_name}_fkey"

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+from types import TracebackType
+from typing import Self
 
 from derp.auth import AuthClient, AuthConfig, BaseUser
 from derp.orm import DatabaseConfig, DatabaseEngine
@@ -66,6 +68,18 @@ class DerpClient[UserT: BaseUser]:
             self._auth.set_db(None, replica_db=None)
 
         self._in_session = False
+
+    async def __aenter__(self) -> Self:
+        await self.connect()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        await self.disconnect()
 
     @property
     def db(self) -> DatabaseEngine:
