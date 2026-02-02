@@ -47,9 +47,6 @@ class TestSignUp:
         assert tokens.access_token is not None
         assert tokens.refresh_token is not None
 
-    @pytest.mark.skip(
-        reason="JSONB encoding issue with asyncpg - requires ORM-level fix"
-    )
     async def test_sign_up_with_metadata(
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
@@ -482,9 +479,6 @@ class TestUserManagement:
         assert found is not None
         assert found.email == "test@example.com"
 
-    @pytest.mark.skip(
-        reason="JSONB encoding issue with asyncpg - requires ORM-level fix"
-    )
     async def test_update_user(
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:

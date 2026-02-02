@@ -1,17 +1,17 @@
-"""Query builder for SELECT, INSERT, UPDATE, DELETE operations."""
+"""Query builder for select, insert, update, delete operations."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Self, overload
+from typing import Any, Self, overload
 
-from derp.orm.fields import FieldInfo
+import asyncpg
+
+from derp.orm.fields import JSON, JSONB, FieldInfo
 from derp.orm.query.expressions import Expression
 from derp.orm.table import Table
-
-if TYPE_CHECKING:
-    import asyncpg
 
 
 class JoinType(StrEnum):
@@ -219,9 +219,14 @@ class SelectQuery[T]:
             and issubclass(self._columns[0], Table)
         ):
             model_class = self._columns[0]
-            return [model_class.model_validate(dict(row)) for row in rows]  # type: ignore[return-value]
+            return [  # type: ignore[return-value]
+                model_class.model_validate(_deserialize_row(model_class, row))
+                for row in rows
+            ]
 
         # Otherwise return dicts
+        if self._from_table:
+            return [_deserialize_row(self._from_table, row) for row in rows]  # type: ignore[return-value]
         return [dict(row) for row in rows]  # type: ignore[return-value]
 
     async def first_or_none(self) -> T | None:
@@ -256,7 +261,9 @@ class _InsertQueryBase[T: Table]:
         """Build the SQL query and parameters."""
         table_name = self._table.get_table_name()
         columns = list(self._values.keys())
-        params = list(self._values.values())
+        params = [
+            _serialize_value(self._table, col, val) for col, val in self._values.items()
+        ]
 
         placeholders = [f"${i + 1}" for i in range(len(params))]
 
@@ -350,7 +357,7 @@ class InsertQueryReturning[T: Table](_InsertQueryBase[T]):
             row = await conn.fetchrow(sql, *params)
             if row is None:
                 raise RuntimeError("INSERT RETURNING returned no rows")
-            return self._table.model_validate(dict(row))
+            return self._table.model_validate(_deserialize_row(self._table, row))
 
 
 class InsertQueryReturningDict[T: Table](_InsertQueryBase[T]):
@@ -375,7 +382,7 @@ class InsertQueryReturningDict[T: Table](_InsertQueryBase[T]):
             row = await conn.fetchrow(sql, *params)
             if row is None:
                 raise RuntimeError("INSERT RETURNING returned no rows")
-            return dict(row)
+            return _deserialize_row(self._table, row)
 
 
 # =============================================================================
@@ -400,7 +407,7 @@ class _UpdateQueryBase[T: Table]:
 
         set_parts = []
         for col, val in self._set_values.items():
-            params.append(val)
+            params.append(_serialize_value(self._table, col, val))
             set_parts.append(f"{col} = ${len(params)}")
 
         sql = f"UPDATE {table_name} SET {', '.join(set_parts)}"
@@ -504,7 +511,10 @@ class UpdateQueryReturning[T: Table](_UpdateQueryBase[T]):
         sql, params = self.build()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
-            return [self._table.model_validate(dict(row)) for row in rows]
+            return [
+                self._table.model_validate(_deserialize_row(self._table, row))
+                for row in rows
+            ]
 
 
 class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
@@ -532,7 +542,7 @@ class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
         sql, params = self.build()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
-            return [dict(row) for row in rows]
+            return [_deserialize_row(self._table, row) for row in rows]
 
 
 # =============================================================================
@@ -643,7 +653,10 @@ class DeleteQueryReturning[T: Table](_DeleteQueryBase[T]):
         sql, params = self.build()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
-            return [self._table.model_validate(dict(row)) for row in rows]
+            return [
+                self._table.model_validate(_deserialize_row(self._table, row))
+                for row in rows
+            ]
 
 
 class DeleteQueryReturningDict[T: Table](_DeleteQueryBase[T]):
@@ -666,4 +679,28 @@ class DeleteQueryReturningDict[T: Table](_DeleteQueryBase[T]):
         sql, params = self.build()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
-            return [dict(row) for row in rows]
+            return [_deserialize_row(self._table, row) for row in rows]
+
+
+def _serialize_value(table: type[Table], column: str, value: Any) -> Any:
+    """Serialize value for database insertion (handles JSONB)."""
+    columns = table.get_columns()
+    if column in columns:
+        field_info = columns[column]
+        if isinstance(field_info.field_type, (JSON, JSONB)):
+            if isinstance(value, (dict, list)):
+                return json.dumps(value)
+    return value
+
+
+def _deserialize_row(table: type[Table], row: dict[str, Any]) -> dict[str, Any]:
+    """Deserialize row data from database (handles JSONB)."""
+    columns = table.get_columns()
+    result = dict(row)
+    for col, val in result.items():
+        if col in columns:
+            field_info = columns[col]
+            if isinstance(field_info.field_type, (JSON, JSONB)):
+                if isinstance(val, str):
+                    result[col] = json.loads(val)
+    return result

@@ -1,1 +1,1 @@
-"""Tests for Derp ORM."""
+"""Tests for Derp."""
