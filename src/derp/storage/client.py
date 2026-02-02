@@ -17,11 +17,12 @@ class StorageClient:
     """S3-compatible storage client for uploading and fetching files.
 
     Example:
-        storage = StorageClient(
+        config = StorageConfig(
             endpoint_url="https://s3.amazonaws.com",
             access_key_id="key",
             secret_access_key="secret",
         )
+        storage = StorageClient(config)
 
         async with storage:
             await storage.upload_file("local.txt", "remote.txt")
