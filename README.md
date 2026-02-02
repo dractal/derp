@@ -58,8 +58,8 @@ async with derp:
     # SELECT with conditions
     active_users = await (
         derp.db.select(User)
-        .where(and_(gt(User.c.id, 5), eq(User.c.name, "Bob")))
-        .order_by(User.c.created_at, "DESC")
+        .where((User.c.id == 5) & (User.c.name == "Bob"))
+        .order_by(User.c.created_at, asc=False)
         .limit(10)
         .execute()
     )
@@ -76,18 +76,18 @@ async with derp:
     await (
         derp.db.update(User)
         .set(name="Charles")
-        .where(eq(User.c.id, 1))
+        .where(User.c.id == 1)
         .execute()
     )
 
     # DELETE
-    await derp.db.delete(User).where(eq(User.c.id, 1)).execute()
+    await derp.db.delete(User).where(User.c.id == 1).execute()
 
     # JOINs
     posts_with_authors = await (
         derp.db.select(Post, User.c.name)
         .from_(Post)
-        .inner_join(User, eq(Post.c.author_id, User.c.id))
+        .inner_join(User, Post.c.author_id == User.c.id)
         .execute()
     )
 ```
@@ -137,7 +137,6 @@ derp = DerpClient(config)
 
 ### Define tables
 
-
 ```python
 from datetime import datetime
 from derp.auth import BaseUser, AuthSession, AuthRefreshToken, AuthMagicLink  # Pre-defined tables
@@ -182,7 +181,6 @@ async with derp:
       )
 ```
 
-
 ## Field Types
 
 | Type                | PostgreSQL       | Python    |
@@ -210,36 +208,34 @@ async with derp:
 ## Expression Operators
 
 ```python
-from derp import eq, ne, gt, gte, lt, lte, and_, or_, not_
-from derp import like, ilike, in_, not_in, is_null, is_not_null, between
+# Field operators
+User.c.id == 1
+User.c.id != 1
+User.c.age > 18
+User.c.age >= 18
+User.c.age < 65
+User.c.age <= 65
+~User.c.active
 
-# Comparison
-eq(User.c.id, 1)           # id = 1
-ne(User.c.id, 1)           # id <> 1
-gt(User.c.age, 18)         # age > 18
-gte(User.c.age, 18)        # age >= 18
-lt(User.c.age, 65)         # age < 65
-lte(User.c.age, 65)        # age <= 65
-
-# Logical
-and_(eq(User.c.name, "Alice"), gt(User.c.age, 18))
-or_(eq(User.c.role, "admin"), eq(User.c.role, "moderator"))
-not_(eq(User.c.active, False))
+# Expression operators
+(User.c.name == "Alice") & (User.c.age > 18)
+(User.c.role == "admin") | (User.c.role == "moderator")
+~(User.c.name == "Bob")
 
 # Pattern matching
-like(User.c.name, "%alice%")
-ilike(User.c.email, "%@GMAIL.COM")
+User.c.name.like("%alice%")
+User.c.email.ilike("%@GMAIL.COM")
 
 # Membership
-in_(User.c.id, [1, 2, 3])
-not_in(User.c.status, ["banned", "suspended"])
+User.c.id.in_([1, 2, 3])
+User.c.status.not_in(["banned", "suspended"])
 
 # Null checks
-is_null(User.c.deleted_at)
-is_not_null(User.c.email)
+User.c.deleted_at.is_null()
+User.c.email.is_not_null()
 
 # Range
-between(User.c.age, 18, 65)
+User.c.age.between(18, 65)
 ```
 
 ## CLI Usage
@@ -254,7 +250,7 @@ env = "DATABASE_URL"  # Environment variable containing the database URL
 
 [migrations]
 dir = "./migrations"
-schema = "src/schema.py"  # Path to your Table definitions
+schema = "src/schemas/*"  # Path to your Table definitions
 ```
 
 Set your database URL:
