@@ -13,7 +13,7 @@ from derp.orm.query.builder import (
 )
 
 
-class User(Table, table_name="users"):
+class User(Table, table="users"):
     id: int = Field(Serial(), primary_key=True)
     name: str = Field(Varchar(255))
     email: str = Field(Varchar(255), unique=True)
@@ -21,7 +21,7 @@ class User(Table, table_name="users"):
     created_at: datetime = Field(Timestamp(), default="now()")
 
 
-class Post(Table, table_name="posts"):
+class Post(Table, table="posts"):
     id: int = Field(Serial(), primary_key=True)
     user_id: int = Field(Integer())
     title: str = Field(Varchar(255))

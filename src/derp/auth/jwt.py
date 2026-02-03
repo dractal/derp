@@ -9,7 +9,7 @@ from typing import Any
 
 import jwt
 
-from derp.auth.config import JWTConfig
+from derp.config import JWTConfig
 from derp.auth.exceptions import InvalidTokenError, TokenExpiredError
 
 

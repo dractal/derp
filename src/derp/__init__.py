@@ -1,9 +1,10 @@
 """Derp - A backend framework for building scalable and efficient applications."""
 
 from derp.auth import AuthClient, AuthConfig, BaseUser, EmailConfig, JWTConfig
-from derp.derp_client import DerpClient, DerpConfig
-from derp.orm import DatabaseConfig, DatabaseEngine
-from derp.storage import StorageClient, StorageConfig
+from derp.config import DatabaseConfig, DerpConfig, StorageConfig
+from derp.derp_client import DerpClient
+from derp.orm import DatabaseEngine
+from derp.storage import StorageClient
 
 __all__ = [
     "DerpClient",

@@ -16,13 +16,13 @@ from derp.orm.fields import (
     Varchar,
 )
 
-# Import the tables.
-AuthMagicLink = AuthMagicLink
-AuthRefreshToken = AuthRefreshToken
-AuthSession = AuthSession
+# Import authentication tables to include them in the schema.
+_AuthMagicLink = AuthMagicLink
+_AuthRefreshToken = AuthRefreshToken
+_AuthSession = AuthSession
 
 
-class User(BaseUser, table_name="users"):
+class User(BaseUser, table="users"):
     """User model with messaging profile fields."""
 
     username: str | None = Field(Varchar(100), nullable=True)
@@ -30,7 +30,7 @@ class User(BaseUser, table_name="users"):
     bio: str | None = Field(Text(), nullable=True)
 
 
-class Conversation(Table, table_name="conversations"):
+class Conversation(Table, table="conversations"):
     """Conversation between two users.
 
     user1_id < user2_id is enforced to ensure uniqueness without needing
@@ -54,7 +54,7 @@ class Conversation(Table, table_name="conversations"):
     created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
 
 
-class Message(Table, table_name="messages"):
+class Message(Table, table="messages"):
     """Message within a conversation."""
 
     id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")

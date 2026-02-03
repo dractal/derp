@@ -6,7 +6,7 @@ Example usage:
     from derp.fields import Serial, Varchar, Timestamp
 
     # Define tables
-    class User(Table, table_name="users"):
+    class User(Table, table="users"):
         id: int = Field(Serial(), primary_key=True)
         name: str = Field(Varchar(255))
         email: str = Field(Varchar(255), unique=True)
@@ -23,7 +23,7 @@ Example usage:
         )
 """
 
-from derp.orm.config import DatabaseConfig
+from derp.config import DatabaseConfig
 from derp.orm.engine import DatabaseEngine
 from derp.orm.fields import (
     JSON,

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from pathlib import Path
 from typing import Annotated
 
 import asyncpg
 import typer
 
-from derp.cli.config import MIGRATIONS_TABLE, Config
+from derp.config import MIGRATIONS_TABLE, ConfigError, DerpConfig
 from derp.orm.migrations.journal import (
     get_migration_folders,
     get_migration_sql,
@@ -27,9 +28,14 @@ def migrate(
     Reads the migration journal and applies any migrations that haven't
     been recorded in the database's _derp_migrations table.
     """
-    config = Config.load()
-    db_url = config.database.get_url()
-    migrations_dir = config.migrations.directory
+    try:
+        config = DerpConfig.load()
+    except ConfigError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    db_url = config.database.db_url
+    migrations_dir = Path(config.database.migrations.dir)
 
     # Load journal
     journal = load_journal(migrations_dir)

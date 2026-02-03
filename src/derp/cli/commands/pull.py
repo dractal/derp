@@ -10,7 +10,7 @@ from typing import Annotated
 import asyncpg
 import typer
 
-from derp.cli.config import Config
+from derp.config import ConfigError, DerpConfig
 from derp.orm.migrations.introspect.postgres import PostgresIntrospector
 from derp.orm.migrations.journal import (
     get_next_version,
@@ -40,9 +40,14 @@ def pull(
     - Syncing schema from production
     - Debugging schema differences
     """
-    config = Config.load()
-    db_url = config.database.get_url()
-    migrations_dir = config.migrations.directory
+    try:
+        config = DerpConfig.load()
+    except ConfigError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    db_url = config.database.db_url
+    migrations_dir = Path(config.database.migrations.dir)
 
     async def _pull() -> dict:
         pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
@@ -50,8 +55,8 @@ def pull(
         try:
             introspector = PostgresIntrospector(pool)
             snapshot = await introspector.introspect(
-                schemas=config.introspect.schemas,
-                exclude_tables=config.introspect.exclude_tables,
+                schemas=config.database.introspect.schemas,
+                exclude_tables=config.database.introspect.exclude_tables,
             )
 
             return snapshot.model_dump(mode="json", by_alias=True)

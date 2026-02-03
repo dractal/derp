@@ -28,13 +28,13 @@ from datetime import datetime
 from derp.orm import Table, Field, ForeignKey
 from derp.orm.fields import Serial, Varchar, Integer, Timestamp
 
-class User(Table, table_name="users"):
+class User(Table, table="users"):
     id: int = Field(Serial(), primary_key=True)
     name: str = Field(Varchar(255))
     email: str = Field(Varchar(255), unique=True)
     created_at: datetime = Field(Timestamp(), default="now()")
 
-class Post(Table, table_name="posts"):
+class Post(Table, table="posts"):
     id: int = Field(Serial(), primary_key=True)
     title: str = Field(Varchar(255))
     author_id: int = Field(Integer(), foreign_key=ForeignKey(User))
@@ -118,12 +118,11 @@ config = DerpConfig(
         secret_access_key="minioadmin",
     )
     auth=AuthConfig[User](
-        user_table=User,
+        user_table_name="users",
         email=EmailConfig(
             site_name="My Website",
             site_url="http://localhost:3000",
             from_email="no-reply@example.com",
-            from_name="No Reply",
             smtp_host="smtp.example.com",
             smtp_port=587,
             smtp_user="smtp-user",
@@ -143,10 +142,10 @@ from derp.auth import BaseUser, AuthSession, AuthRefreshToken, AuthMagicLink  # 
 from derp.orm import Table, Field, ForeignKey
 from derp.orm.fields import Serial, Varchar, Integer, Timestamp
 
-class User(BaseUser, table_name="users"):
+class User(BaseUser, table="users"):
     avatar_url: str = Field(Varchar(255), default=None)
 
-class Post(Table, table_name="posts"):
+class Post(Table, table="posts"):
     id: int = Field(Serial(), primary_key=True)
     title: str = Field(Varchar(255))
     author_id: int = Field(Integer(), foreign_key=ForeignKey(User))
@@ -246,11 +245,11 @@ Create a `derp.toml` in your project root:
 
 ```toml
 [database]
-env = "DATABASE_URL"  # Environment variable containing the database URL
+db_url = "$DATABASE_URL"  # Environment variable containing the database URL
+schema_path = "src/schemas/*"  # Path to your Table definitions
 
-[migrations]
+[database.migrations]
 dir = "./migrations"
-schema = "src/schemas/*"  # Path to your Table definitions
 ```
 
 Set your database URL:

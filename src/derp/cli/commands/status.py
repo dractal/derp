@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from pathlib import Path
 
 import asyncpg
 import typer
 
-from derp.cli.config import MIGRATIONS_TABLE, Config
+from derp.config import MIGRATIONS_TABLE, ConfigError, DerpConfig
 from derp.orm.migrations.journal import load_journal
 
 
@@ -18,9 +19,14 @@ def status() -> None:
     Displays which migrations have been applied and which are pending,
     comparing the journal against the database's _derp_migrations table.
     """
-    config = Config.load()
-    db_url = config.database.get_url()
-    migrations_dir = config.migrations.directory
+    try:
+        config = DerpConfig.load()
+    except ConfigError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    db_url = config.database.db_url
+    migrations_dir = Path(config.database.migrations.dir)
 
     # Load journal
     journal = load_journal(migrations_dir)

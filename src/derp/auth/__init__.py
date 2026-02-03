@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from derp.auth.client import AuthClient
-from derp.auth.config import (
+from derp.config import (
     AuthConfig,
     EmailConfig,
     GitHubOAuthConfig,

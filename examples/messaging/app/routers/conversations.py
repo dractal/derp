@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -150,8 +149,8 @@ async def get_conversation(
     conversation_id: uuid.UUID,
     user: User = Depends(get_current_user),
     derp: DerpClient[User] = Depends(get_derp),
-    limit: Annotated[int, Query(ge=1, le=100)] = 50,
-    before: Annotated[uuid.UUID | None, Query()] = None,
+    limit: int = Query(ge=1, le=100, default=50),
+    before: uuid.UUID | None = Query(default=None),
 ) -> ConversationDetailResponse:
     """Get a conversation with its messages."""
     conversation = await (

@@ -27,7 +27,7 @@ from derp.orm.fields import Field, Integer, Serial, Text, Timestamp, Varchar
 
 
 # Sample table definitions for benchmarking
-class User(Table, table_name="users"):
+class User(Table, table="users"):
     id: int = Field(Serial(), primary_key=True)
     name: str = Field(Varchar(255))
     email: str = Field(Varchar(255))
@@ -36,7 +36,7 @@ class User(Table, table_name="users"):
     created_at: datetime = Field(Timestamp(), default="now()")
 
 
-class Post(Table, table_name="posts"):
+class Post(Table, table="posts"):
     id: int = Field(Serial(), primary_key=True)
     title: str = Field(Varchar(255))
     content: str = Field(Text())
@@ -45,7 +45,7 @@ class Post(Table, table_name="posts"):
     created_at: datetime = Field(Timestamp(), default="now()")
 
 
-class Comment(Table, table_name="comments"):
+class Comment(Table, table="comments"):
     id: int = Field(Serial(), primary_key=True)
     post_id: int = Field(Integer())
     user_id: int = Field(Integer())

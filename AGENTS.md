@@ -27,7 +27,7 @@ Tables use a custom metaclass (`TableMeta`) that:
 
 ```python
 # User defines:
-class User(Table, table_name="users"):
+class User(Table, table="users"):
     id: int = Field(Serial(), primary_key=True)
 
 # Metaclass creates:

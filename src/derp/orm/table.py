@@ -37,15 +37,17 @@ class TableMeta(type(BaseModel)):
         name: str,
         bases: tuple[type, ...],
         namespace: dict[str, Any],
-        table_name: str | None = None,
+        table: str | None = None,
         **kwargs: Any,
     ) -> Any:
-        # Store table_name in class namespace
-        if table_name is not None:
-            namespace["__table_name__"] = table_name
+        # Store table name in class namespace
+        if table is not None:
+            namespace["__table_name__"] = table
+            namespace["__explicit_table__"] = True
         elif "__table_name__" not in namespace:
             # Default to lowercase class name
             namespace["__table_name__"] = name.lower()
+            namespace["__explicit_table__"] = False
 
         # Extract FieldInfo objects BEFORE Pydantic processes them
         field_infos: dict[str, FieldInfo[Any]] = {}
@@ -129,7 +131,7 @@ class Table(BaseModel, metaclass=TableMeta):
     """Base class for all Derp table definitions.
 
     Example:
-        class User(Table, table_name="users"):
+        class User(Table, table="users"):
             id: int = Field(Serial(), primary_key=True)
             name: str = Field(Varchar(255))
             email: str = Field(Varchar(255), unique=True)
@@ -139,6 +141,7 @@ class Table(BaseModel, metaclass=TableMeta):
     """
 
     __table_name__: ClassVar[str]
+    __explicit_table__: ClassVar[bool]
     __columns__: ClassVar[dict[str, FieldInfo[Any]]]
     c: ClassVar[ColumnAccessor]
 

@@ -31,7 +31,7 @@ class AuthProvider(enum.StrEnum):
     GITHUB = "github"
 
 
-class BaseUser(abc.ABC, Table, table_name="users"):
+class BaseUser(abc.ABC, Table, table="users"):
     """User authentication table."""
 
     id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
@@ -58,7 +58,7 @@ class BaseUser(abc.ABC, Table, table_name="users"):
     )
 
 
-class AuthSession(Table, table_name="auth_sessions"):
+class AuthSession(Table, table="auth_sessions"):
     """Authentication session table."""
 
     id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
@@ -73,7 +73,7 @@ class AuthSession(Table, table_name="auth_sessions"):
     not_after: datetime = Field(Timestamp(with_timezone=True))
 
 
-class AuthRefreshToken(Table, table_name="auth_refresh_tokens"):
+class AuthRefreshToken(Table, table="auth_refresh_tokens"):
     """Refresh token table for token rotation."""
 
     id: int = Field(Serial(), primary_key=True)
@@ -88,7 +88,7 @@ class AuthRefreshToken(Table, table_name="auth_refresh_tokens"):
     created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
 
 
-class AuthMagicLink(Table, table_name="auth_magic_links"):
+class AuthMagicLink(Table, table="auth_magic_links"):
     """Magic link table for passwordless authentication."""
 
     id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")

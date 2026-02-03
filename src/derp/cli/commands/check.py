@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import typer
 
-from derp.cli.config import Config
+from derp.config import ConfigError, DerpConfig
 from derp.orm.loader import load_tables
 from derp.orm.migrations.journal import load_journal, load_latest_snapshot
 from derp.orm.migrations.snapshot.differ import SnapshotDiffer
@@ -51,9 +53,14 @@ def check() -> None:
       0 - Schema is up to date
       1 - Schema changes detected (migration needed)
     """
-    config = Config.load()
-    migrations_dir = config.migrations.directory
-    schema_path = config.migrations.get_schema_path()
+    try:
+        config = DerpConfig.load()
+    except ConfigError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    migrations_dir = Path(config.database.migrations.dir)
+    schema_path = config.database.schema_path
 
     # Load tables from schema module
     try:

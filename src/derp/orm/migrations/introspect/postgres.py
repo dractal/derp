@@ -6,6 +6,8 @@ a complete SchemaSnapshot representing the current database state.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import asyncpg
 
 from derp.orm.migrations.snapshot.models import (
@@ -44,24 +46,17 @@ class PostgresIntrospector:
         self.pool = pool
 
     async def introspect(
-        self,
-        schemas: list[str] | None = None,
-        exclude_tables: list[str] | None = None,
+        self, *, schemas: Sequence[str], exclude_tables: Sequence[str]
     ) -> SchemaSnapshot:
         """Introspect the database and return a SchemaSnapshot.
 
         Args:
-            schemas: List of schemas to introspect (default: ["public"])
-            exclude_tables: Table names to exclude (e.g., ["_derp_migrations"])
+            schemas: List of schemas to introspect.
+            exclude_tables: Table names to exclude.
 
         Returns:
             SchemaSnapshot representing the database state
         """
-        if schemas is None:
-            schemas = ["public"]
-        if exclude_tables is None:
-            exclude_tables = ["_derp_migrations"]
-
         snapshot = SchemaSnapshot(schemas=schemas)
 
         async with self.pool.acquire() as conn:
@@ -83,7 +78,7 @@ class PostgresIntrospector:
         return snapshot
 
     async def _get_enums(
-        self, conn: asyncpg.Connection, schemas: list[str]
+        self, conn: asyncpg.Connection, schemas: Sequence[str]
     ) -> dict[str, EnumSnapshot]:
         """Get all enum types."""
         enums: dict[str, EnumSnapshot] = {}
@@ -119,7 +114,7 @@ class PostgresIntrospector:
         return enums
 
     async def _get_sequences(
-        self, conn: asyncpg.Connection, schemas: list[str]
+        self, conn: asyncpg.Connection, schemas: Sequence[str]
     ) -> dict[str, SequenceSnapshot]:
         """Get all sequences."""
         sequences: dict[str, SequenceSnapshot] = {}
@@ -163,8 +158,8 @@ class PostgresIntrospector:
     async def _get_tables(
         self,
         conn: asyncpg.Connection,
-        schemas: list[str],
-        exclude_tables: list[str],
+        schemas: Sequence[str],
+        exclude_tables: Sequence[str],
     ) -> dict[str, TableSnapshot]:
         """Get all tables with their columns and constraints."""
         tables: dict[str, TableSnapshot] = {}
@@ -521,8 +516,8 @@ class PostgresIntrospector:
     async def _get_policies(
         self,
         conn: asyncpg.Connection,
-        schemas: list[str],
-        exclude_tables: list[str],
+        schemas: Sequence[str],
+        exclude_tables: Sequence[str],
     ) -> dict[str, PolicySnapshot]:
         """Get RLS policies."""
         policies: dict[str, PolicySnapshot] = {}

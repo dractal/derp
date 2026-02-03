@@ -2,29 +2,20 @@
 
 from __future__ import annotations
 
-import dataclasses
 from types import TracebackType
 from typing import Self
 
-from derp.auth import AuthClient, AuthConfig, BaseUser
-from derp.orm import DatabaseConfig, DatabaseEngine
-from derp.storage import StorageClient, StorageConfig
-
-
-@dataclasses.dataclass(kw_only=True)
-class DerpConfig[UserT: BaseUser]:
-    """Derp configuration."""
-
-    database: DatabaseConfig
-    storage: StorageConfig | None = None
-    auth: AuthConfig[UserT] | None = None
+from derp.auth import AuthClient, BaseUser
+from derp.config import DerpConfig
+from derp.orm import DatabaseEngine
+from derp.storage import StorageClient
 
 
 class DerpClient[UserT: BaseUser]:
     """Derp client for interacting with database, file storage, and more."""
 
-    def __init__(self, config: DerpConfig[UserT]):
-        self._config: DerpConfig[UserT] = config
+    def __init__(self, config: DerpConfig):
+        self._config: DerpConfig = config
         self._db: DatabaseEngine = DatabaseEngine(config.database.db_url)
         self._replica_db: DatabaseEngine | None = (
             DatabaseEngine(config.database.replica_url)
@@ -37,7 +28,7 @@ class DerpClient[UserT: BaseUser]:
             else None
         )
         self._auth: AuthClient[UserT] | None = (
-            AuthClient[UserT](self._config.auth)
+            AuthClient[UserT](self._config.auth, self._config.database.schema_path)
             if self._config.auth is not None
             else None
         )

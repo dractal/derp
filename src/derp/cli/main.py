@@ -21,7 +21,7 @@ from derp.cli.commands.migrate import migrate
 from derp.cli.commands.pull import pull
 from derp.cli.commands.push import push
 from derp.cli.commands.status import status
-from derp.cli.config import CONFIG_FILE, DEFAULT_DATABASE_URL_ENV, create_default_config
+from derp.config import CONFIG_FILE, create_default_config
 
 app = typer.Typer(
     name="derp",
@@ -63,11 +63,11 @@ def init(
     typer.echo("")
     typer.echo("1. Set your database URL:")
     typer.echo(
-        f"   export {DEFAULT_DATABASE_URL_ENV}=postgresql://user:pass@localhost:5432/dbname"
+        "   export DATABASE_URL=postgresql://user:pass@localhost:5432/dbname",
     )
     typer.echo("")
     typer.echo("2. Update derp.toml with your schema path:")
-    typer.echo('   schema = "src/schema.py"')
+    typer.echo('   schema_path = "app/*"')
     typer.echo("")
     typer.echo("3. Generate your first migration:")
     typer.echo("   derp generate --name initial")
@@ -81,6 +81,7 @@ def version() -> None:
     """Show version information."""
     try:
         from importlib.metadata import version as get_version
+
         ver = get_version("derp")
     except Exception:
         ver = "unknown"

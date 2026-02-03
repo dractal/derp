@@ -71,10 +71,10 @@ Builders use a fluent pattern:
 
 ## Configuration
 
-CLI uses `derp.toml` with typed config in `src/derp/cli/config.py`:
-- `[database]`: env var name for DATABASE_URL (never store URLs directly)
-- `[migrations]`: migration directory, schema path
-- `[introspect]`: schema selection, table filtering
+CLI uses `derp.toml` with typed config in `src/derp/config.py`:
+- `[database]`: database URLs and schema_path
+- `[database.migrations]`: migration directory and options
+- `[database.introspect]`: schema selection and table filtering
 
 
 ## Code style

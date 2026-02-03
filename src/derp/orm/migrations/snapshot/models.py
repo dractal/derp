@@ -6,6 +6,7 @@ matching Drizzle's snapshot format for PostgreSQL.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Literal
 
@@ -246,10 +247,10 @@ class SchemaSnapshot(BaseModel):
     tables: dict[str, TableSnapshot] = Field(default_factory=dict)
     enums: dict[str, EnumSnapshot] = Field(default_factory=dict)
     sequences: dict[str, SequenceSnapshot] = Field(default_factory=dict)
-    schemas: list[str] = Field(default_factory=lambda: ["public"])
+    schemas: Sequence[str] = Field(default=("public",))
     policies: dict[str, PolicySnapshot] = Field(default_factory=dict)
     roles: dict[str, RoleSnapshot] = Field(default_factory=dict)
-    grants: list[GrantSnapshot] = Field(default_factory=list)
+    grants: Sequence[GrantSnapshot] = Field(default=())
 
     # Metadata for linking snapshots
     id: str = ""  # Unique snapshot identifier (e.g., "0001")

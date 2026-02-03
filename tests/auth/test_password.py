@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from derp.auth.config import PasswordConfig
+from derp.config import PasswordConfig
 from derp.auth.password import Argon2Hasher, generate_secure_token, validate_password
 
 

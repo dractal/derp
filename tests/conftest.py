@@ -132,7 +132,7 @@ from derp.orm.fields import (
 )
 
 
-class User(Table, table_name="users"):
+class User(Table, table="users"):
     id: int = Field(Serial(), primary_key=True)
     name: str = Field(Varchar(255))
     email: str = Field(Varchar(255), unique=True)
@@ -140,7 +140,7 @@ class User(Table, table_name="users"):
     created_at: datetime = Field(Timestamp(), default="now()")
 
 
-class Post(Table, table_name="posts"):
+class Post(Table, table="posts"):
     id: int = Field(Serial(), primary_key=True)
     title: str = Field(Varchar(255))
     content: str = Field(Text(), nullable=True)
@@ -165,13 +165,13 @@ def temp_config_file(
 ) -> Path:
     """Create a temporary derp.toml config file."""
     config_content = f'''[database]
-env = "TEST_DATABASE_URL"
+db_url = "$TEST_DATABASE_URL"
+schema_path = "{temp_schema_file}"
 
-[migrations]
+[database.migrations]
 dir = "{temp_migrations_dir}"
-schema = "{temp_schema_file}"
 
-[introspect]
+[database.introspect]
 schemas = ["public"]
 exclude_tables = ["_derp_migrations"]
 '''

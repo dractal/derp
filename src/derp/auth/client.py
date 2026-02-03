@@ -6,7 +6,6 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from derp.auth.config import AuthConfig
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     ConfirmationTokenExpiredError,
@@ -44,24 +43,31 @@ from derp.auth.password import (
 from derp.auth.providers.base import BaseOAuthProvider
 from derp.auth.providers.github import GitHubProvider
 from derp.auth.providers.google import GoogleProvider
+from derp.config import AuthConfig
 from derp.orm import DatabaseEngine
+from derp.orm.loader import find_table_by_name
 
 
 class AuthClient[UserT: BaseUser]:
     """Core authentication client handling all auth operations."""
 
-    def __init__(self, config: AuthConfig):
-        if (
-            not issubclass(config.user_table, BaseUser)
-            or not config.user_table.get_table_name() == "users"
-        ):
+    def __init__(self, config: AuthConfig, schema_path: str):
+        table = find_table_by_name(
+            schema_path,
+            name=config.user_table_name,
+            base_class=BaseUser,
+        )
+        if table is None:
             raise ValueError(
-                "`user_table` must be a subclass of `BaseUser` and must be "
-                "named `users` for compatibility with the auth module."
+                f"Table '{config.user_table_name}' was not found in schema_path."
+            )
+        if not issubclass(table, BaseUser):
+            raise ValueError(
+                f"Table '{config.user_table_name}' must subclass BaseUser."
             )
 
         self._config: AuthConfig = config
-        self._user_table: type[UserT] = config.user_table
+        self._user_table: type[UserT] = table
         self._hasher: PasswordHasher = Argon2Hasher()
         self._email_client: EmailClient = EmailClient(self._config.email)
         self._oauth_providers: dict[AuthProvider, BaseOAuthProvider] = {}

@@ -94,6 +94,8 @@ def load_tables(module_path: str) -> list[type[Table]]:
 
         try:
             for table in _load_tables_from_file(file_path):
+                if not getattr(table, "__explicit_table__", False):
+                    continue
                 # Use qualified name to deduplicate
                 key = f"{table.__module__}.{table.__name__}"
                 if key not in seen_tables:
@@ -104,3 +106,31 @@ def load_tables(module_path: str) -> list[type[Table]]:
             continue
 
     return tables
+
+
+def find_table_by_name(
+    schema_path: str,
+    name: str,
+    *,
+    base_class: type[Table] | None = None,
+    exclude_base: bool = True,
+) -> type[Table] | None:
+    """Find a Table subclass by its SQL table name."""
+    matches: list[type[Table]] = [
+        table for table in load_tables(schema_path) if table.get_table_name() == name
+    ]
+    if base_class is not None:
+        matches = [
+            table
+            for table in matches
+            if issubclass(table, base_class)
+            and (table is not base_class or not exclude_base)
+        ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        match_names = ", ".join(f"{t.__module__}.{t.__name__}" for t in matches)
+        raise ValueError(
+            f"Multiple tables found for name '{name}': {match_names}"
+        )
+    return matches[0]

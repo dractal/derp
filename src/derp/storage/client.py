@@ -10,7 +10,7 @@ from aiobotocore.client import AioBaseClient
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from derp.storage.config import StorageConfig
+from derp.config import StorageConfig
 
 
 class StorageClient:
@@ -95,6 +95,18 @@ class StorageClient:
                 "Storage not connected. Call connect() or use async context manager."
             )
         return self._client
+    
+    def get_url(self, *, bucket: str, key: str) -> str:
+        """Get the URL for a file in S3.
+
+        Args:
+            bucket: Name of the S3 bucket.
+            key: S3 object key (path in bucket).
+
+        Returns:
+            URL for the file.
+        """
+        return f"{self._config.endpoint_url}/{bucket}/{key}"
 
     async def upload_file(
         self,

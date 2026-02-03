@@ -14,14 +14,14 @@ from derp.orm.fields import (
 )
 
 
-class User(Table, table_name="users"):
+class User(Table, table="users"):
     id: int = Field(Serial(), primary_key=True)
     name: str = Field(Varchar(255))
     email: str = Field(Varchar(255), unique=True)
     created_at: datetime = Field(Timestamp(), default="now()")
 
 
-class Post(Table, table_name="posts"):
+class Post(Table, table="posts"):
     id: int = Field(Serial(), primary_key=True)
     title: str = Field(Varchar(255))
     content: str = Field(Varchar(10000), nullable=True)
@@ -116,21 +116,21 @@ def test_column_accessor():
         pass
 
 
-class BaseEntity(Table, table_name="base_entity"):
+class BaseEntity(Table, table="base_entity"):
     """Base table with common fields."""
 
     id: int = Field(Serial(), primary_key=True)
     created_at: datetime = Field(Timestamp(), default="now()")
 
 
-class Employee(BaseEntity, table_name="employees"):
+class Employee(BaseEntity, table="employees"):
     """Employee table inheriting from BaseEntity."""
 
     name: str = Field(Varchar(255))
     department: str = Field(Varchar(100))
 
 
-class Manager(Employee, table_name="managers"):
+class Manager(Employee, table="managers"):
     """Manager table inheriting from Employee."""
 
     level: int = Field(Integer())

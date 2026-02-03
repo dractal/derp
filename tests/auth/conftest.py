@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Generator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -10,12 +11,13 @@ import pytest
 
 from derp.auth import AuthConfig, EmailConfig, JWTConfig
 from derp.auth.models import BaseUser
-from derp.derp_client import DerpClient, DerpConfig
+from derp.config import DerpConfig
+from derp.derp_client import DerpClient
 from derp.orm import DatabaseConfig, DatabaseEngine
 from derp.orm.fields import JSONB, Field
 
 
-class User(BaseUser, table_name="users"):
+class User(BaseUser, table="users"):
     user_metadata: dict[str, Any] | None = Field(JSONB(), nullable=True)
 
 
@@ -43,7 +45,6 @@ def email_config() -> EmailConfig:
         enable_confirmation=True,
         enable_magic_link=True,
         from_email="test@example.com",
-        from_name="Test User",
         smtp_host="localhost",
         smtp_port=587,
         smtp_user="test@example.com",
@@ -56,7 +57,7 @@ def email_config() -> EmailConfig:
 @pytest.fixture
 def auth_config(jwt_config: JWTConfig, email_config: EmailConfig) -> AuthConfig[User]:
     """Create an auth config for testing."""
-    return AuthConfig(email=email_config, jwt=jwt_config, user_table=User)
+    return AuthConfig(email=email_config, jwt=jwt_config, user_table_name="users")
 
 
 @pytest.fixture
@@ -69,6 +70,7 @@ async def derp(
             database=DatabaseConfig(
                 db_url=clean_database,
                 replica_url=clean_database,
+                schema_path=str(Path(__file__)),
             ),
             auth=auth_config,
         ),

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from derp.cli.config import Config
+from derp.config import ConfigError, DerpConfig
 from derp.orm.loader import load_tables
 
 # Import all convertors to register them
@@ -165,9 +166,14 @@ def generate(
     Compares your current schema definition against the latest snapshot
     and generates migration SQL with a new snapshot file.
     """
-    config = Config.load()
-    migrations_dir = config.migrations.directory
-    schema_path = config.migrations.get_schema_path()
+    try:
+        config = DerpConfig.load()
+    except ConfigError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    migrations_dir = Path(config.database.migrations.dir)
+    schema_path = config.database.schema_path
 
     if custom:
         _generate_custom_migration(config, name)
@@ -269,9 +275,9 @@ def generate(
     typer.echo("Review the migration and run 'derp migrate' to apply.")
 
 
-def _generate_custom_migration(config: Config, name: str) -> None:
+def _generate_custom_migration(config: DerpConfig, name: str) -> None:
     """Generate an empty migration for custom SQL."""
-    migrations_dir = config.migrations.directory
+    migrations_dir = Path(config.database.migrations.dir)
     journal = load_journal(migrations_dir)
 
     next_version = get_next_version(journal)

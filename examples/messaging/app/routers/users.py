@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 
-from app.config import settings
 from app.dependencies import get_current_user, get_derp
 from app.models import User
 from app.schemas import (
@@ -24,9 +22,9 @@ router = APIRouter(prefix="/users", tags=["users"])
 async def list_users(
     user: User = Depends(get_current_user),
     derp: DerpClient[User] = Depends(get_derp),
-    search: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
-    limit: Annotated[int, Query(ge=1, le=50)] = 20,
-    offset: Annotated[int, Query(ge=0)] = 0,
+    search: str | None = Query(min_length=1, max_length=100, default=None),
+    limit: int = Query(ge=1, le=50, default=20),
+    offset: int = Query(ge=0, default=0),
 ) -> list[UserPublicResponse]:
     """List users, optionally filtered by search query."""
     query = (
@@ -40,8 +38,7 @@ async def list_users(
 
     if search:
         query = query.where(
-            (User.c.email.ilike(f"%{search}%"))
-            | (User.c.username.ilike(f"%{search}%"))
+            (User.c.email.ilike(f"%{search}%")) | (User.c.username.ilike(f"%{search}%"))
         )
 
     users = await query.execute()
@@ -102,21 +99,21 @@ async def upload_avatar(
 
     # Delete old avatar if exists
     if user.avatar_url:
-        old_key = user.avatar_url.split(f"{settings.storage_bucket}/")[-1]
+        old_key = user.avatar_url.split("avatars/")[-1]
         try:
-            await derp.storage.delete_file(bucket=settings.storage_bucket, key=old_key)
+            await derp.storage.delete_file(bucket="avatars", key=old_key)
         except Exception:
             pass
 
     await derp.storage.upload_file(
-        bucket=settings.storage_bucket,
+        bucket="avatars",
         key=key,
         data=content,
         content_type=file.content_type,
         metadata={"user_id": str(user.id)},
     )
 
-    avatar_url = f"{settings.storage_endpoint_url}/{settings.storage_bucket}/{key}"
+    avatar_url = derp.storage.get_url(bucket="avatars", key=key)
     await derp.auth.update_user(user_id=user.id, avatar_url=avatar_url)
 
     return AvatarUploadResponse(avatar_url=avatar_url)

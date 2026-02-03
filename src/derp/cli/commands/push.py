@@ -9,7 +9,7 @@ import asyncpg
 import typer
 
 from derp.cli.commands.generate import create_rename_resolver, make_rename_callback
-from derp.cli.config import Config
+from derp.config import ConfigError, DerpConfig
 from derp.orm.loader import load_tables
 
 # Import all convertors to register them
@@ -51,9 +51,20 @@ def push(
 
     For production, use 'derp generate' + 'derp migrate' instead.
     """
-    config = Config.load()
-    db_url = config.database.get_url()
-    schema_path = config.migrations.get_schema_path()
+    try:
+        config = DerpConfig.load()
+    except ConfigError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    db_url = config.database.db_url
+    schema_path = config.database.schema_path
+    if not schema_path:
+        typer.echo(
+            "Error: database.schema_path not configured in derp.toml",
+            err=True,
+        )
+        raise typer.Exit(1)
 
     # Load tables from schema module
     try:
@@ -75,8 +86,8 @@ def push(
             # Introspect current database
             introspector = PostgresIntrospector(pool)
             db_snapshot = await introspector.introspect(
-                schemas=config.introspect.schemas,
-                exclude_tables=config.introspect.exclude_tables,
+                schemas=config.database.introspect.schemas,
+                exclude_tables=config.database.introspect.exclude_tables,
             )
 
             typer.echo(f"Introspected {len(db_snapshot.tables)} existing table(s)")

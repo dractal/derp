@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 from typing import Annotated
 
 import typer
 
-from derp.cli.config import Config
+from derp.config import ConfigError, DerpConfig
 from derp.orm.migrations.journal import (
     get_migration_folders,
     load_journal,
@@ -35,8 +36,13 @@ def drop(
     - Remove a migration you haven't applied yet
     - Clean up and regenerate migrations during development
     """
-    config = Config.load()
-    migrations_dir = config.migrations.directory
+    try:
+        config = DerpConfig.load()
+    except ConfigError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1)
+
+    migrations_dir = Path(config.database.migrations.dir)
 
     if not migrations_dir.exists():
         typer.echo("No migrations directory found.")

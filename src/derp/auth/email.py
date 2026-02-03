@@ -10,8 +10,8 @@ from pathlib import Path
 import aiosmtplib
 from jinja2 import Environment, FileSystemLoader, Template
 
-from derp.auth.config import EmailConfig
 from derp.auth.exceptions import EmailSendError
+from derp.config import EmailConfig
 
 
 class EmailClient:
@@ -57,7 +57,7 @@ class EmailClient:
         """
         # Build message
         message = MIMEMultipart("alternative")
-        message["From"] = f"{self._config.from_name} <{self._config.from_email}>"
+        message["From"] = self._config.from_email
         message["To"] = to_email
         message["Subject"] = subject
 

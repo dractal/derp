@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 
 import httpx
 
-from derp.auth.config import GoogleOAuthConfig
+from derp.config import GoogleOAuthConfig
 from derp.auth.exceptions import OAuthProviderError
 from derp.auth.providers.base import BaseOAuthProvider, OAuthTokens, OAuthUserInfo
 

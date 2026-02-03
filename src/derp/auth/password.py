@@ -7,7 +7,7 @@ import re
 import secrets
 from dataclasses import dataclass
 
-from derp.auth.config import PasswordConfig
+from derp.config import PasswordConfig
 
 
 class PasswordHasher(abc.ABC):
