@@ -26,7 +26,7 @@ class AddColumnConvertor(StatementConvertor[AddColumnStatement]):
         return "alter_table_add_column"
 
     def convert(self, statement: AddColumnStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         col = statement.column
 
         parts = [quote_identifier(col.name)]
@@ -65,7 +65,7 @@ class DropColumnConvertor(StatementConvertor[DropColumnStatement]):
         return "alter_table_drop_column"
 
     def convert(self, statement: DropColumnStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         col_name = quote_identifier(statement.column_name)
         cascade = " CASCADE" if statement.cascade else ""
         return f"ALTER TABLE {table_ref} DROP COLUMN {col_name}{cascade};"
@@ -79,7 +79,7 @@ class RenameColumnConvertor(StatementConvertor[RenameColumnStatement]):
         return "alter_table_rename_column"
 
     def convert(self, statement: RenameColumnStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         from_name = quote_identifier(statement.from_column)
         to_name = quote_identifier(statement.to_column)
         return f"ALTER TABLE {table_ref} RENAME COLUMN {from_name} TO {to_name};"
@@ -93,7 +93,7 @@ class AlterColumnTypeConvertor(StatementConvertor[AlterColumnTypeStatement]):
         return "alter_table_alter_column_set_type"
 
     def convert(self, statement: AlterColumnTypeStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         col_name = quote_identifier(statement.column_name)
         new_type = statement.new_type.upper()
 
@@ -115,7 +115,7 @@ class AlterColumnNullableConvertor(StatementConvertor[AlterColumnNullableStateme
         return "alter_table_alter_column_set_nullable"
 
     def convert(self, statement: AlterColumnNullableStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         col_name = quote_identifier(statement.column_name)
 
         if statement.nullable:
@@ -132,7 +132,7 @@ class AlterColumnDefaultConvertor(StatementConvertor[AlterColumnDefaultStatement
         return "alter_table_alter_column_set_default"
 
     def convert(self, statement: AlterColumnDefaultStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         col_name = quote_identifier(statement.column_name)
 
         if statement.default is None:

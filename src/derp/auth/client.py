@@ -113,13 +113,13 @@ class AuthClient[UserT: BaseUser]:
         use_primary: bool = False,
     ) -> UserT | None:
         """Get a user by their ID or email address."""
+        # Default to replica for fetching users to reduce load on primary.
+        # This endpoint tends to be called more frequently than others.
+        db = self._db() if use_primary else self._maybe_replica_db()
+
         if user_id is not None and email is not None:
             raise ValueError("Cannot get a user by both ID and email address.")
-
         elif user_id is not None:
-            # Default to replica for fetching users to reduce load on primary.
-            # This endpoint tends to be called more frequently than others.
-            db = self._db() if use_primary else self._maybe_replica_db()
             result = await (
                 db.select(self._user_table)
                 .where(self._user_table.c.id == str(user_id))
@@ -127,8 +127,7 @@ class AuthClient[UserT: BaseUser]:
             )
         elif email is not None:
             result = await (
-                self._db()
-                .select(self._user_table)
+                db.select(self._user_table)
                 .where(self._user_table.c.email == email.lower())
                 .execute()
             )

@@ -58,7 +58,7 @@ class CreateTableConvertor(StatementConvertor[CreateTableStatement]):
 
     def convert(self, statement: CreateTableStatement) -> str:
         lines: list[str] = []
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
 
         lines.append(f"CREATE TABLE {table_ref} (")
 
@@ -129,7 +129,7 @@ class DropTableConvertor(StatementConvertor[DropTableStatement]):
         return "drop_table"
 
     def convert(self, statement: DropTableStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         cascade = " CASCADE" if statement.cascade else ""
         return f"DROP TABLE IF EXISTS {table_ref}{cascade};"
 
@@ -142,7 +142,7 @@ class RenameTableConvertor(StatementConvertor):
         return "rename_table"
 
     def convert(self, statement: RenameTableStatement) -> str:
-        from_ref = quote_schema_table(statement.schema, statement.from_table)
+        from_ref = quote_schema_table(statement.schema_name, statement.from_table)
         to_name = quote_identifier(statement.to_table)
         return f"ALTER TABLE {from_ref} RENAME TO {to_name};"
 

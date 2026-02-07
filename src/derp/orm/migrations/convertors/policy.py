@@ -25,7 +25,7 @@ class EnableRLSConvertor(StatementConvertor[EnableRLSStatement]):
         return "enable_rls"
 
     def convert(self, statement: EnableRLSStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         sql = f"ALTER TABLE {table_ref} ENABLE ROW LEVEL SECURITY;"
 
         if statement.force:
@@ -42,7 +42,7 @@ class DisableRLSConvertor(StatementConvertor[DisableRLSStatement]):
         return "disable_rls"
 
     def convert(self, statement: DisableRLSStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         return f"ALTER TABLE {table_ref} DISABLE ROW LEVEL SECURITY;"
 
 
@@ -54,7 +54,7 @@ class CreatePolicyConvertor(StatementConvertor[CreatePolicyStatement]):
         return "create_policy"
 
     def convert(self, statement: CreatePolicyStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         policy_name = quote_identifier(statement.name)
 
         parts = [f"CREATE POLICY {policy_name} ON {table_ref}"]
@@ -91,7 +91,7 @@ class DropPolicyConvertor(StatementConvertor[DropPolicyStatement]):
         return "drop_policy"
 
     def convert(self, statement: DropPolicyStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         policy_name = quote_identifier(statement.name)
         return f"DROP POLICY IF EXISTS {policy_name} ON {table_ref};"
 
@@ -104,7 +104,7 @@ class AlterPolicyConvertor(StatementConvertor[AlterPolicyStatement]):
         return "alter_policy"
 
     def convert(self, statement: AlterPolicyStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         policy_name = quote_identifier(statement.name)
 
         parts = [f"ALTER POLICY {policy_name} ON {table_ref}"]

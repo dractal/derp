@@ -7,6 +7,7 @@ from typing import Self
 
 from derp.auth import AuthClient, BaseUser
 from derp.config import DerpConfig
+from derp.kv.client import KVClients
 from derp.orm import DatabaseEngine
 from derp.storage import StorageClient
 
@@ -32,15 +33,22 @@ class DerpClient[UserT: BaseUser]:
             if self._config.auth is not None
             else None
         )
+        self._kv: KVClients | None = (
+            KVClients(self._config.kv, self._config.database.schema_path)
+            if self._config.kv is not None
+            else None
+        )
         self._in_session = False
 
-    async def connect(self, storage: bool = True) -> None:
+    async def connect(self) -> None:
         """Start a session."""
         await self._db.connect()
         if self._replica_db is not None:
             await self._replica_db.connect()
-        if storage and self._storage is not None:
+        if self._storage is not None:
             await self._storage.connect()
+        if self._kv is not None:
+            await self._kv.connect()
         if self._auth is not None:
             self._auth.set_db(self._db, replica_db=self._replica_db)
 
@@ -55,6 +63,8 @@ class DerpClient[UserT: BaseUser]:
             await self._replica_db.disconnect()
         if self._storage is not None:
             await self._storage.disconnect()
+        if self._kv is not None:
+            await self._kv.disconnect()
         if self._auth is not None:
             self._auth.set_db(None, replica_db=None)
 
@@ -105,3 +115,12 @@ class DerpClient[UserT: BaseUser]:
         if self._auth is None:
             raise ValueError("`AuthConfig` was not passed to `DerpConfig`.")
         return self._auth
+
+    @property
+    def kv(self) -> KVClients:
+        """Get the KV clients."""
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        if self._kv is None:
+            raise ValueError("`KVConfig` was not passed to `DerpConfig`.")
+        return self._kv

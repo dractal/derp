@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =============================================================================
 # Base Statement
@@ -20,8 +20,7 @@ class JsonStatement(BaseModel):
 
     type: str
 
-    class ConfigDict:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 # =============================================================================
@@ -89,7 +88,7 @@ class CreateTableStatement(JsonStatement):
 
     type: str = "create_table"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     columns: list[ColumnDefinition]
     primary_key: PrimaryKeyDefinition | None = None
     unique_constraints: list[UniqueConstraintDefinition] = Field(default_factory=list)
@@ -102,7 +101,7 @@ class DropTableStatement(JsonStatement):
 
     type: str = "drop_table"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     cascade: bool = False
 
 
@@ -112,7 +111,7 @@ class RenameTableStatement(JsonStatement):
     type: str = "rename_table"
     from_table: str
     to_table: str
-    schema: str = "public"
+    schema_name: str = "public"
 
 
 class RecreateTableStatement(JsonStatement):
@@ -120,7 +119,7 @@ class RecreateTableStatement(JsonStatement):
 
     type: str = "recreate_table"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     columns: list[ColumnDefinition]
     primary_key: PrimaryKeyDefinition | None = None
     unique_constraints: list[UniqueConstraintDefinition] = Field(default_factory=list)
@@ -140,7 +139,7 @@ class AddColumnStatement(JsonStatement):
 
     type: str = "alter_table_add_column"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     column: ColumnDefinition
 
 
@@ -149,7 +148,7 @@ class DropColumnStatement(JsonStatement):
 
     type: str = "alter_table_drop_column"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     column_name: str
     cascade: bool = False
 
@@ -159,7 +158,7 @@ class RenameColumnStatement(JsonStatement):
 
     type: str = "alter_table_rename_column"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     from_column: str
     to_column: str
 
@@ -169,7 +168,7 @@ class AlterColumnTypeStatement(JsonStatement):
 
     type: str = "alter_table_alter_column_set_type"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     column_name: str
     old_type: str
     new_type: str
@@ -181,7 +180,7 @@ class AlterColumnNullableStatement(JsonStatement):
 
     type: str = "alter_table_alter_column_set_nullable"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     column_name: str
     nullable: bool  # True = DROP NOT NULL, False = SET NOT NULL
 
@@ -191,7 +190,7 @@ class AlterColumnDefaultStatement(JsonStatement):
 
     type: str = "alter_table_alter_column_set_default"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     column_name: str
     default: str | None  # None = DROP DEFAULT
 
@@ -207,7 +206,7 @@ class CreateForeignKeyStatement(JsonStatement):
     type: str = "create_foreign_key"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     columns: list[str]
     references_schema: str = "public"
     references_table: str
@@ -224,7 +223,7 @@ class DropForeignKeyStatement(JsonStatement):
     type: str = "drop_foreign_key"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
 
 
 # =============================================================================
@@ -238,7 +237,7 @@ class CreateUniqueConstraintStatement(JsonStatement):
     type: str = "create_unique_constraint"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     columns: list[str]
     nulls_not_distinct: bool = False
 
@@ -249,7 +248,7 @@ class DropUniqueConstraintStatement(JsonStatement):
     type: str = "drop_unique_constraint"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
 
 
 # =============================================================================
@@ -263,7 +262,7 @@ class CreateCheckConstraintStatement(JsonStatement):
     type: str = "create_check_constraint"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     expression: str
 
 
@@ -273,7 +272,7 @@ class DropCheckConstraintStatement(JsonStatement):
     type: str = "drop_check_constraint"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
 
 
 # =============================================================================
@@ -287,7 +286,7 @@ class CreatePrimaryKeyStatement(JsonStatement):
     type: str = "create_pk"
     name: str | None = None
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     columns: list[str]
 
 
@@ -297,7 +296,7 @@ class DropPrimaryKeyStatement(JsonStatement):
     type: str = "drop_pk"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
 
 
 # =============================================================================
@@ -311,7 +310,7 @@ class CreateIndexStatement(JsonStatement):
     type: str = "create_index"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     columns: list[str]
     unique: bool = False
     where: str | None = None  # Partial index condition
@@ -326,7 +325,7 @@ class DropIndexStatement(JsonStatement):
 
     type: str = "drop_index"
     name: str
-    schema: str = "public"
+    schema_name: str = "public"
     concurrently: bool = False
 
 
@@ -340,7 +339,7 @@ class CreateEnumStatement(JsonStatement):
 
     type: str = "create_enum"
     name: str
-    schema: str = "public"
+    schema_name: str = "public"
     values: list[str]
 
 
@@ -349,7 +348,7 @@ class DropEnumStatement(JsonStatement):
 
     type: str = "drop_enum"
     name: str
-    schema: str = "public"
+    schema_name: str = "public"
     cascade: bool = False
 
 
@@ -358,7 +357,7 @@ class AlterEnumAddValueStatement(JsonStatement):
 
     type: str = "alter_enum_add_value"
     name: str
-    schema: str = "public"
+    schema_name: str = "public"
     value: str
     before: str | None = None  # Add before this value
     after: str | None = None  # Add after this value
@@ -369,7 +368,7 @@ class AlterEnumRenameValueStatement(JsonStatement):
 
     type: str = "alter_enum_rename_value"
     name: str
-    schema: str = "public"
+    schema_name: str = "public"
     old_value: str
     new_value: str
 
@@ -384,7 +383,7 @@ class CreateSequenceStatement(JsonStatement):
 
     type: str = "create_sequence"
     name: str
-    schema: str = "public"
+    schema_name: str = "public"
     start: int = 1
     increment: int = 1
     min_value: int | None = None
@@ -399,7 +398,7 @@ class DropSequenceStatement(JsonStatement):
 
     type: str = "drop_sequence"
     name: str
-    schema: str = "public"
+    schema_name: str = "public"
     cascade: bool = False
 
 
@@ -408,7 +407,7 @@ class AlterSequenceStatement(JsonStatement):
 
     type: str = "alter_sequence"
     name: str
-    schema: str = "public"
+    schema_name: str = "public"
     restart: int | None = None
     increment: int | None = None
     min_value: int | None = None
@@ -449,7 +448,7 @@ class EnableRLSStatement(JsonStatement):
 
     type: str = "enable_rls"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     force: bool = False  # FORCE vs not
 
 
@@ -458,7 +457,7 @@ class DisableRLSStatement(JsonStatement):
 
     type: str = "disable_rls"
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
 
 
 class CreatePolicyStatement(JsonStatement):
@@ -467,7 +466,7 @@ class CreatePolicyStatement(JsonStatement):
     type: str = "create_policy"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     command: str = "ALL"  # ALL, SELECT, INSERT, UPDATE, DELETE
     permissive: bool = True  # PERMISSIVE vs RESTRICTIVE
     roles: list[str] = Field(default_factory=lambda: ["public"])
@@ -481,7 +480,7 @@ class DropPolicyStatement(JsonStatement):
     type: str = "drop_policy"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
 
 
 class AlterPolicyStatement(JsonStatement):
@@ -490,7 +489,7 @@ class AlterPolicyStatement(JsonStatement):
     type: str = "alter_policy"
     name: str
     table_name: str
-    schema: str = "public"
+    schema_name: str = "public"
     roles: list[str] | None = None
     using: str | None = None
     with_check: str | None = None

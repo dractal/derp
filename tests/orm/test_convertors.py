@@ -63,7 +63,7 @@ class TestCreateTableConvertor:
         """Test creating a table in a non-public schema."""
         stmt = CreateTableStatement(
             table_name="users",
-            schema="auth",
+            schema_name="auth",
             columns=[
                 ColumnDefinition(name="id", type="serial", primary_key=True),
             ],
@@ -262,7 +262,7 @@ class TestDropTableConvertor:
 
     def test_drop_with_schema(self):
         """Test dropping a table in a schema."""
-        stmt = DropTableStatement(table_name="users", schema="auth")
+        stmt = DropTableStatement(table_name="users", schema_name="auth")
 
         sql = ConvertorRegistry.convert(stmt)
 
@@ -676,7 +676,7 @@ class TestIndexConvertors:
 
     def test_drop_index_with_schema(self):
         """Test dropping an index with schema."""
-        stmt = DropIndexStatement(name="users_email_idx", schema="auth")
+        stmt = DropIndexStatement(name="users_email_idx", schema_name="auth")
 
         sql = ConvertorRegistry.convert(stmt)
 
@@ -712,7 +712,7 @@ class TestEnumConvertors:
         """Test creating an enum in a schema."""
         stmt = CreateEnumStatement(
             name="status",
-            schema="custom",
+            schema_name="custom",
             values=["pending", "active"],
         )
 

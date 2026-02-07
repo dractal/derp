@@ -29,7 +29,7 @@ class CreateSequenceConvertor(StatementConvertor[CreateSequenceStatement]):
         return "create_sequence"
 
     def convert(self, statement: CreateSequenceStatement) -> str:
-        seq_name = _quote_sequence_name(statement.schema, statement.name)
+        seq_name = _quote_sequence_name(statement.schema_name, statement.name)
         parts = [f"CREATE SEQUENCE {seq_name}"]
 
         if statement.start != 1:
@@ -73,7 +73,7 @@ class DropSequenceConvertor(StatementConvertor[DropSequenceStatement]):
         return "drop_sequence"
 
     def convert(self, statement: DropSequenceStatement) -> str:
-        seq_name = _quote_sequence_name(statement.schema, statement.name)
+        seq_name = _quote_sequence_name(statement.schema_name, statement.name)
         cascade = " CASCADE" if statement.cascade else ""
         return f"DROP SEQUENCE IF EXISTS {seq_name}{cascade};"
 
@@ -86,7 +86,7 @@ class AlterSequenceConvertor(StatementConvertor[AlterSequenceStatement]):
         return "alter_sequence"
 
     def convert(self, statement: AlterSequenceStatement) -> str:
-        seq_name = _quote_sequence_name(statement.schema, statement.name)
+        seq_name = _quote_sequence_name(statement.schema_name, statement.name)
         parts = [f"ALTER SEQUENCE {seq_name}"]
 
         if statement.restart is not None:

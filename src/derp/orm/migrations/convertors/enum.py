@@ -31,7 +31,7 @@ class CreateEnumConvertor(StatementConvertor[CreateEnumStatement]):
         return "create_enum"
 
     def convert(self, statement: CreateEnumStatement) -> str:
-        enum_name = _quote_enum_name(statement.schema, statement.name)
+        enum_name = _quote_enum_name(statement.schema_name, statement.name)
         values = ", ".join(quote_value(v) for v in statement.values)
         return f"CREATE TYPE {enum_name} AS ENUM ({values});"
 
@@ -44,7 +44,7 @@ class DropEnumConvertor(StatementConvertor[DropEnumStatement]):
         return "drop_enum"
 
     def convert(self, statement: DropEnumStatement) -> str:
-        enum_name = _quote_enum_name(statement.schema, statement.name)
+        enum_name = _quote_enum_name(statement.schema_name, statement.name)
         cascade = " CASCADE" if statement.cascade else ""
         return f"DROP TYPE IF EXISTS {enum_name}{cascade};"
 
@@ -57,7 +57,7 @@ class AlterEnumAddValueConvertor(StatementConvertor[AlterEnumAddValueStatement])
         return "alter_enum_add_value"
 
     def convert(self, statement: AlterEnumAddValueStatement) -> str:
-        enum_name = _quote_enum_name(statement.schema, statement.name)
+        enum_name = _quote_enum_name(statement.schema_name, statement.name)
         value = quote_value(statement.value)
 
         sql = f"ALTER TYPE {enum_name} ADD VALUE {value}"
@@ -78,7 +78,7 @@ class AlterEnumRenameValueConvertor(StatementConvertor[AlterEnumRenameValueState
         return "alter_enum_rename_value"
 
     def convert(self, statement: AlterEnumRenameValueStatement) -> str:
-        enum_name = _quote_enum_name(statement.schema, statement.name)
+        enum_name = _quote_enum_name(statement.schema_name, statement.name)
         old_value = quote_value(statement.old_value)
         new_value = quote_value(statement.new_value)
         return f"ALTER TYPE {enum_name} RENAME VALUE {old_value} TO {new_value};"

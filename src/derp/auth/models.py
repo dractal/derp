@@ -31,7 +31,7 @@ class AuthProvider(enum.StrEnum):
     GITHUB = "github"
 
 
-class BaseUser(abc.ABC, Table, table="users"):
+class BaseUser(abc.ABC, Table):
     """User authentication table."""
 
     id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")

@@ -34,7 +34,7 @@ class CreateIndexConvertor(StatementConvertor[CreateIndexStatement]):
 
         parts.append(quote_identifier(statement.name))
 
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         parts.append(f"ON {table_ref}")
 
         # Index method
@@ -77,9 +77,9 @@ class DropIndexConvertor(StatementConvertor[DropIndexStatement]):
         parts.append("IF EXISTS")
 
         # Index with schema
-        if statement.schema and statement.schema != "public":
+        if statement.schema_name and statement.schema_name != "public":
             parts.append(
-                f"{quote_identifier(statement.schema)}.{quote_identifier(statement.name)}"
+                f"{quote_identifier(statement.schema_name)}.{quote_identifier(statement.name)}"
             )
         else:
             parts.append(quote_identifier(statement.name))

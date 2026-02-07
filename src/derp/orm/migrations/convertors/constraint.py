@@ -28,7 +28,7 @@ class CreateForeignKeyConvertor(StatementConvertor[CreateForeignKeyStatement]):
         return "create_foreign_key"
 
     def convert(self, statement: CreateForeignKeyStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         constraint_name = quote_identifier(statement.name)
 
         fk_cols = ", ".join(quote_identifier(c) for c in statement.columns)
@@ -62,7 +62,7 @@ class DropForeignKeyConvertor(StatementConvertor[DropForeignKeyStatement]):
         return "drop_foreign_key"
 
     def convert(self, statement: DropForeignKeyStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         constraint_name = quote_identifier(statement.name)
         return f"ALTER TABLE {table_ref} DROP CONSTRAINT {constraint_name};"
 
@@ -77,7 +77,7 @@ class CreateUniqueConstraintConvertor(
         return "create_unique_constraint"
 
     def convert(self, statement: CreateUniqueConstraintStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         constraint_name = quote_identifier(statement.name)
         cols = ", ".join(quote_identifier(c) for c in statement.columns)
 
@@ -97,7 +97,7 @@ class DropUniqueConstraintConvertor(StatementConvertor[DropUniqueConstraintState
         return "drop_unique_constraint"
 
     def convert(self, statement: DropUniqueConstraintStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         constraint_name = quote_identifier(statement.name)
         return f"ALTER TABLE {table_ref} DROP CONSTRAINT {constraint_name};"
 
@@ -112,7 +112,7 @@ class CreateCheckConstraintConvertor(
         return "create_check_constraint"
 
     def convert(self, statement: CreateCheckConstraintStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         constraint_name = quote_identifier(statement.name)
         return (
             f"ALTER TABLE {table_ref} ADD CONSTRAINT {constraint_name} "
@@ -128,7 +128,7 @@ class DropCheckConstraintConvertor(StatementConvertor[DropCheckConstraintStateme
         return "drop_check_constraint"
 
     def convert(self, statement: DropCheckConstraintStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         constraint_name = quote_identifier(statement.name)
         return f"ALTER TABLE {table_ref} DROP CONSTRAINT {constraint_name};"
 
@@ -141,7 +141,7 @@ class CreatePrimaryKeyConvertor(StatementConvertor[CreatePrimaryKeyStatement]):
         return "create_pk"
 
     def convert(self, statement: CreatePrimaryKeyStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         cols = ", ".join(quote_identifier(c) for c in statement.columns)
 
         if statement.name:
@@ -161,7 +161,7 @@ class DropPrimaryKeyConvertor(StatementConvertor[DropPrimaryKeyStatement]):
         return "drop_pk"
 
     def convert(self, statement: DropPrimaryKeyStatement) -> str:
-        table_ref = quote_schema_table(statement.schema, statement.table_name)
+        table_ref = quote_schema_table(statement.schema_name, statement.table_name)
         constraint_name = quote_identifier(statement.name)
         return f"ALTER TABLE {table_ref} DROP CONSTRAINT {constraint_name};"
 

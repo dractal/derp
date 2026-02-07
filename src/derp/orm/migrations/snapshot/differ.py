@@ -121,7 +121,7 @@ def _table_to_create_statement(table: TableSnapshot) -> CreateTableStatement:
 
     return CreateTableStatement(
         table_name=table.name,
-        schema=table.schema_name,
+        schema_name=table.schema_name,
         columns=columns,
         primary_key=pk,
         unique_constraints=unique_constraints,
@@ -283,7 +283,7 @@ class SnapshotDiffer:
             self._statements.append(
                 CreateEnumStatement(
                     name=enum.name,
-                    schema=enum.schema_name,
+                    schema_name=enum.schema_name,
                     values=enum.values,
                 )
             )
@@ -294,7 +294,7 @@ class SnapshotDiffer:
             self._statements.append(
                 DropEnumStatement(
                     name=enum.name,
-                    schema=enum.schema_name,
+                    schema_name=enum.schema_name,
                     cascade=True,
                 )
             )
@@ -327,7 +327,7 @@ class SnapshotDiffer:
             self._statements.append(
                 AlterEnumAddValueStatement(
                     name=new_enum.name,
-                    schema=new_enum.schema_name,
+                    schema_name=new_enum.schema_name,
                     value=value,
                     after=after,
                     before=before,
@@ -354,7 +354,7 @@ class SnapshotDiffer:
             self._statements.append(
                 CreateSequenceStatement(
                     name=seq.name,
-                    schema=seq.schema_name,
+                    schema_name=seq.schema_name,
                     start=seq.start,
                     increment=seq.increment,
                     min_value=seq.min_value,
@@ -371,7 +371,7 @@ class SnapshotDiffer:
             self._statements.append(
                 DropSequenceStatement(
                     name=seq.name,
-                    schema=seq.schema_name,
+                    schema_name=seq.schema_name,
                 )
             )
 
@@ -395,7 +395,7 @@ class SnapshotDiffer:
                     CreateIndexStatement(
                         name=idx.name,
                         table_name=table.name,
-                        schema=table.schema_name,
+                        schema_name=table.schema_name,
                         columns=idx.columns,
                         unique=idx.unique,
                         where=idx.where,
@@ -412,7 +412,7 @@ class SnapshotDiffer:
             self._statements.append(
                 DropTableStatement(
                     table_name=table.name,
-                    schema=table.schema_name,
+                    schema_name=table.schema_name,
                     cascade=True,
                 )
             )
@@ -486,7 +486,7 @@ class SnapshotDiffer:
                     self._statements.append(
                         RenameColumnStatement(
                             table_name=new_table.name,
-                            schema=new_table.schema_name,
+                            schema_name=new_table.schema_name,
                             from_column=old_name,
                             to_column=new_name,
                         )
@@ -497,7 +497,7 @@ class SnapshotDiffer:
             self._statements.append(
                 DropColumnStatement(
                     table_name=old_table.name,
-                    schema=old_table.schema_name,
+                    schema_name=old_table.schema_name,
                     column_name=col_name,
                 )
             )
@@ -508,7 +508,7 @@ class SnapshotDiffer:
             self._statements.append(
                 AddColumnStatement(
                     table_name=new_table.name,
-                    schema=new_table.schema_name,
+                    schema_name=new_table.schema_name,
                     column=_column_to_definition(col),
                 )
             )
@@ -532,7 +532,7 @@ class SnapshotDiffer:
             self._statements.append(
                 AlterColumnTypeStatement(
                     table_name=table_name,
-                    schema=schema,
+                    schema_name=schema,
                     column_name=new_col.name,
                     old_type=old_col.type,
                     new_type=new_col.type,
@@ -544,7 +544,7 @@ class SnapshotDiffer:
             self._statements.append(
                 AlterColumnNullableStatement(
                     table_name=table_name,
-                    schema=schema,
+                    schema_name=schema,
                     column_name=new_col.name,
                     nullable=not new_col.not_null,
                 )
@@ -555,7 +555,7 @@ class SnapshotDiffer:
             self._statements.append(
                 AlterColumnDefaultStatement(
                     table_name=table_name,
-                    schema=schema,
+                    schema_name=schema,
                     column_name=new_col.name,
                     default=new_col.default,
                 )
@@ -576,7 +576,7 @@ class SnapshotDiffer:
                 CreateForeignKeyStatement(
                     name=fk.name,
                     table_name=new_table.name,
-                    schema=new_table.schema_name,
+                    schema_name=new_table.schema_name,
                     columns=fk.columns,
                     references_schema=fk.references_schema,
                     references_table=fk.references_table,
@@ -594,7 +594,7 @@ class SnapshotDiffer:
                 DropForeignKeyStatement(
                     name=fk_name,
                     table_name=old_table.name,
-                    schema=old_table.schema_name,
+                    schema_name=old_table.schema_name,
                 )
             )
 
@@ -612,7 +612,7 @@ class SnapshotDiffer:
                 CreateUniqueConstraintStatement(
                     name=uc.name,
                     table_name=new_table.name,
-                    schema=new_table.schema_name,
+                    schema_name=new_table.schema_name,
                     columns=uc.columns,
                     nulls_not_distinct=uc.nulls_not_distinct,
                 )
@@ -624,7 +624,7 @@ class SnapshotDiffer:
                 DropUniqueConstraintStatement(
                     name=uc_name,
                     table_name=old_table.name,
-                    schema=old_table.schema_name,
+                    schema_name=old_table.schema_name,
                 )
             )
 
@@ -640,7 +640,7 @@ class SnapshotDiffer:
                 CreateIndexStatement(
                     name=idx.name,
                     table_name=new_table.name,
-                    schema=new_table.schema_name,
+                    schema_name=new_table.schema_name,
                     columns=idx.columns,
                     unique=idx.unique,
                     where=idx.where,
@@ -656,7 +656,7 @@ class SnapshotDiffer:
             self._statements.append(
                 DropIndexStatement(
                     name=idx_name,
-                    schema=old_table.schema_name,
+                    schema_name=old_table.schema_name,
                 )
             )
 
@@ -667,7 +667,7 @@ class SnapshotDiffer:
                 self._statements.append(
                     EnableRLSStatement(
                         table_name=new_table.name,
-                        schema=new_table.schema_name,
+                        schema_name=new_table.schema_name,
                         force=new_table.rls_forced,
                     )
                 )
@@ -675,7 +675,7 @@ class SnapshotDiffer:
                 self._statements.append(
                     DisableRLSStatement(
                         table_name=new_table.name,
-                        schema=new_table.schema_name,
+                        schema_name=new_table.schema_name,
                     )
                 )
 
@@ -691,7 +691,7 @@ class SnapshotDiffer:
                 CreatePolicyStatement(
                     name=policy.name,
                     table_name=policy.table,
-                    schema=policy.schema_name,
+                    schema_name=policy.schema_name,
                     command=policy.command,
                     permissive=policy.permissive,
                     roles=policy.roles,
@@ -707,6 +707,6 @@ class SnapshotDiffer:
                 DropPolicyStatement(
                     name=policy.name,
                     table_name=policy.table,
-                    schema=policy.schema_name,
+                    schema_name=policy.schema_name,
                 )
             )

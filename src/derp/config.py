@@ -161,12 +161,29 @@ class StorageConfig(BaseModel):
     verify: bool | str = True
 
 
+class ValkeyConfig(BaseModel):
+    """Configuration for Valkey GLIDE connections."""
+
+    host: str = "localhost"
+    port: int = 6379
+    username: str | None = None
+    password: str | None = None
+    use_tls: bool = False
+
+
+class KVConfig(BaseModel):
+    """KV configuration."""
+
+    valkey: ValkeyConfig | None = None
+
+
 class DerpConfig(BaseModel):
     """Derp configuration."""
 
     database: DatabaseConfig
     storage: StorageConfig | None = None
     auth: AuthConfig | None = None
+    kv: KVConfig | None = None
 
     @classmethod
     def load(cls, path: str | Path = CONFIG_FILE) -> DerpConfig:
@@ -229,4 +246,11 @@ dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 
 # [auth.jwt]
 # secret = "$JWT_SECRET"
+
+# [kv.valkey]
+# host = "localhost"
+# port = 6379
+# # username = "$VALKEY_USERNAME"
+# # password = "$VALKEY_PASSWORD"
+# # use_tls = false
 """
