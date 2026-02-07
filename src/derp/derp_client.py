@@ -9,6 +9,7 @@ from derp.auth import AuthClient, BaseUser
 from derp.config import DerpConfig
 from derp.kv.client import KVClients
 from derp.orm import DatabaseEngine
+from derp.payments import PaymentsClient
 from derp.storage import StorageClient
 
 
@@ -38,6 +39,11 @@ class DerpClient[UserT: BaseUser]:
             if self._config.kv is not None
             else None
         )
+        self._payments: PaymentsClient | None = (
+            PaymentsClient(self._config.payments)
+            if self._config.payments is not None
+            else None
+        )
         self._in_session = False
 
     async def connect(self) -> None:
@@ -49,6 +55,8 @@ class DerpClient[UserT: BaseUser]:
             await self._storage.connect()
         if self._kv is not None:
             await self._kv.connect()
+        if self._payments is not None:
+            await self._payments.connect()
         if self._auth is not None:
             self._auth.set_db(self._db, replica_db=self._replica_db)
 
@@ -65,6 +73,8 @@ class DerpClient[UserT: BaseUser]:
             await self._storage.disconnect()
         if self._kv is not None:
             await self._kv.disconnect()
+        if self._payments is not None:
+            await self._payments.disconnect()
         if self._auth is not None:
             self._auth.set_db(None, replica_db=None)
 
@@ -124,3 +134,12 @@ class DerpClient[UserT: BaseUser]:
         if self._kv is None:
             raise ValueError("`KVConfig` was not passed to `DerpConfig`.")
         return self._kv
+
+    @property
+    def payments(self) -> PaymentsClient:
+        """Get the payments client."""
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        if self._payments is None:
+            raise ValueError("`PaymentsConfig` was not passed to `DerpConfig`.")
+        return self._payments

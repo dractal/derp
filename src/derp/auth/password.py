@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import abc
+import dataclasses
 import re
 import secrets
-from dataclasses import dataclass
 
 from derp.config import PasswordConfig
 
@@ -69,7 +69,7 @@ class Argon2Hasher(PasswordHasher):
         return self._hasher.check_needs_rehash(hashed)
 
 
-@dataclass
+@dataclasses.dataclass
 class PasswordValidationResult:
     """Result of password validation."""
 

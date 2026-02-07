@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
+import dataclasses
 from typing import Any
 
 
-@dataclass
+@dataclasses.dataclass
 class OAuthUserInfo:
     """User information retrieved from OAuth provider."""
 
@@ -19,7 +19,7 @@ class OAuthUserInfo:
     raw_data: dict[str, Any] | None = None
 
 
-@dataclass
+@dataclasses.dataclass
 class OAuthTokens:
     """Tokens received from OAuth provider."""
 

@@ -31,6 +31,8 @@ class TestInitCommand:
         content = config_path.read_text()
         assert "[database]" in content
         assert "[database.migrations]" in content
+        assert "[payments]" in content
+        assert "STRIPE_SECRET_KEY" in content
 
     def test_init_fails_if_exists(self, temp_dir: Path):
         """Test that init fails if config already exists."""

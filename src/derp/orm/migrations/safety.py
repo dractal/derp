@@ -6,7 +6,7 @@ that could result in data loss, similar to Drizzle's safety features.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import dataclasses
 from enum import StrEnum
 
 from derp.orm.migrations.statements.types import (
@@ -31,7 +31,7 @@ class DataLossRisk(StrEnum):
     HIGH = "high"  # Will definitely lose data
 
 
-@dataclass
+@dataclasses.dataclass
 class DestructiveOperation:
     """Represents a potentially destructive operation."""
 

@@ -161,6 +161,15 @@ class StorageConfig(BaseModel):
     verify: bool | str = True
 
 
+class PaymentsConfig(BaseModel):
+    """Payments configuration."""
+
+    api_key: str
+    webhook_secret: str | None = None
+    max_network_retries: int = 2
+    timeout_seconds: float = 30.0
+
+
 class ValkeyConfig(BaseModel):
     """Configuration for Valkey GLIDE connections."""
 
@@ -184,6 +193,7 @@ class DerpConfig(BaseModel):
     storage: StorageConfig | None = None
     auth: AuthConfig | None = None
     kv: KVConfig | None = None
+    payments: PaymentsConfig | None = None
 
     @classmethod
     def load(cls, path: str | Path = CONFIG_FILE) -> DerpConfig:
@@ -253,4 +263,10 @@ dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # # username = "$VALKEY_USERNAME"
 # # password = "$VALKEY_PASSWORD"
 # # use_tls = false
+
+# [payments]
+# api_key = "$STRIPE_SECRET_KEY"
+# webhook_secret = "$STRIPE_WEBHOOK_SECRET"
+# max_network_retries = 2
+# timeout_seconds = 30.0
 """

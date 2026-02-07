@@ -17,6 +17,7 @@ dependencies = [
     "argon2-cffi>=23.1.0",
     "aiosmtplib>=3.0.0",
     "jinja2>=3.0",
+    "stripe[async]>=13.0.1",
 ]
 
 [project.scripts]

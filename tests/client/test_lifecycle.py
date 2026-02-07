@@ -13,6 +13,7 @@ from derp.config import (
     DatabaseConfig,
     DerpConfig,
     KVConfig,
+    PaymentsConfig,
     StorageConfig,
     ValkeyConfig,
 )
@@ -26,6 +27,7 @@ def _config(
     replica_url: str | None = None,
     storage: StorageConfig | None = None,
     kv: KVConfig | None = None,
+    payments: PaymentsConfig | None = None,
 ) -> DerpConfig:
     return DerpConfig(
         database=DatabaseConfig(
@@ -35,6 +37,7 @@ def _config(
         ),
         storage=storage,
         kv=kv,
+        payments=payments,
     )
 
 
@@ -69,6 +72,7 @@ def test_properties_require_active_session(client_schema_path: str) -> None:
         lambda c: c.storage,
         lambda c: c.auth,
         lambda c: c.kv,
+        lambda c: c.payments,
     ):
         with pytest.raises(ValueError, match="Not in a session"):
             accessor(client)
@@ -149,8 +153,38 @@ async def test_optional_services_require_config(client_schema_path: str) -> None
             _ = client.auth
         with pytest.raises(ValueError, match="`KVConfig` was not passed"):
             _ = client.kv
+        with pytest.raises(ValueError, match="`PaymentsConfig` was not passed"):
+            _ = client.payments
 
         await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_payments_service_available_in_session(client_schema_path: str) -> None:
+    mock_db = MagicMock()
+    mock_db.connect = AsyncMock()
+    mock_db.disconnect = AsyncMock()
+    mock_payments = MagicMock()
+    mock_payments.connect = AsyncMock()
+    mock_payments.disconnect = AsyncMock()
+
+    with (
+        patch("derp.derp_client.DatabaseEngine", return_value=mock_db),
+        patch("derp.derp_client.PaymentsClient", return_value=mock_payments),
+    ):
+        client = DerpClient[Any](
+            _config(
+                db_url="postgresql://unused",
+                schema_path=client_schema_path,
+                payments=PaymentsConfig(api_key="sk_test_123"),
+            )
+        )
+        await client.connect()
+        assert client.payments is mock_payments
+        await client.disconnect()
+
+    mock_payments.connect.assert_awaited_once()
+    mock_payments.disconnect.assert_awaited_once()
 
 
 @pytest.mark.asyncio

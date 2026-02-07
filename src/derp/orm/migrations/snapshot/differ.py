@@ -6,8 +6,8 @@ the changes needed to migrate from the old schema to the new schema.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
-from dataclasses import dataclass, field
 
 from derp.orm.migrations.snapshot.models import (
     ColumnSnapshot,
@@ -49,7 +49,7 @@ from derp.orm.migrations.statements.types import (
 )
 
 
-@dataclass
+@dataclasses.dataclass
 class RenameResolution:
     """Resolution for a potential rename operation."""
 
@@ -58,12 +58,12 @@ class RenameResolution:
     is_rename: bool  # True = rename, False = drop + create
 
 
-@dataclass
+@dataclasses.dataclass
 class DiffResult:
     """Result of comparing two snapshots."""
 
-    statements: list[Statement] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
+    statements: list[Statement] = dataclasses.field(default_factory=list)
+    warnings: list[str] = dataclasses.field(default_factory=list)
 
 
 def _column_to_definition(col: ColumnSnapshot) -> ColumnDefinition:

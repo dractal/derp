@@ -39,6 +39,7 @@ schemas = ["public"]
     assert config.database.introspect.schemas == ["public"]
     assert config.auth is None
     assert config.storage is None
+    assert config.payments is None
 
 
 def test_missing_env_raises(tmp_path: Path) -> None:
@@ -96,3 +97,35 @@ secret = "$JWT_SECRET"
 
     config = DerpConfig.load(config_path)
     assert config.auth is not None
+
+
+def test_payments_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "derp.toml"
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_123")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_123")
+
+    _write_config(
+        config_path,
+        """
+[database]
+db_url = "$TEST_DATABASE_URL"
+schema_path = "src/schema.py"
+
+[database.migrations]
+dir = "./migrations"
+
+[payments]
+api_key = "$STRIPE_SECRET_KEY"
+webhook_secret = "$STRIPE_WEBHOOK_SECRET"
+max_network_retries = 3
+timeout_seconds = 45.5
+""",
+    )
+
+    config = DerpConfig.load(config_path)
+    assert config.payments is not None
+    assert config.payments.api_key == "sk_test_123"
+    assert config.payments.webhook_secret == "whsec_123"
+    assert config.payments.max_network_retries == 3
+    assert config.payments.timeout_seconds == 45.5

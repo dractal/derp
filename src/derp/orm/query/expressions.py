@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import abc
+import dataclasses
 from collections.abc import Sequence
-from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
@@ -29,7 +29,7 @@ class ComparisonOperator(StrEnum):
     LTE = "<="
 
 
-@dataclass
+@dataclasses.dataclass
 class Expression(abc.ABC):
     """Base class for SQL expressions."""
 
@@ -130,7 +130,7 @@ class Expression(abc.ABC):
         return Between(self, low, high)
 
 
-@dataclass
+@dataclasses.dataclass
 class ColumnRef(Expression):
     """Reference to a table column."""
 
@@ -141,7 +141,7 @@ class ColumnRef(Expression):
         return f"{self.table_name}.{self.column_name}"
 
 
-@dataclass
+@dataclasses.dataclass
 class Literal(Expression):
     """Literal value."""
 
@@ -152,7 +152,7 @@ class Literal(Expression):
         return f"${len(params)}"
 
 
-@dataclass
+@dataclasses.dataclass
 class BinaryOp(Expression):
     """Binary operator expression (e.g., a = b)."""
 
@@ -166,7 +166,7 @@ class BinaryOp(Expression):
         return f"({left_sql} {self.operator} {right_sql})"
 
 
-@dataclass
+@dataclasses.dataclass
 class UnaryOp(Expression):
     """Unary operator expression (e.g., NOT a)."""
 
@@ -178,7 +178,7 @@ class UnaryOp(Expression):
         return f"({self.operator} {operand_sql})"
 
 
-@dataclass
+@dataclasses.dataclass
 class LogicalOp(Expression):
     """Logical combination of expressions (AND/OR)."""
 
@@ -192,7 +192,7 @@ class LogicalOp(Expression):
         return f"({f' {self.operator} '.join(parts)})"
 
 
-@dataclass
+@dataclasses.dataclass
 class InList(Expression):
     """IN expression (a IN (1, 2, 3))."""
 
@@ -210,7 +210,7 @@ class InList(Expression):
         return f"({col_sql} {op} ({', '.join(placeholders)}))"
 
 
-@dataclass
+@dataclasses.dataclass
 class Between(Expression):
     """BETWEEN expression."""
 
@@ -227,7 +227,7 @@ class Between(Expression):
         return f"({col_sql} BETWEEN {low_placeholder} AND {high_placeholder})"
 
 
-@dataclass
+@dataclasses.dataclass
 class NullCheck(Expression):
     """IS NULL / IS NOT NULL expression."""
 
@@ -240,7 +240,7 @@ class NullCheck(Expression):
         return f"({col_sql} {op})"
 
 
-@dataclass
+@dataclasses.dataclass
 class Like(Expression):
     """LIKE/ILIKE pattern matching."""
 
