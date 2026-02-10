@@ -4,14 +4,40 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from derp.cli.main import app
+from derp.studio.server import create_app
 
 runner = CliRunner()
+
+
+class _FakeProcess:
+    def __init__(self, poll_result: int | None = None) -> None:
+        self._poll_result = poll_result
+        self.terminated = False
+        self.killed = False
+        self.wait_calls: list[float | None] = []
+
+    def poll(self) -> int | None:
+        return self._poll_result
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._poll_result = 0
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        self.wait_calls.append(timeout)
+        return self._poll_result
+
+    def kill(self) -> None:
+        self.killed = True
+        self._poll_result = -9
 
 
 def _write_studio_config(path: Path) -> None:
@@ -68,3 +94,220 @@ def test_studio_runs_uvicorn_with_host_port(
     assert isinstance(captured.get("app"), FastAPI)
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 9001
+
+
+def test_studio_dev_errors_when_config_missing(temp_dir: Path) -> None:
+    """Studio dev should fail with config error when derp.toml is missing."""
+    os.chdir(temp_dir)
+
+    result = runner.invoke(app, ["studio-dev"])
+
+    assert result.exit_code == 1
+    assert "Error: derp.toml not found in current directory" in result.output
+
+
+def test_studio_dev_errors_when_bun_missing(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Studio dev should fail when bun is unavailable."""
+    os.chdir(temp_dir)
+    _write_studio_config(temp_dir / "derp.toml")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr("derp.cli.commands.studio.shutil.which", lambda _: None)
+    result = runner.invoke(app, ["studio-dev"])
+
+    assert result.exit_code == 1
+    assert "`bun` is required" in result.output
+
+
+def test_studio_dev_runs_frontend_and_backend(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Studio dev should start frontend process and backend reload server."""
+    os.chdir(temp_dir)
+    _write_studio_config(temp_dir / "derp.toml")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(
+        "derp.cli.commands.studio.shutil.which", lambda _: "/usr/local/bin/bun"
+    )
+    monkeypatch.setattr("derp.cli.commands.studio.time.sleep", lambda _: None)
+
+    fake_process = _FakeProcess()
+    captured: dict[str, Any] = {}
+
+    def fake_popen(cmd: list[str], cwd: Path, env: dict[str, str]) -> _FakeProcess:
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        captured["env"] = env
+        return fake_process
+
+    def fake_run(app_path: str, host: str, port: int, reload: bool) -> None:
+        captured["app_path"] = app_path
+        captured["host"] = host
+        captured["port"] = port
+        captured["reload"] = reload
+
+    monkeypatch.setattr("derp.cli.commands.studio.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("derp.cli.commands.studio.uvicorn.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        [
+            "studio-dev",
+            "--host",
+            "0.0.0.0",
+            "--backend-port",
+            "9001",
+            "--frontend-port",
+            "5174",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["cmd"] == [
+        "/usr/local/bin/bun",
+        "run",
+        "dev",
+        "--",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "5174",
+        "--strictPort",
+    ]
+    assert Path(captured["cwd"]).as_posix().endswith("/src/derp/studio/ui")
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["PUBLIC_API_URL"] == "http://0.0.0.0:9001"
+    assert env["NODE_ENV"] == "development"
+    assert captured["host"] == "0.0.0.0"
+    assert captured["port"] == 9001
+    assert captured["reload"] is True
+    assert fake_process.terminated is True
+    assert fake_process.wait_calls == [5]
+
+
+def test_studio_dev_errors_when_frontend_exits_early(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Studio dev should fail fast when frontend process exits early."""
+    os.chdir(temp_dir)
+    _write_studio_config(temp_dir / "derp.toml")
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://example")
+    monkeypatch.setattr(
+        "derp.cli.commands.studio.shutil.which", lambda _: "/usr/local/bin/bun"
+    )
+    monkeypatch.setattr("derp.cli.commands.studio.time.sleep", lambda _: None)
+
+    fake_process = _FakeProcess(poll_result=1)
+    captured: dict[str, Any] = {"uvicorn_called": False}
+
+    def fake_run(*_: object, **__: object) -> None:
+        captured["uvicorn_called"] = True
+
+    monkeypatch.setattr(
+        "derp.cli.commands.studio.subprocess.Popen",
+        lambda *args, **kwargs: fake_process,
+    )
+    monkeypatch.setattr("derp.cli.commands.studio.uvicorn.run", fake_run)
+
+    result = runner.invoke(app, ["studio-dev"])
+
+    assert result.exit_code == 1
+    assert "Frontend dev server exited early" in result.output
+    assert captured["uvicorn_called"] is False
+    assert fake_process.terminated is False
+
+
+def _write_index(path: Path) -> None:
+    path.write_text(
+        """\
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Derp Studio</title>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+"""
+    )
+
+
+def test_studio_serves_index_for_root(temp_dir: Path) -> None:
+    """Studio should serve index.html at root."""
+    static_dir = temp_dir / "static"
+    static_dir.mkdir()
+    _write_index(static_dir / "index.html")
+
+    client = TestClient(create_app(static_dir=static_dir, enable_lifespan=False))
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert '<div id="root"></div>' in response.text
+
+
+def test_studio_serves_index_for_deep_spa_route(temp_dir: Path) -> None:
+    """Studio should serve index.html for BrowserRouter deep links."""
+    static_dir = temp_dir / "static"
+    static_dir.mkdir()
+    _write_index(static_dir / "index.html")
+
+    client = TestClient(create_app(static_dir=static_dir, enable_lifespan=False))
+    response = client.get("/tables/users")
+
+    assert response.status_code == 200
+    assert "<!doctype html>" in response.text
+
+
+def test_studio_unknown_api_route_returns_404(temp_dir: Path) -> None:
+    """Unknown API routes should stay 404s."""
+    static_dir = temp_dir / "static"
+    static_dir.mkdir()
+    _write_index(static_dir / "index.html")
+
+    client = TestClient(create_app(static_dir=static_dir, enable_lifespan=False))
+    response = client.get("/api/missing")
+
+    assert response.status_code == 404
+
+
+def test_studio_file_like_path_returns_404(temp_dir: Path) -> None:
+    """File-like paths should not be routed to the SPA fallback."""
+    static_dir = temp_dir / "static"
+    static_dir.mkdir()
+    _write_index(static_dir / "index.html")
+
+    client = TestClient(create_app(static_dir=static_dir, enable_lifespan=False))
+    response = client.get("/favicon.ico")
+
+    assert response.status_code == 404
+
+
+def test_studio_missing_build_returns_503(temp_dir: Path) -> None:
+    """Studio should return actionable error when frontend build is missing."""
+    static_dir = temp_dir / "static"
+    static_dir.mkdir()
+
+    client = TestClient(create_app(static_dir=static_dir, enable_lifespan=False))
+    root_response = client.get("/")
+    deep_response = client.get("/tables/users")
+
+    assert root_response.status_code == 503
+    assert deep_response.status_code == 503
+    assert "Run `./scripts/build_studio.sh`" in root_response.text
+    assert "Run `./scripts/build_studio.sh`" in deep_response.text
+
+
+def test_studio_missing_static_asset_returns_404(temp_dir: Path) -> None:
+    """Missing static assets should not be routed to the SPA fallback."""
+    static_dir = temp_dir / "static"
+    static_dir.mkdir()
+    _write_index(static_dir / "index.html")
+
+    client = TestClient(create_app(static_dir=static_dir, enable_lifespan=False))
+    response = client.get("/static/missing.js")
+
+    assert response.status_code == 404

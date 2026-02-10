@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -15,6 +16,7 @@ from app.routers import auth, conversations, users
 from derp import DerpClient, DerpConfig
 
 load_dotenv(Path(__file__).parent.parent / ".env")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -56,3 +58,7 @@ async def index() -> FileResponse:
 async def health_check() -> dict[str, str]:
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8000, reload=True)

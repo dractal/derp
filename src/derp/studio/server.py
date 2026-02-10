@@ -4,31 +4,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from derp.config import DerpConfig
 from derp.derp_client import DerpClient
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    config = DerpConfig.load()
-    derp_client = DerpClient(config)
-
-    app.state.derp_client = derp_client
-
-    try:
-        await derp_client.connect()
-    except Exception as exc:
-        raise RuntimeError(
-            "Failed to connect DerpClient during Studio startup."
-        ) from exc
-
-    yield
-
-    await derp_client.disconnect()
 
 
 def get_derp(request: Request) -> DerpClient:
@@ -36,53 +19,85 @@ def get_derp(request: Request) -> DerpClient:
     return request.app.state.derp_client
 
 
-app = FastAPI(
-    title="Derp Studio",
-    description="Minimal Derp Studio web interface",
-    version="0.1.0",
-    lifespan=lifespan,
-)
+def _default_static_dir() -> Path:
+    return Path(__file__).resolve().parent / "static"
 
 
-@app.get("/", response_class=HTMLResponse)
-async def index() -> str:
-    """Serve a minimal Studio UI."""
-    return """\
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Derp Studio</title>
-  </head>
-  <body>
-    <main>
-      <h1>Derp Studio</h1>
-      <p>Loaded configuration from <code>derp.toml</code></p>
-      <pre id="config">Loading...</pre>
-    </main>
-    <script>
-      fetch("/api/config")
-        .then((response) => response.json())
-        .then((data) => {
-          const el = document.getElementById("config");
-          if (el) {
-            el.textContent = JSON.stringify(data, null, 2);
-          }
-        })
-        .catch((error) => {
-          const el = document.getElementById("config");
-          if (el) {
-            el.textContent = "Failed to load config: " + String(error);
-          }
-        });
-    </script>
-  </body>
-</html>
-"""
+def _missing_build_response(static_dir: Path) -> PlainTextResponse:
+    message = (
+        "Derp Studio frontend build is missing. "
+        f"Expected: {static_dir / 'index.html'}. "
+        f"Run `./scripts/build_studio.sh` from the project root."
+    )
+    return PlainTextResponse(message, status_code=503)
 
 
-@app.get("/api/config")
-async def get_config(derp: DerpClient = Depends(get_derp)) -> dict:
-    """Return loaded Derp configuration."""
-    return derp.config.model_dump(mode="json")
+def _is_spa_path(path: str) -> bool:
+    if path in {"", "api", "static"}:
+        return False
+    if path.startswith("api/") or path.startswith("static/"):
+        return False
+    return "." not in Path(path).name
+
+
+def _serve_index(static_dir: Path) -> Response:
+    index_path = static_dir / "index.html"
+    if not index_path.exists():
+        return _missing_build_response(static_dir)
+    return FileResponse(index_path)
+
+
+def create_app(
+    *, static_dir: Path | None = None, enable_lifespan: bool = True
+) -> FastAPI:
+    """Create the Derp Studio FastAPI app."""
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        config = DerpConfig.load()
+        derp_client = DerpClient(config)
+
+        app.state.derp_client = derp_client
+
+        try:
+            await derp_client.connect()
+        except Exception as exc:
+            raise RuntimeError(
+                "Failed to connect DerpClient during Studio startup."
+            ) from exc
+
+        yield
+
+        await derp_client.disconnect()
+
+    studio_static_dir = static_dir or _default_static_dir()
+
+    app = FastAPI(
+        title="Derp Studio",
+        description="Derp Studio web interface",
+        version="0.1.0",
+        lifespan=lifespan if enable_lifespan else None,
+    )
+
+    app.mount(
+        "/static",
+        StaticFiles(directory=str(studio_static_dir), check_dir=False),
+        name="studio-static",
+    )
+
+    @app.get("/", include_in_schema=False)
+    async def index() -> Response:
+        return _serve_index(studio_static_dir)
+
+    @app.get("/api/config")
+    async def get_config(derp: DerpClient = Depends(get_derp)) -> dict:
+        """Return loaded Derp configuration."""
+        return derp.config.model_dump(mode="json")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def spa_fallback(path: str) -> Response:
+        if not _is_spa_path(path):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return _serve_index(studio_static_dir)
+
+    return app

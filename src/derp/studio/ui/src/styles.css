@@ -1,0 +1,32 @@
+:root {
+  color: #111;
+  background: #f5f7fb;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+.config-page {
+  min-height: 100vh;
+  padding: 2rem;
+  max-width: 56rem;
+}
+
+h1 {
+  margin-top: 0;
+}
+
+pre {
+  background: #fff;
+  border: 1px solid #d6deea;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}

@@ -260,7 +260,49 @@ derp status
 derp check
 derp drop
 derp studio
+derp studio-dev
 derp version
+```
+
+## Studio SPA Development
+
+Run Studio in one command:
+
+```bash
+uv run derp studio-dev
+```
+
+In dev mode, the backend app URL redirects to the Vite server so browser refreshes use HMR.
+
+Customize host/ports:
+
+```bash
+uv run derp studio-dev --host 0.0.0.0 --backend-port 4983 --frontend-port 5173
+```
+
+Manual two-terminal workflow:
+
+```bash
+# Terminal 1 (backend)
+uv run derp studio --host 127.0.0.1 --port 4983
+
+# Terminal 2 (frontend)
+cd src/derp/studio/ui
+bun run dev
+```
+
+Build the Studio frontend assets from a source checkout:
+
+```bash
+cd src/derp/studio/ui
+bun install --frozen-lockfile
+bun run build
+```
+
+Build a release artifact (frontend + Python package):
+
+```bash
+./scripts/build_package.sh
 ```
 
 ## Project Structure

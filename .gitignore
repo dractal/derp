@@ -11,7 +11,7 @@ wheels/
 .venv
 
 # Studio
-src/derp/studio/node_modules/
-src/derp/studio/.next/
-src/derp/studio/out/
-src/derp/studio/bun.lock
+src/derp/studio/ui/node_modules/
+src/derp/studio/ui/.next/
+src/derp/studio/ui/out/
+src/derp/studio/static/

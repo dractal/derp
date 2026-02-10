@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 
 import pytest
 
-from derp.config import JWTConfig
 from derp.auth.exceptions import InvalidTokenError, TokenExpiredError
 from derp.auth.jwt import (
     TokenPair,
@@ -16,6 +15,7 @@ from derp.auth.jwt import (
     create_token_pair,
     decode_token,
 )
+from derp.config import JWTConfig
 
 
 class TestJWT:

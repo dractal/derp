@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from derp.config import GitHubOAuthConfig, GoogleOAuthConfig
 from derp.auth.exceptions import OAuthProviderError
 from derp.auth.providers import GitHubProvider, GoogleProvider, OAuthUserInfo
+from derp.config import GitHubOAuthConfig, GoogleOAuthConfig
 
 
 @pytest.fixture
