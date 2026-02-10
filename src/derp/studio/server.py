@@ -268,6 +268,70 @@ def create_app(
 
         return {"deleted": deleted}
 
+    @app.post("/api/database/tables/{table}/update-row")
+    async def update_table_row(
+        table: str,
+        request: Request,
+        schema: str = "public",
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """Update a single row by primary key values."""
+        body = await request.json()
+        key: dict = body.get("key", {})
+        values: dict = body.get("values", {})
+        if not key:
+            raise HTTPException(status_code=400, detail="No key specified")
+        if not values:
+            raise HTTPException(status_code=400, detail="No values specified")
+
+        introspect_cfg = derp.config.database.introspect
+        introspector = PostgresIntrospector(derp.db.pool)
+        snapshot = await introspector.introspect(
+            schemas=introspect_cfg.schemas,
+            exclude_tables=introspect_cfg.exclude_tables,
+        )
+        table_key = f"{schema}.{table}" if schema != "public" else table
+        table_snapshot = snapshot.tables.get(table_key)
+        if table_snapshot is None:
+            raise HTTPException(status_code=404, detail=f"Table {table!r} not found")
+
+        pk_columns = [
+            col.name for col in table_snapshot.columns.values() if col.primary_key
+        ]
+        if not pk_columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Table {table!r} has no primary key",
+            )
+
+        qualified = f'"{schema}"."{table}"' if schema != "public" else f'"{table}"'
+
+        set_clauses = []
+        params: list = []
+        for i, (col, val) in enumerate(values.items(), 1):
+            set_clauses.append(f'"{col}" = ${i}')
+            params.append(val)
+
+        conditions = []
+        for pk_col in pk_columns:
+            if pk_col not in key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Missing primary key column {pk_col!r}",
+                )
+            params.append(key[pk_col])
+            conditions.append(f'"{pk_col}" = ${len(params)}')
+
+        set_sql = ", ".join(set_clauses)
+        where_sql = " AND ".join(conditions)
+        result = await derp.db.execute(
+            f"UPDATE {qualified} SET {set_sql} WHERE {where_sql}",  # noqa: S608
+            params,
+        )
+        updated = len(result) if result else 0
+
+        return {"updated": updated}
+
     # --- Payments ---
 
     @app.get("/api/payments/customers")

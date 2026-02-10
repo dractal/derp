@@ -139,6 +139,41 @@ export function useDeleteRows(table: string): UseMutationResult<{ deleted: numbe
   });
 }
 
+interface UpdateRowInput {
+  key: Record<string, unknown>;
+  values: Record<string, unknown>;
+}
+
+async function updateTableRow(
+  table: string,
+  input: UpdateRowInput,
+): Promise<{ updated: number }> {
+  const response = await fetch(
+    `/api/database/tables/${encodeURIComponent(table)}/update-row`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to update row: ${text}`);
+  }
+  return (await response.json()) as { updated: number };
+}
+
+export function useUpdateRow(table: string): UseMutationResult<{ updated: number }, Error, UpdateRowInput> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: UpdateRowInput) => updateTableRow(table, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["tableRows", table] });
+      queryClient.invalidateQueries({ queryKey: ["tables"] });
+    },
+  });
+}
+
 // --- Storage ---
 
 export interface BucketInfo {

@@ -18,13 +18,15 @@ import {
   Eye,
   EyeOff,
   Loader2,
+  Pencil,
   Table as TableIcon,
+  Trash,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { useDeleteRows, type ColumnInfo, type TableInfo } from "../api";
+import { useDeleteRows, useUpdateRow, type ColumnInfo, type TableInfo } from "../api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,6 +46,7 @@ import {
   CardTitle,
 } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
+import { Input } from "../components/ui/input";
 import { Skeleton } from "../components/ui/skeleton";
 import { useDatabase } from "../hooks/use-database";
 
@@ -155,13 +158,21 @@ function RowBrowser({
   const [hiddenRows, setHiddenRows] = useState<Set<string>>(() => new Set());
   const [showHidden, setShowHidden] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [updateFormValues, setUpdateFormValues] = useState<Record<string, string>>({});
 
   const pkColumns = useMemo(
     () => table.columns.filter((c) => c.primary_key).map((c) => c.name),
     [table.columns],
   );
 
+  const editableColumns = useMemo(
+    () => table.columns.filter((c) => !c.primary_key),
+    [table.columns],
+  );
+
   const deleteRows = useDeleteRows(table.name);
+  const updateRow = useUpdateRow(table.name);
 
   useEffect(() => {
     if (!columnDropdownOpen) return;
@@ -218,6 +229,46 @@ function RowBrowser({
       },
     });
   }, [selectedRows, rows, pkColumns, deleteRows]);
+
+  const openUpdateDialog = useCallback(() => {
+    if (selectedRows.size !== 1) return;
+    const rowId = Array.from(selectedRows)[0];
+    const row = rows[Number(rowId)];
+    const values: Record<string, string> = {};
+    for (const col of editableColumns) {
+      values[col.name] = row[col.name] === null ? "" : formatCellValue(row[col.name]);
+    }
+    setUpdateFormValues(values);
+    setUpdateDialogOpen(true);
+  }, [selectedRows, rows, editableColumns]);
+
+  const confirmUpdateRow = useCallback(() => {
+    if (selectedRows.size !== 1 || pkColumns.length === 0) return;
+    const rowId = Array.from(selectedRows)[0];
+    const row = rows[Number(rowId)];
+    const key: Record<string, unknown> = {};
+    for (const pk of pkColumns) key[pk] = row[pk];
+
+    const values: Record<string, unknown> = {};
+    for (const col of editableColumns) {
+      const raw = updateFormValues[col.name];
+      values[col.name] = raw === "" ? null : raw;
+    }
+
+    updateRow.mutate(
+      { key, values },
+      {
+        onSuccess: () => {
+          setSelectedRows(new Set());
+          setUpdateDialogOpen(false);
+          toast.success("Row updated");
+        },
+        onError: (error) => {
+          toast.error("Failed to update row", { description: error.message });
+        },
+      },
+    );
+  }, [selectedRows, rows, pkColumns, editableColumns, updateFormValues, updateRow]);
 
   const handleCellClick = useCallback(
     (rowId: string, colId: string) => setFocusedCell({ rowId, colId }),
@@ -299,10 +350,10 @@ function RowBrowser({
 
   return (
     <div className="min-w-0 space-y-4">
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-2 sm:gap-3">
         <Button variant="ghost" size="sm" onClick={onGoBack}>
           <ChevronLeft className="size-4" />
-          Back
+          <span className="hidden sm:inline">Back</span>
         </Button>
         <div className="flex items-center gap-2">
           <Database className="size-4 text-muted-foreground" />
@@ -312,13 +363,24 @@ function RowBrowser({
           </Badge>
         </div>
         {selectedRows.size > 0 ? (
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex items-center gap-1.5 sm:gap-2">
             <span className="text-xs font-medium">
-              {selectedRows.size} {selectedRows.size === 1 ? "row" : "rows"} selected
+              {selectedRows.size} <span className="hidden sm:inline">{selectedRows.size === 1 ? "row" : "rows"} selected</span>
             </span>
+            {pkColumns.length > 0 ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={openUpdateDialog}
+                disabled={selectedRows.size !== 1}
+              >
+                <Pencil className="size-3" />
+                <span className="hidden sm:inline">Update</span>
+              </Button>
+            ) : null}
             <Button variant="outline" size="sm" onClick={handleHideSelected}>
               <EyeOff className="size-3" />
-              Hide
+              <span className="hidden sm:inline">Hide</span>
             </Button>
             {pkColumns.length > 0 ? (
               <Button
@@ -327,7 +389,8 @@ function RowBrowser({
                 onClick={() => setDeleteConfirmOpen(true)}
                 disabled={deleteRows.isPending}
               >
-                Delete
+                <Trash className="size-3" />
+                <span className="hidden sm:inline">Delete</span>
               </Button>
             ) : null}
             <Button variant="ghost" size="sm" onClick={() => setSelectedRows(new Set())}>
@@ -545,6 +608,46 @@ function RowBrowser({
               disabled={deleteRows.isPending}
             >
               {deleteRows.isPending ? <><Loader2 className="size-3 animate-spin" /> Deleting</> : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={updateDialogOpen} onOpenChange={setUpdateDialogOpen}>
+        <AlertDialogContent className="max-h-[80vh] overflow-y-auto">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Update row</AlertDialogTitle>
+            <AlertDialogDescription>
+              Edit the fields below. Primary key columns cannot be changed.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="grid gap-3 py-4">
+            {editableColumns.map((col) => (
+              <div key={col.name} className="grid gap-1.5">
+                <label className="text-sm font-medium" htmlFor={`update-${col.name}`}>
+                  {col.name}
+                  <Badge variant="secondary" className="ml-2 font-mono text-[10px] px-1 py-0">
+                    {col.type}
+                  </Badge>
+                </label>
+                <Input
+                  id={`update-${col.name}`}
+                  value={updateFormValues[col.name] ?? ""}
+                  onChange={(e) =>
+                    setUpdateFormValues((prev) => ({ ...prev, [col.name]: e.target.value }))
+                  }
+                  placeholder="NULL"
+                />
+              </div>
+            ))}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={updateRow.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmUpdateRow}
+              disabled={updateRow.isPending}
+            >
+              {updateRow.isPending ? <><Loader2 className="size-3 animate-spin" /> Updating</> : "Update"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
