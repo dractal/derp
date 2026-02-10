@@ -1,4 +1,4 @@
-import { CreditCard, Database, HardDrive, KeyRound, Mail, Shield, SmileIcon } from "lucide-react";
+import { CreditCard, Database, HardDrive, Mail, Shield, SmileIcon, Table } from "lucide-react";
 import { Link, NavLink } from "react-router-dom";
 
 import {
@@ -15,7 +15,7 @@ import {
 const services = [
   { label: "Database", path: "/database", icon: Database },
   { label: "Storage", path: "/storage", icon: HardDrive },
-  { label: "KV Storage", path: "/kv", icon: KeyRound },
+  { label: "KV Storage", path: "/kv", icon: Table },
   { label: "Authentication", path: "/auth", icon: Shield },
   { label: "Email Server", path: "/email", icon: Mail },
   { label: "Payments", path: "/payments", icon: CreditCard },

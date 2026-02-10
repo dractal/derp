@@ -6,19 +6,20 @@ import {
   fetchObjects,
 } from "../api";
 
-export function useStorage() {
+export function useStorage(enabled: boolean) {
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
   const [prefix, setPrefix] = useState("");
 
   const bucketsQuery = useQuery({
     queryKey: ["buckets"],
     queryFn: ({ signal }) => fetchBuckets(signal).then((r) => r.buckets),
+    enabled,
   });
 
   const objectsQuery = useQuery({
     queryKey: ["objects", selectedBucket, prefix],
     queryFn: ({ signal }) => fetchObjects(selectedBucket!, prefix, signal),
-    enabled: selectedBucket !== null,
+    enabled: enabled && selectedBucket !== null,
   });
 
   const loading =

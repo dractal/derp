@@ -17,6 +17,7 @@ from derp.payments.models import (
     CheckoutSession,
     CheckoutSessionMode,
     Customer,
+    StripeListResult,
     WebhookEvent,
 )
 
@@ -350,6 +351,109 @@ class PaymentsClient:
             session_id,
         )
         return self._normalize_checkout_session(self._to_raw(response))
+
+    async def _list_resource(
+        self,
+        list_method: Any,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+        expand: list[str] | None = None,
+        extra_params: dict[str, Any] | None = None,
+    ) -> StripeListResult:
+        """List Stripe resources with cursor pagination."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        limit = min(max(limit, 1), 100)
+        params: dict[str, Any] = {"limit": limit}
+        if starting_after is not None:
+            params["starting_after"] = starting_after
+        if expand is not None:
+            params["expand"] = expand
+        if extra_params is not None:
+            params.update(extra_params)
+
+        result = await self._provider_call(list_method, params)
+        data = [self._to_raw(item) for item in result.data]
+        return StripeListResult(data=data, has_more=result.has_more)
+
+    async def list_customers(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe customers."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        return await self._list_resource(
+            self._stripe_client.v1.customers.list_async,
+            limit=limit,
+            starting_after=starting_after,
+        )
+
+    async def list_products(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe products with expanded default price."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        return await self._list_resource(
+            self._stripe_client.v1.products.list_async,
+            limit=limit,
+            starting_after=starting_after,
+            expand=["data.default_price"],
+        )
+
+    async def list_subscriptions(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe subscriptions across all statuses."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        return await self._list_resource(
+            self._stripe_client.v1.subscriptions.list_async,
+            limit=limit,
+            starting_after=starting_after,
+            extra_params={"status": "all"},
+        )
+
+    async def list_invoices(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe invoices."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        return await self._list_resource(
+            self._stripe_client.v1.invoices.list_async,
+            limit=limit,
+            starting_after=starting_after,
+        )
+
+    async def list_charges(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe charges."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        return await self._list_resource(
+            self._stripe_client.v1.charges.list_async,
+            limit=limit,
+            starting_after=starting_after,
+        )
 
     async def verify_webhook_event(
         self,

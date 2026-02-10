@@ -19,7 +19,14 @@ class ConfigError(Exception):
     """Configuration error."""
 
 
-def _resolve_env_value(value: Any) -> Any:
+def _resolve_env_value(
+    value: Any,
+    *,
+    _path: tuple[str, ...] = (),
+    _env_vars: dict[tuple[str, ...], str] | None = None,
+) -> Any:
+    if _env_vars is None:
+        _env_vars = {}
     if isinstance(value, str):
         if value.startswith("$"):
             env_name = value[1:]
@@ -30,14 +37,24 @@ def _resolve_env_value(value: Any) -> Any:
                 raise ConfigError(
                     f"Environment variable '{env_name}' is not set or empty."
                 )
+            _env_vars[_path] = env_name
             return env_value
         return value
     if isinstance(value, list):
-        return [_resolve_env_value(item) for item in value]
+        return [
+            _resolve_env_value(item, _path=(*_path, str(i)), _env_vars=_env_vars)
+            for i, item in enumerate(value)
+        ]
     if isinstance(value, tuple):
-        return tuple(_resolve_env_value(item) for item in value)
+        return tuple(
+            _resolve_env_value(item, _path=(*_path, str(i)), _env_vars=_env_vars)
+            for i, item in enumerate(value)
+        )
     if isinstance(value, dict):
-        return {key: _resolve_env_value(val) for key, val in value.items()}
+        return {
+            key: _resolve_env_value(val, _path=(*_path, key), _env_vars=_env_vars)
+            for key, val in value.items()
+        }
     return value
 
 
@@ -192,6 +209,8 @@ class DerpConfig(BaseModel):
     kv: KVConfig | None = None
     payments: PaymentsConfig | None = None
 
+    _env_vars: dict[tuple[str, ...], str] = {}
+
     @classmethod
     def load(cls, path: str | Path = CONFIG_FILE) -> DerpConfig:
         config_path = Path(path)
@@ -205,14 +224,26 @@ class DerpConfig(BaseModel):
         with open(config_path, "rb") as f:
             raw = tomllib.load(f)
 
-        data = _resolve_env_value(raw)
+        env_vars: dict[tuple[str, ...], str] = {}
+        data = _resolve_env_value(raw, _env_vars=env_vars)
 
         try:
             config = cls(**data)
         except ValidationError as e:
             raise ConfigError("Failed to load configuration.") from e
 
+        config._env_vars = env_vars
         return config
+
+    def redacted_dump(self) -> dict:
+        """Return config as a dict with environment variable values redacted."""
+        data = self.model_dump(mode="json")
+        for path, env_name in self._env_vars.items():
+            target = data
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = f"${env_name}"
+        return data
 
 
 def create_default_config() -> str:

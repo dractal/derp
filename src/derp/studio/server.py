@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from derp.config import DerpConfig
 from derp.derp_client import DerpClient
 from derp.orm.migrations.introspect.postgres import PostgresIntrospector
+
+ARTIFICIAL_LATENCY_REGEX = re.compile(r"/api/payments/.*|/api/email/templates")
 
 
 def get_derp(request: Request) -> DerpClient:
@@ -80,6 +85,18 @@ def create_app(
         lifespan=lifespan if enable_lifespan else None,
     )
 
+    @app.middleware("http")
+    async def minimum_latency(request: Request, call_next):
+        if ARTIFICIAL_LATENCY_REGEX.fullmatch(request.url.path):
+            start = time.perf_counter()
+            response = await call_next(request)
+            elapsed = time.perf_counter() - start
+            remaining = 0.25 - elapsed
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            return response
+        return await call_next(request)
+
     app.mount(
         "/static",
         StaticFiles(directory=str(studio_static_dir), check_dir=False),
@@ -93,7 +110,7 @@ def create_app(
     @app.get("/api/config")
     async def get_config(derp: DerpClient = Depends(get_derp)) -> dict:
         """Return loaded Derp configuration."""
-        return derp.config.model_dump(mode="json")
+        return derp.config.redacted_dump()
 
     @app.get("/api/storage/buckets")
     async def list_buckets(derp: DerpClient = Depends(get_derp)) -> dict:
@@ -228,9 +245,7 @@ def create_app(
                 detail=f"Table {table!r} has no primary key",
             )
 
-        qualified = (
-            f'"{schema}"."{table}"' if schema != "public" else f'"{table}"'
-        )
+        qualified = f'"{schema}"."{table}"' if schema != "public" else f'"{table}"'
 
         deleted = 0
         for row_key in row_keys:
@@ -252,6 +267,78 @@ def create_app(
             deleted += len(result) if result else 0
 
         return {"deleted": deleted}
+
+    # --- Payments ---
+
+    @app.get("/api/payments/customers")
+    async def list_customers(
+        limit: int = 25,
+        starting_after: str | None = None,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """List Stripe customers."""
+        if derp._payments is None:
+            raise HTTPException(status_code=400, detail="Payments is not configured.")
+        result = await derp.payments.list_customers(
+            limit=limit, starting_after=starting_after
+        )
+        return {"data": result.data, "has_more": result.has_more}
+
+    @app.get("/api/payments/products")
+    async def list_products(
+        limit: int = 25,
+        starting_after: str | None = None,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """List Stripe products."""
+        if derp._payments is None:
+            raise HTTPException(status_code=400, detail="Payments is not configured.")
+        result = await derp.payments.list_products(
+            limit=limit, starting_after=starting_after
+        )
+        return {"data": result.data, "has_more": result.has_more}
+
+    @app.get("/api/payments/subscriptions")
+    async def list_subscriptions(
+        limit: int = 25,
+        starting_after: str | None = None,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """List Stripe subscriptions."""
+        if derp._payments is None:
+            raise HTTPException(status_code=400, detail="Payments is not configured.")
+        result = await derp.payments.list_subscriptions(
+            limit=limit, starting_after=starting_after
+        )
+        return {"data": result.data, "has_more": result.has_more}
+
+    @app.get("/api/payments/invoices")
+    async def list_invoices(
+        limit: int = 25,
+        starting_after: str | None = None,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """List Stripe invoices."""
+        if derp._payments is None:
+            raise HTTPException(status_code=400, detail="Payments is not configured.")
+        result = await derp.payments.list_invoices(
+            limit=limit, starting_after=starting_after
+        )
+        return {"data": result.data, "has_more": result.has_more}
+
+    @app.get("/api/payments/charges")
+    async def list_charges(
+        limit: int = 25,
+        starting_after: str | None = None,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """List Stripe charges."""
+        if derp._payments is None:
+            raise HTTPException(status_code=400, detail="Payments is not configured.")
+        result = await derp.payments.list_charges(
+            limit=limit, starting_after=starting_after
+        )
+        return {"data": result.data, "has_more": result.has_more}
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa_fallback(path: str) -> Response:

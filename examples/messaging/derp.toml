@@ -28,3 +28,8 @@ enable_magic_link = true
 secret = "$JWT_SECRET"
 access_token_expire_minutes = 15
 refresh_token_expire_days = 7
+
+[payments]
+api_key = "$STRIPE_SECRET_KEY"
+max_network_retries = 2
+timeout_seconds = 30.0

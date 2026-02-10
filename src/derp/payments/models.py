@@ -52,3 +52,11 @@ class WebhookEvent:
     livemode: bool
     data_object: dict[str, Any] | None
     raw: dict[str, Any]
+
+
+@dataclasses.dataclass(slots=True)
+class StripeListResult:
+    """Paginated list of raw Stripe objects."""
+
+    data: list[dict[str, Any]]
+    has_more: bool

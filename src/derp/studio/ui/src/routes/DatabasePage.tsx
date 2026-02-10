@@ -311,7 +311,33 @@ function RowBrowser({
             {total.toLocaleString()} rows
           </Badge>
         </div>
-        <div className="relative ml-auto" ref={columnDropdownRef}>
+        {selectedRows.size > 0 ? (
+          <div className="ml-auto flex items-center gap-2">
+            <span className="text-xs font-medium">
+              {selectedRows.size} {selectedRows.size === 1 ? "row" : "rows"} selected
+            </span>
+            <Button variant="outline" size="sm" onClick={handleHideSelected}>
+              <EyeOff className="size-3" />
+              Hide
+            </Button>
+            {pkColumns.length > 0 ? (
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setDeleteConfirmOpen(true)}
+                disabled={deleteRows.isPending}
+              >
+                Delete
+              </Button>
+            ) : null}
+            <Button variant="ghost" size="sm" onClick={() => setSelectedRows(new Set())}>
+              <X className="size-3" />
+            </Button>
+          </div>
+        ) : (
+          <div className="ml-auto" />
+        )}
+        <div className="relative" ref={columnDropdownRef}>
           <Button
             variant="outline"
             size="sm"
@@ -350,31 +376,6 @@ function RowBrowser({
           ) : null}
         </div>
       </div>
-
-      {selectedRows.size > 0 ? (
-        <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-2">
-          <span className="text-xs font-medium">
-            {selectedRows.size} {selectedRows.size === 1 ? "row" : "rows"} selected
-          </span>
-          <Button variant="outline" size="sm" onClick={handleHideSelected}>
-            <EyeOff className="size-3" />
-            Hide
-          </Button>
-          {pkColumns.length > 0 ? (
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => setDeleteConfirmOpen(true)}
-              disabled={deleteRows.isPending}
-            >
-              Delete
-            </Button>
-          ) : null}
-          <Button variant="ghost" size="sm" onClick={() => setSelectedRows(new Set())}>
-            <X className="size-3" />
-          </Button>
-        </div>
-      ) : null}
 
       {hiddenRows.size > 0 ? (
         <div className="flex items-center gap-2">

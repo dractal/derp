@@ -192,6 +192,7 @@ function ObjectBrowser({
 
 export function StoragePage(): JSX.Element {
   const { data: config, isLoading } = useConfig();
+  const isConfigured = config?.storage != null;
   const {
     buckets,
     selectedBucket,
@@ -203,9 +204,7 @@ export function StoragePage(): JSX.Element {
     selectBucket,
     navigateToPrefix,
     navigateUp,
-  } = useStorage();
-
-  const isConfigured = config?.storage != null;
+  } = useStorage(isConfigured);
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-6 md:p-10">

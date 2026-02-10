@@ -8,6 +8,7 @@ export interface StudioConfig {
   auth: ConfigSection | null;
   email: ConfigSection | null;
   kv: ConfigSection | null;
+  payments: ConfigSection | null;
   [key: string]: unknown;
 }
 
@@ -184,4 +185,138 @@ export async function fetchObjects(
     throw new Error(`Failed to load objects: HTTP ${response.status}`);
   }
   return (await response.json()) as ObjectsResponse;
+}
+
+// --- Payments ---
+
+export interface StripeCustomer {
+  id: string;
+  email: string | null;
+  name: string | null;
+  phone: string | null;
+  created: number;
+  metadata: Record<string, string>;
+}
+
+export interface StripeProduct {
+  id: string;
+  name: string;
+  description: string | null;
+  active: boolean;
+  created: number;
+  default_price: {
+    id: string;
+    unit_amount: number | null;
+    currency: string;
+    recurring: { interval: string; interval_count: number } | null;
+  } | null;
+}
+
+export interface StripeSubscription {
+  id: string;
+  customer: string;
+  status: string;
+  current_period_start: number;
+  current_period_end: number;
+  created: number;
+  items: {
+    data: {
+      id: string;
+      price: {
+        id: string;
+        unit_amount: number | null;
+        currency: string;
+        recurring: { interval: string; interval_count: number } | null;
+        product: string;
+      };
+      quantity: number;
+    }[];
+  };
+}
+
+export interface StripeInvoice {
+  id: string;
+  number: string | null;
+  customer: string;
+  amount_due: number;
+  amount_paid: number;
+  currency: string;
+  status: string | null;
+  created: number;
+  hosted_invoice_url: string | null;
+}
+
+export interface StripeCharge {
+  id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  customer: string | null;
+  description: string | null;
+  created: number;
+  payment_intent: string | null;
+}
+
+export interface StripeListResponse<T> {
+  data: T[];
+  has_more: boolean;
+}
+
+async function fetchStripeList<T>(
+  resource: string,
+  limit: number = 25,
+  startingAfter?: string,
+  signal?: AbortSignal,
+): Promise<StripeListResponse<T>> {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  if (startingAfter) params.set("starting_after", startingAfter);
+  const response = await fetch(`/api/payments/${resource}?${params}`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load ${resource}: HTTP ${response.status}`);
+  }
+  return (await response.json()) as StripeListResponse<T>;
+}
+
+export async function fetchCustomers(
+  limit?: number,
+  startingAfter?: string,
+  signal?: AbortSignal,
+): Promise<StripeListResponse<StripeCustomer>> {
+  return fetchStripeList<StripeCustomer>("customers", limit, startingAfter, signal);
+}
+
+export async function fetchProducts(
+  limit?: number,
+  startingAfter?: string,
+  signal?: AbortSignal,
+): Promise<StripeListResponse<StripeProduct>> {
+  return fetchStripeList<StripeProduct>("products", limit, startingAfter, signal);
+}
+
+export async function fetchSubscriptions(
+  limit?: number,
+  startingAfter?: string,
+  signal?: AbortSignal,
+): Promise<StripeListResponse<StripeSubscription>> {
+  return fetchStripeList<StripeSubscription>("subscriptions", limit, startingAfter, signal);
+}
+
+export async function fetchInvoices(
+  limit?: number,
+  startingAfter?: string,
+  signal?: AbortSignal,
+): Promise<StripeListResponse<StripeInvoice>> {
+  return fetchStripeList<StripeInvoice>("invoices", limit, startingAfter, signal);
+}
+
+export async function fetchCharges(
+  limit?: number,
+  startingAfter?: string,
+  signal?: AbortSignal,
+): Promise<StripeListResponse<StripeCharge>> {
+  return fetchStripeList<StripeCharge>("charges", limit, startingAfter, signal);
 }
