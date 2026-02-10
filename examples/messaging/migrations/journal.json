@@ -1,0 +1,13 @@
+{
+  "version": "1",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "0000",
+      "tag": "migration",
+      "when": 1770672478,
+      "breakpoints": false
+    }
+  ]
+}
