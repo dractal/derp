@@ -132,7 +132,7 @@ def studio_dev(
         typer.echo(f"Studio app URL:  {api_origin}")
 
         studio_app = create_app()
-        uvicorn.run(studio_app, host=host, port=backend_port, reload=True)
+        uvicorn.run(studio_app, host=host, port=backend_port)
     finally:
         if frontend_process is not None:
             _terminate_process(frontend_process)

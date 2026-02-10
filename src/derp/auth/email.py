@@ -26,15 +26,17 @@ class EmailClient:
             if config.templates_dir is not None
             else Path(__file__).resolve().parent / "email_templates"
         )
-        self._env = Environment(
-            loader=FileSystemLoader(path),
-            autoescape=True,
-        )
+        self._loader = FileSystemLoader(path)
+        self._env = Environment(loader=self._loader, autoescape=True)
 
         templates: dict[str, Template] = {}
+        sources: dict[str, str] = {}
         for template in self._env.list_templates():
             templates[template] = self._env.get_template(template)
+            sources[template] = self._loader.get_source(self._env, template)[0]
+
         self._templates: dict[str, Template] = templates
+        self._sources: dict[str, str] = sources
         self._base_template: Template | None = templates.get("base.html", None)
 
         # Create SSL context if needed

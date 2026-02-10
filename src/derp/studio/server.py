@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from derp.config import DerpConfig
 from derp.derp_client import DerpClient
+from derp.orm.migrations.introspect.postgres import PostgresIntrospector
 
 
 def get_derp(request: Request) -> DerpClient:
@@ -93,6 +94,164 @@ def create_app(
     async def get_config(derp: DerpClient = Depends(get_derp)) -> dict:
         """Return loaded Derp configuration."""
         return derp.config.model_dump(mode="json")
+
+    @app.get("/api/storage/buckets")
+    async def list_buckets(derp: DerpClient = Depends(get_derp)) -> dict:
+        """List all S3 buckets."""
+        if derp._storage is None:
+            raise HTTPException(status_code=400, detail="Storage is not configured.")
+        return {"buckets": await derp.storage.list_buckets()}
+
+    @app.get("/api/storage/buckets/{bucket}/objects")
+    async def list_objects(
+        bucket: str,
+        prefix: str = "",
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """List objects in a bucket with prefix-based folder navigation."""
+        if derp._storage is None:
+            raise HTTPException(status_code=400, detail="Storage is not configured.")
+        return await derp.storage.list_objects(bucket=bucket, prefix=prefix)
+
+    @app.get("/api/email/templates")
+    async def list_email_templates(derp: DerpClient = Depends(get_derp)) -> dict:
+        """Return rendered previews for all configured email templates."""
+        if derp._email is None or derp.config.email is None:
+            raise HTTPException(status_code=400, detail="Email is not configured.")
+
+        templates: list[dict[str, str]] = []
+        for template_name, template in sorted(derp.email._templates.items()):
+            if template_name == "base.html":
+                continue
+
+            content = derp.email._sources[template_name]
+            if derp.email._base_template is not None:
+                content = derp.email._base_template.render(
+                    subject="<Email Subject>", content=content
+                )
+            templates.append({"name": template_name, "html": content})
+        return {"templates": templates}
+
+    # --- Database ---
+
+    @app.get("/api/database/tables")
+    async def list_tables(derp: DerpClient = Depends(get_derp)) -> dict:
+        """List all database tables with column info and row counts."""
+        introspect_cfg = derp.config.database.introspect
+        introspector = PostgresIntrospector(derp.db.pool)
+        snapshot = await introspector.introspect(
+            schemas=introspect_cfg.schemas,
+            exclude_tables=introspect_cfg.exclude_tables,
+        )
+        tables = []
+        for table in snapshot.tables.values():
+            columns = [
+                {
+                    "name": col.name,
+                    "type": col.type,
+                    "not_null": col.not_null,
+                    "primary_key": col.primary_key,
+                }
+                for col in table.columns.values()
+            ]
+            qualified = (
+                f'"{table.schema_name}"."{table.name}"'
+                if table.schema_name != "public"
+                else f'"{table.name}"'
+            )
+            count_rows = await derp.db.execute(
+                f"SELECT count(*) AS cnt FROM {qualified}"  # noqa: S608
+            )
+            row_count = count_rows[0]["cnt"] if count_rows else 0
+            tables.append(
+                {
+                    "name": table.name,
+                    "schema": table.schema_name,
+                    "columns": columns,
+                    "row_count": row_count,
+                }
+            )
+        return {"tables": tables}
+
+    @app.get("/api/database/tables/{table}/rows")
+    async def list_table_rows(
+        table: str,
+        limit: int = 50,
+        offset: int = 0,
+        schema: str = "public",
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """Fetch rows from a table with pagination."""
+        limit = min(max(limit, 1), 500)
+        offset = max(offset, 0)
+
+        qualified = f'"{schema}"."{table}"' if schema != "public" else f'"{table}"'
+        count_rows = await derp.db.execute(f"SELECT count(*) AS cnt FROM {qualified}")
+        total = count_rows[0]["cnt"] if count_rows else 0
+        rows = await derp.db.execute(
+            f"SELECT * FROM {qualified} LIMIT $1 OFFSET $2",
+            [limit, offset],
+        )
+        return {"rows": rows, "total": total, "limit": limit, "offset": offset}
+
+    @app.post("/api/database/tables/{table}/delete-rows")
+    async def delete_table_rows(
+        table: str,
+        request: Request,
+        schema: str = "public",
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """Delete rows from a table by primary key values."""
+        body = await request.json()
+        row_keys: list[dict] = body.get("rows", [])
+        if not row_keys:
+            raise HTTPException(status_code=400, detail="No rows specified")
+
+        # Resolve primary key columns from introspection
+        introspect_cfg = derp.config.database.introspect
+        introspector = PostgresIntrospector(derp.db.pool)
+        snapshot = await introspector.introspect(
+            schemas=introspect_cfg.schemas,
+            exclude_tables=introspect_cfg.exclude_tables,
+        )
+        table_key = f"{schema}.{table}" if schema != "public" else table
+        table_snapshot = snapshot.tables.get(table_key)
+        if table_snapshot is None:
+            raise HTTPException(status_code=404, detail=f"Table {table!r} not found")
+
+        pk_columns = [
+            col.name for col in table_snapshot.columns.values() if col.primary_key
+        ]
+        if not pk_columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Table {table!r} has no primary key",
+            )
+
+        qualified = (
+            f'"{schema}"."{table}"' if schema != "public" else f'"{table}"'
+        )
+
+        deleted = 0
+        for row_key in row_keys:
+            conditions = []
+            params = []
+            for i, pk_col in enumerate(pk_columns, 1):
+                if pk_col not in row_key:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Missing primary key column {pk_col!r}",
+                    )
+                conditions.append(f'"{pk_col}" = ${i}')
+                params.append(row_key[pk_col])
+            where = " AND ".join(conditions)
+            result = await derp.db.execute(
+                f"DELETE FROM {qualified} WHERE {where}",  # noqa: S608
+                params,
+            )
+            deleted += len(result) if result else 0
+
+        return {"deleted": deleted}
 
     @app.get("/{path:path}", include_in_schema=False)
     async def spa_fallback(path: str) -> Response:

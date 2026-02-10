@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
@@ -141,11 +142,10 @@ def test_studio_dev_runs_frontend_and_backend(
         captured["env"] = env
         return fake_process
 
-    def fake_run(app_path: str, host: str, port: int, reload: bool) -> None:
-        captured["app_path"] = app_path
+    def fake_run(app: FastAPI, host: str, port: int) -> None:
+        captured["app"] = app
         captured["host"] = host
         captured["port"] = port
-        captured["reload"] = reload
 
     monkeypatch.setattr("derp.cli.commands.studio.subprocess.Popen", fake_popen)
     monkeypatch.setattr("derp.cli.commands.studio.uvicorn.run", fake_run)
@@ -180,9 +180,9 @@ def test_studio_dev_runs_frontend_and_backend(
     assert isinstance(env, dict)
     assert env["PUBLIC_API_URL"] == "http://0.0.0.0:9001"
     assert env["NODE_ENV"] == "development"
+    assert isinstance(captured.get("app"), FastAPI)
     assert captured["host"] == "0.0.0.0"
     assert captured["port"] == 9001
-    assert captured["reload"] is True
     assert fake_process.terminated is True
     assert fake_process.wait_calls == [5]
 
@@ -311,3 +311,157 @@ def test_studio_missing_static_asset_returns_404(temp_dir: Path) -> None:
     response = client.get("/static/missing.js")
 
     assert response.status_code == 404
+
+
+# --- Database API endpoint tests ---
+
+
+def _make_mock_derp() -> MagicMock:
+    """Create a mock DerpClient with database engine."""
+    mock = MagicMock()
+    mock.db = MagicMock()
+    mock.db.pool = MagicMock()
+    mock.db.execute = AsyncMock(return_value=[])
+    mock._storage = None
+    mock._email = None
+    mock.config = MagicMock()
+    mock.config.database.introspect.schemas = ("public",)
+    mock.config.database.introspect.exclude_tables = ("derp_migrations",)
+    mock.config.email = None
+    mock.config.model_dump.return_value = {"database": {"db_url": "test"}}
+    return mock
+
+
+def _create_app_with_mock_derp(
+    temp_dir: Path, mock_derp: MagicMock
+) -> TestClient:
+    static_dir = temp_dir / "static"
+    static_dir.mkdir(exist_ok=True)
+    _write_index(static_dir / "index.html")
+    studio_app = create_app(static_dir=static_dir, enable_lifespan=False)
+    studio_app.state.derp_client = mock_derp
+    return TestClient(studio_app)
+
+
+def test_email_templates_endpoint_requires_config(temp_dir: Path) -> None:
+    """Email templates endpoint should fail when email is not configured."""
+    mock_derp = _make_mock_derp()
+
+    client = _create_app_with_mock_derp(temp_dir, mock_derp)
+    response = client.get("/api/email/templates")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Email is not configured."
+
+
+def test_database_tables_endpoint(temp_dir: Path) -> None:
+    """Database tables endpoint should return introspected tables with row counts."""
+    from derp.orm.migrations.snapshot.models import (
+        ColumnSnapshot,
+        SchemaSnapshot,
+        TableSnapshot,
+    )
+
+    mock_derp = _make_mock_derp()
+
+    snapshot = SchemaSnapshot(schemas=["public"])
+    snapshot.tables = {
+        "users": TableSnapshot(
+            name="users",
+            schema_name="public",
+            columns={
+                "id": ColumnSnapshot(
+                    name="id", type="serial", primary_key=True, not_null=True
+                ),
+                "name": ColumnSnapshot(
+                    name="name", type="varchar(255)", not_null=True
+                ),
+            },
+        )
+    }
+
+    mock_derp.db.execute = AsyncMock(return_value=[{"cnt": 42}])
+
+    with patch(
+        "derp.studio.server.PostgresIntrospector"
+    ) as mock_introspector_cls:
+        mock_introspector = MagicMock()
+        mock_introspector.introspect = AsyncMock(return_value=snapshot)
+        mock_introspector_cls.return_value = mock_introspector
+
+        client = _create_app_with_mock_derp(temp_dir, mock_derp)
+        response = client.get("/api/database/tables")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["tables"]) == 1
+
+    table = data["tables"][0]
+    assert table["name"] == "users"
+    assert table["schema"] == "public"
+    assert table["row_count"] == 42
+    assert len(table["columns"]) == 2
+
+    id_col = table["columns"][0]
+    assert id_col["name"] == "id"
+    assert id_col["type"] == "serial"
+    assert id_col["primary_key"] is True
+    assert id_col["not_null"] is True
+
+
+def test_database_table_rows_endpoint(temp_dir: Path) -> None:
+    """Database rows endpoint should return paginated rows."""
+    mock_derp = _make_mock_derp()
+    mock_derp.db.execute = AsyncMock(
+        side_effect=[
+            [{"cnt": 100}],  # count query
+            [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}],  # rows
+        ]
+    )
+
+    client = _create_app_with_mock_derp(temp_dir, mock_derp)
+    response = client.get("/api/database/tables/users/rows?limit=2&offset=0")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 100
+    assert data["limit"] == 2
+    assert data["offset"] == 0
+    assert len(data["rows"]) == 2
+    assert data["rows"][0]["name"] == "Alice"
+
+
+def test_database_table_rows_default_limit(temp_dir: Path) -> None:
+    """Database rows endpoint should default to limit=50, offset=0."""
+    mock_derp = _make_mock_derp()
+    mock_derp.db.execute = AsyncMock(
+        side_effect=[
+            [{"cnt": 0}],  # count query
+            [],  # rows
+        ]
+    )
+
+    client = _create_app_with_mock_derp(temp_dir, mock_derp)
+    response = client.get("/api/database/tables/users/rows")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["limit"] == 50
+    assert data["offset"] == 0
+
+
+def test_database_table_rows_clamps_limit(temp_dir: Path) -> None:
+    """Database rows endpoint should clamp limit to 1-500 range."""
+    mock_derp = _make_mock_derp()
+    mock_derp.db.execute = AsyncMock(
+        side_effect=[
+            [{"cnt": 0}],
+            [],
+        ]
+    )
+
+    client = _create_app_with_mock_derp(temp_dir, mock_derp)
+    response = client.get("/api/database/tables/users/rows?limit=9999")
+
+    assert response.status_code == 200
+    assert response.json()["limit"] == 500

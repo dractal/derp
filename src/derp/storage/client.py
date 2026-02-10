@@ -246,3 +246,61 @@ class StorageClient:
             return []
 
         return [obj["Key"] for obj in response["Contents"]]
+
+    async def list_buckets(self) -> list[dict[str, Any]]:
+        """List all S3 buckets.
+
+        Returns:
+            List of dicts with 'name' and 'creation_date' keys.
+        """
+        response = await self.client.list_buckets()
+        return [
+            {
+                "name": b["Name"],
+                "creation_date": b["CreationDate"].isoformat(),
+            }
+            for b in response.get("Buckets", [])
+        ]
+
+    async def list_objects(
+        self,
+        *,
+        bucket: str,
+        prefix: str = "",
+        max_keys: int = 1000,
+    ) -> dict[str, Any]:
+        """List objects and common prefixes in a bucket.
+
+        Uses ``Delimiter='/'`` for folder-like browsing.
+
+        Args:
+            bucket: Name of the S3 bucket.
+            prefix: Prefix to filter by (use trailing ``/`` for folders).
+            max_keys: Maximum number of keys to return.
+
+        Returns:
+            Dict with 'objects' (list of object metadata dicts) and
+            'prefixes' (list of prefix strings representing folders).
+        """
+        list_kwargs: dict[str, Any] = {
+            "Bucket": bucket,
+            "Prefix": prefix,
+            "Delimiter": "/",
+            "MaxKeys": max_keys,
+        }
+
+        response = await self.client.list_objects_v2(**list_kwargs)
+
+        objects = [
+            {
+                "key": obj["Key"],
+                "size": obj["Size"],
+                "last_modified": obj["LastModified"].isoformat(),
+            }
+            for obj in response.get("Contents", [])
+            if obj["Key"] != prefix
+        ]
+
+        prefixes = [p["Prefix"] for p in response.get("CommonPrefixes", [])]
+
+        return {"objects": objects, "prefixes": prefixes}
