@@ -165,3 +165,8 @@ class DerpClient[UserT: BaseUser]:
         if self._payments is None:
             raise ValueError("`PaymentsConfig` was not passed to `DerpConfig`.")
         return self._payments
+    
+    @property
+    def config(self) -> DerpConfig:
+        """Get the Derp configuration."""
+        return self._config

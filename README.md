@@ -259,6 +259,7 @@ derp pull
 derp status
 derp check
 derp drop
+derp studio
 derp version
 ```
 

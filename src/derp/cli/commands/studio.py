@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated
 
 import typer
+import uvicorn
 
 from derp.config import ConfigError, DerpConfig
 
@@ -16,12 +17,14 @@ def studio(
     port: Annotated[int, typer.Option("--port", "-p", help="Port to bind to")] = 4983,
 ) -> None:
     """Launch Derp Studio - a web UI for browsing your database."""
+
+    # Validate that the config file can be loaded.
     try:
-        config = DerpConfig.load()
+        DerpConfig.load()
     except ConfigError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
 
-    del config
+    from derp.studio.server import app
 
-    raise NotImplementedError("Studio is not implemented yet")
+    uvicorn.run(app, host=host, port=port)
