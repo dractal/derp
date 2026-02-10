@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 from pathlib import Path
 
@@ -11,16 +11,30 @@ from derp.orm.table import Table
 
 def _load_tables_from_file(path: Path) -> list[type[Table]]:
     """Load Table subclasses from a single Python file."""
-    # Use unique module name to avoid conflicts
-    module_name = f"derp_schema_{path.stem}_{id(path)}"
 
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load module from {path}")
+    try:
+        # Convert file path to dotted module name relative to CWD
+        resolved = path.resolve()
+        cwd = Path.cwd()
+        try:
+            relative = resolved.relative_to(cwd)
+        except ValueError:
+            # Absolute path outside CWD — use just the stem and add parent to sys.path
+            relative = Path(resolved.stem + ".py")
+            parent = str(resolved.parent)
+            if parent not in sys.path:
+                sys.path.insert(0, parent)
 
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+        module_name = ".".join(relative.with_suffix("").parts)
+
+        # Ensure CWD is on sys.path so relative module names resolve
+        cwd_str = str(cwd)
+        if cwd_str not in sys.path:
+            sys.path.insert(0, cwd_str)
+
+        module = importlib.import_module(module_name)
+    except ImportError as e:
+        raise ImportError(f"Failed to import module at {path.name}.") from e
 
     # Find all Table subclasses
     tables: list[type[Table]] = []
@@ -31,6 +45,7 @@ def _load_tables_from_file(path: Path) -> list[type[Table]]:
             and issubclass(obj, Table)
             and obj is not Table
             and hasattr(obj, "__columns__")
+            and getattr(obj, "__explicit_table__", False)
         ):
             tables.append(obj)
 
@@ -51,7 +66,7 @@ def load_tables(module_path: str) -> list[type[Table]]:
     """
     path = Path(module_path)
     tables: list[type[Table]] = []
-    seen_tables: set[str] = set()  # Track by qualified name to avoid duplicates
+    seen_tables: set[int] = set()  # Track by id to avoid duplicates
 
     # Check if it's a glob pattern
     if "*" in module_path or "?" in module_path or "[" in module_path:
@@ -94,10 +109,8 @@ def load_tables(module_path: str) -> list[type[Table]]:
 
         try:
             for table in _load_tables_from_file(file_path):
-                if not getattr(table, "__explicit_table__", False):
-                    continue
                 # Use qualified name to deduplicate
-                key = f"{table.__module__}.{table.__name__}"
+                key: int = id(table)
                 if key not in seen_tables:
                     seen_tables.add(key)
                     tables.append(table)
@@ -130,7 +143,5 @@ def find_table_by_name(
         return None
     if len(matches) > 1:
         match_names = ", ".join(f"{t.__module__}.{t.__name__}" for t in matches)
-        raise ValueError(
-            f"Multiple tables found for name '{name}': {match_names}"
-        )
+        raise ValueError(f"Multiple tables found for name '{name}': {match_names}")
     return matches[0]

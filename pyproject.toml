@@ -18,6 +18,8 @@ dependencies = [
     "aiosmtplib>=3.0.0",
     "jinja2>=3.0",
     "stripe[async]>=13.0.1",
+    "fastapi>=0.128.0",
+    "uvicorn>=0.40.0",
 ]
 
 [project.scripts]
@@ -26,6 +28,9 @@ derp = "derp.cli.main:app"
 [build-system]
 requires = ["uv_build>=0.9.21,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.uv-build]
+packages = ["src/derp"]
 
 [dependency-groups]
 dev = [

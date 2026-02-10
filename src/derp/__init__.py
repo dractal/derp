@@ -1,6 +1,7 @@
 """Derp - A backend framework for building scalable and efficient applications."""
 
 from derp.auth import AuthClient, AuthConfig, BaseUser, EmailConfig, JWTConfig
+from derp.auth.email import EmailClient
 from derp.config import (
     DatabaseConfig,
     DerpConfig,
@@ -26,6 +27,7 @@ __all__ = [
     "KVConfig",
     "PaymentsClient",
     "PaymentsConfig",
+    "EmailClient",
     "EmailConfig",
     "JWTConfig",
 ]

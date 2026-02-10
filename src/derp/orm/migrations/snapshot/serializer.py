@@ -126,7 +126,7 @@ def serialize_foreign_key(
 ) -> tuple[str, ForeignKeySnapshot]:
     """Serialize a foreign key constraint to snapshot."""
     # Handle class references (e.g., ForeignKey(User))
-    if isinstance(fk.reference, Table):
+    if isinstance(fk.reference, type) and issubclass(fk.reference, Table):
         ref_table = fk.reference.get_table_name()
         primary_key = fk.reference.get_primary_key()
         if primary_key is None:

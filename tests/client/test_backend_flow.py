@@ -145,32 +145,31 @@ async def _fetch_user_asset_and_log_access(
     }
 
 
+def _email_config() -> EmailConfig:
+    return EmailConfig(
+        site_name="Test Site",
+        site_url="http://localhost:3000",
+        from_email="test@example.com",
+        smtp_host="localhost",
+        smtp_port=587,
+        smtp_user="test@example.com",
+        smtp_password="test-password",
+        use_tls=True,
+        start_tls=False,
+    )
+
+
 def _auth_config() -> AuthConfig:
     return AuthConfig(
-        user_table_name="users",
-        email=EmailConfig(
-            site_name="Test Site",
-            site_url="http://localhost:3000",
-            from_email="test@example.com",
-            smtp_host="localhost",
-            smtp_port=587,
-            smtp_user="test@example.com",
-            smtp_password="test-password",
-            confirm_email_url="{site_url}/auth/confirm",
-            recovery_url="{site_url}/auth/recovery",
-            magic_link_url="{site_url}/auth/magic-link",
-            enable_signup=True,
-            enable_confirmation=True,
-            enable_magic_link=True,
-            use_tls=True,
-            start_tls=False,
-        ),
         jwt=JWTConfig(
             secret="test-secret-key-for-jwt-testing-purposes-12345",
             algorithm="HS256",
             access_token_expire_minutes=15,
             refresh_token_expire_days=7,
         ),
+        enable_signup=True,
+        enable_confirmation=True,
+        enable_magic_link=True,
     )
 
 
@@ -188,6 +187,7 @@ async def test_backend_handler_auth_storage_db_chain(
                 replica_url=clean_database,
                 schema_path=client_schema_path,
             ),
+            email=_email_config(),
             auth=_auth_config(),
             storage=StorageConfig(
                 endpoint_url=minio_server["endpoint_url"],
@@ -211,6 +211,7 @@ async def test_backend_handler_auth_storage_db_chain(
         user, _ = await derp.auth.sign_up(
             email="backend@example.com",
             password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
         assert user.confirmation_token is not None
         await derp.auth.confirm_email(user.confirmation_token)

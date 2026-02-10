@@ -1,6 +1,6 @@
 -- Migration: migration
 -- Version: 0000
--- Generated at: 2026-02-02T01:03:41.607628+00:00
+-- Generated at: 2026-02-09T21:27:58.940857+00:00
 -- Previous: none
 
 CREATE TYPE "auth_provider" AS ENUM ('email', 'magic_link', 'google', 'github');
@@ -34,7 +34,7 @@ CREATE TABLE "users" (
     "created_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     "updated_at" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     "last_sign_in_at" TIMESTAMP WITH TIME ZONE,
-    "display_name" VARCHAR(100),
+    "username" VARCHAR(100),
     "avatar_url" VARCHAR(512),
     "bio" TEXT,
     CONSTRAINT "users_email_unique" UNIQUE ("email")

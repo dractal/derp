@@ -17,7 +17,8 @@ Example usage:
         content = await storage.fetch_file("remote/file.txt")
 """
 
-from .client import StorageClient
 from derp.config import StorageConfig
+
+from .client import StorageClient
 
 __all__ = ["StorageClient", "StorageConfig"]

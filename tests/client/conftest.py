@@ -28,13 +28,21 @@ from derp.orm.fields import (
     Varchar,
 )
 
-_AuthMagicLink = AuthMagicLink
-_AuthRefreshToken = AuthRefreshToken
-_AuthSession = AuthSession
-
 
 class User(BaseUser, table="users"):
     display_name: str | None = Field(Varchar(255), nullable=True)
+
+
+class AuthRefreshToken(AuthRefreshToken, table="auth_refresh_tokens"):
+    pass
+
+
+class AuthSession(AuthSession, table="auth_sessions"):
+    pass
+
+
+class AuthMagicLink(AuthMagicLink, table="auth_magic_links"):
+    pass
 
 
 class UserAssetAccessLog(Table, table="user_asset_access_logs"):

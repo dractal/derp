@@ -298,4 +298,3 @@ class TestVersionCommand:
 
         assert result.exit_code == 0
         assert "derp version" in result.stdout
-        assert "Drizzle-compatible" in result.stdout

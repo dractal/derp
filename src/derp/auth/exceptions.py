@@ -47,6 +47,13 @@ class EmailNotConfirmedError(AuthError):
         super().__init__(message, code="email_not_confirmed")
 
 
+class ConfirmationURLMissingError(AuthError):
+    """Raised when a confirmation URL is missing."""
+
+    def __init__(self, message: str = "Confirmation URL is missing"):
+        super().__init__(message, code="confirmation_url_missing")
+
+
 class InvalidTokenError(AuthError):
     """Raised when a token is invalid or expired."""
 

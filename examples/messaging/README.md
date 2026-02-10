@@ -15,6 +15,7 @@ A complete messaging application built with FastAPI, Derp ORM, Derp Auth, and De
 - Python 3.12+
 - PostgreSQL 14+
 - MinIO (or any S3-compatible storage) for avatars
+- [Mailpit](https://mailpit.axllent.org/) (or any local SMTP server) for email confirmation (optional)
 
 ## Quick Start
 
@@ -32,34 +33,48 @@ minio server ~/minio-data --console-address ":9001"
 
 Then create the `avatars` bucket via http://localhost:9001 (login with minioadmin/minioadmin).
 
-### 3. Install Dependencies
+### 3. Start Mailpit (optional)
+
+If email confirmation is enabled (`enable_confirmation = true` in `derp.toml`), you need a local SMTP server. Mailpit listens on port 1025 for SMTP and provides a web UI to view emails:
+
+```bash
+brew install mailpit
+mailpit
+```
+
+- SMTP: localhost:1025
+- Web UI: http://localhost:8025
+
+To skip this, set `enable_confirmation = false` under `[auth]` in `derp.toml`.
+
+### 4. Install Dependencies
 
 ```bash
 cd examples/messaging
 uv sync
 ```
 
-### 4. Configure Environment
+### 5. Configure Environment
 
 ```bash
 cp .env.example .env
 # Edit .env if needed (defaults work for local setup)
 ```
 
-### 5. Run Database Migrations
+### 6. Run Database Migrations
 
 ```bash
 uv run derp generate
 uv run derp migrate
 ```
 
-### 6. Start the Server
+### 7. Start the Server
 
 ```bash
 uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### 7. Open the App
+### 8. Open the App
 
 - **Frontend**: http://localhost:8000
 - API docs: http://localhost:8000/docs
@@ -68,31 +83,34 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ## API Endpoints
 
 ### Auth
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/auth/signup` | Register new user |
-| POST | `/auth/signin` | Sign in |
-| POST | `/auth/signout` | Sign out |
-| POST | `/auth/refresh` | Refresh token |
-| GET | `/auth/user` | Get current user |
+
+| Method | Endpoint        | Description       |
+| ------ | --------------- | ----------------- |
+| POST   | `/auth/signup`  | Register new user |
+| POST   | `/auth/signin`  | Sign in           |
+| POST   | `/auth/signout` | Sign out          |
+| POST   | `/auth/refresh` | Refresh token     |
+| GET    | `/auth/user`    | Get current user  |
 
 ### Users
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/users` | List users |
-| GET | `/users/me` | Current user profile |
-| PATCH | `/users/me` | Update profile |
-| POST | `/users/me/avatar` | Upload avatar |
-| GET | `/users/{id}` | Get user profile |
+
+| Method | Endpoint           | Description          |
+| ------ | ------------------ | -------------------- |
+| GET    | `/users`           | List users           |
+| GET    | `/users/me`        | Current user profile |
+| PATCH  | `/users/me`        | Update profile       |
+| POST   | `/users/me/avatar` | Upload avatar        |
+| GET    | `/users/{id}`      | Get user profile     |
 
 ### Conversations
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/conversations` | List conversations |
-| POST | `/conversations` | Start conversation |
-| GET | `/conversations/{id}` | Get messages |
-| POST | `/conversations/{id}/messages` | Send message |
-| PATCH | `/conversations/{id}/read` | Mark as read |
+
+| Method | Endpoint                       | Description        |
+| ------ | ------------------------------ | ------------------ |
+| GET    | `/conversations`               | List conversations |
+| POST   | `/conversations`               | Start conversation |
+| GET    | `/conversations/{id}`          | Get messages       |
+| POST   | `/conversations/{id}/messages` | Send message       |
+| PATCH  | `/conversations/{id}/read`     | Mark as read       |
 
 ## Example Usage
 

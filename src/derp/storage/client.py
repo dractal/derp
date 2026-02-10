@@ -95,7 +95,7 @@ class StorageClient:
                 "Storage not connected. Call connect() or use async context manager."
             )
         return self._client
-    
+
     def get_url(self, *, bucket: str, key: str) -> str:
         """Get the URL for a file in S3.
 

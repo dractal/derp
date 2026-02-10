@@ -6,6 +6,7 @@ from types import TracebackType
 from typing import Self
 
 from derp.auth import AuthClient, BaseUser
+from derp.auth.email import EmailClient
 from derp.config import DerpConfig
 from derp.kv.client import KVClients
 from derp.orm import DatabaseEngine
@@ -23,6 +24,9 @@ class DerpClient[UserT: BaseUser]:
             DatabaseEngine(config.database.replica_url)
             if config.database.replica_url is not None
             else None
+        )
+        self._email: EmailClient | None = (
+            EmailClient(self._config.email) if self._config.email is not None else None
         )
         self._storage: StorageClient | None = (
             StorageClient(self._config.storage)
@@ -46,6 +50,13 @@ class DerpClient[UserT: BaseUser]:
         )
         self._in_session = False
 
+        if self._email is None and self._auth is not None:
+            raise ValueError(
+                "The email client needs to be configured for authentication to work."
+                "Please make sure to configure `EmailConfig` when `AuthConfig` is "
+                "configured via `derp.toml` or `DerpConfig`."
+            )
+
     async def connect(self) -> None:
         """Start a session."""
         await self._db.connect()
@@ -59,6 +70,7 @@ class DerpClient[UserT: BaseUser]:
             await self._payments.connect()
         if self._auth is not None:
             self._auth.set_db(self._db, replica_db=self._replica_db)
+            self._auth.set_email(self._email)
 
         self._in_session = True
 
@@ -77,6 +89,7 @@ class DerpClient[UserT: BaseUser]:
             await self._payments.disconnect()
         if self._auth is not None:
             self._auth.set_db(None, replica_db=None)
+            self._auth.set_email(None)
 
         self._in_session = False
 
@@ -107,6 +120,15 @@ class DerpClient[UserT: BaseUser]:
         if self._replica_db is None:
             raise ValueError("Replica URL is not set on `DatabaseConfig`.")
         return self._replica_db
+
+    @property
+    def email(self) -> EmailClient:
+        """Get the email client."""
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        if self._email is None:
+            raise ValueError("`EmailConfig` was not passed to `DerpConfig`.")
+        return self._email
 
     @property
     def storage(self) -> StorageClient:

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from dotenv import load_dotenv
 
 from derp.cli.commands.check import check
 from derp.cli.commands.drop import drop
@@ -21,6 +22,7 @@ from derp.cli.commands.migrate import migrate
 from derp.cli.commands.pull import pull
 from derp.cli.commands.push import push
 from derp.cli.commands.status import status
+from derp.cli.commands.studio import studio
 from derp.config import CONFIG_FILE, create_default_config
 
 app = typer.Typer(
@@ -30,6 +32,8 @@ app = typer.Typer(
 )
 
 
+load_dotenv(".env")
+
 # Register commands
 app.command()(generate)
 app.command()(migrate)
@@ -38,6 +42,7 @@ app.command()(pull)
 app.command()(status)
 app.command()(check)
 app.command()(drop)
+app.command()(studio)
 
 
 @app.command()
@@ -87,7 +92,6 @@ def version() -> None:
         ver = "unknown"
 
     typer.echo(f"derp version {ver}")
-    typer.echo("Migration system: Drizzle-compatible (snapshot-based)")
 
 
 if __name__ == "__main__":

@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from derp.auth import AuthMagicLink
 from derp.auth.exceptions import (
     InvalidCredentialsError,
     MagicLinkExpiredError,
@@ -37,7 +36,9 @@ class TestSignUp:
     ) -> None:
         """Test successful user signup."""
         user, tokens = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
 
         assert user.email == "test@example.com"
@@ -55,6 +56,7 @@ class TestSignUp:
         user, _ = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
             user_metadata=metadata,
         )
 
@@ -69,6 +71,7 @@ class TestSignUp:
         user, _ = await derp.auth.sign_up(
             email="Test@Example.COM",
             password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
 
         assert user.email == "test@example.com"
@@ -79,12 +82,17 @@ class TestSignUp:
         mock_smtp: AsyncMock,
     ) -> None:
         """Test signup with duplicate email."""
-        await derp.auth.sign_up(email="test@example.com", password="password123")
+        await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
 
         with pytest.raises(UserAlreadyExistsError):
             await derp.auth.sign_up(
                 email="test@example.com",
                 password="different_password",
+                confirmation_url="http://localhost:3000/auth/confirm",
             )
 
     async def test_sign_up_weak_password(
@@ -97,18 +105,20 @@ class TestSignUp:
             await derp.auth.sign_up(
                 email="test@example.com",
                 password="short",  # Too short
+                confirmation_url="http://localhost:3000/auth/confirm",
             )
 
     async def test_sign_up_disabled(
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
         """Test signup when disabled."""
-        derp.auth._config.email.enable_signup = False
+        derp.auth._config.enable_signup = False
 
         with pytest.raises(SignupDisabledError):
             await derp.auth.sign_up(
                 email="test@example.com",
                 password="password123",
+                confirmation_url="http://localhost:3000/auth/confirm",
             )
 
 
@@ -122,7 +132,9 @@ class TestSignIn:
     ) -> None:
         """Test successful sign in."""
         user, _ = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
         assert user.confirmation_token is not None
         await derp.auth.confirm_email(user.confirmation_token)
@@ -139,7 +151,11 @@ class TestSignIn:
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
         """Test sign in with wrong password."""
-        await derp.auth.sign_up(email="test@example.com", password="password123")
+        await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
 
         with pytest.raises(InvalidCredentialsError):
             await derp.auth.sign_in_with_password(
@@ -160,7 +176,9 @@ class TestSignIn:
     ) -> None:
         """Test sign in with inactive user."""
         user, _ = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
 
         # Deactivate user
@@ -176,7 +194,9 @@ class TestSignIn:
     ) -> None:
         """Test sign in with different email case."""
         user, _ = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
         assert user.confirmation_token is not None
         await derp.auth.confirm_email(user.confirmation_token)
@@ -196,7 +216,9 @@ class TestTokenRefresh:
     ) -> None:
         """Test successful token refresh."""
         _, tokens = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
 
         new_tokens = await derp.auth.refresh_token(tokens.refresh_token)
@@ -218,7 +240,9 @@ class TestTokenRefresh:
     ) -> None:
         """Test refresh with revoked token."""
         _, tokens = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
 
         # Use the token once
@@ -237,10 +261,17 @@ class TestMagicLink:
     ) -> None:
         """Test sending a magic link."""
         # Create user first
-        await derp.auth.sign_up(email="test@example.com", password="password123")
+        await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
 
         # Send magic link
-        await derp.auth.sign_in_with_magic_link("test@example.com")
+        await derp.auth.sign_in_with_magic_link(
+            email="test@example.com",
+            magic_link_url="http://localhost:3000/auth/magic-link",
+        )
 
         # Verify email was sent (mock)
         # In real test, would verify the magic link record was created
@@ -251,14 +282,16 @@ class TestMagicLink:
         """Test verifying a magic link."""
         # Create user
         user, _ = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
 
         token = generate_secure_token()
         expires_at = datetime.now(UTC) + timedelta(hours=1)
 
         await (
-            derp.db.insert(AuthMagicLink)
+            derp.db.insert(derp.auth._auth_magic_link_table)
             .values(
                 email="test@example.com",
                 token=token,
@@ -277,13 +310,17 @@ class TestMagicLink:
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
         """Test verifying an expired magic link."""
-        await derp.auth.sign_up(email="test@example.com", password="password123")
+        await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
 
         token = generate_secure_token()
         expires_at = datetime.now(UTC) - timedelta(hours=1)  # Already expired
 
         await (
-            derp.db.insert(AuthMagicLink)
+            derp.db.insert(derp.auth._auth_magic_link_table)
             .values(
                 email="test@example.com",
                 token=token,
@@ -299,13 +336,17 @@ class TestMagicLink:
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
         """Test verifying a used magic link."""
-        await derp.auth.sign_up(email="test@example.com", password="password123")
+        await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
 
         token = generate_secure_token()
         expires_at = datetime.now(UTC) + timedelta(hours=1)
 
         await (
-            derp.db.insert(AuthMagicLink)
+            derp.db.insert(derp.auth._auth_magic_link_table)
             .values(
                 email="test@example.com",
                 token=token,
@@ -326,24 +367,35 @@ class TestPasswordRecovery:
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
         """Test requesting password recovery."""
-        await derp.auth.sign_up(email="test@example.com", password="password123")
+        await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
 
         # Should not raise
-        await derp.auth.request_password_recovery("test@example.com")
+        await derp.auth.request_password_recovery(
+            email="test@example.com", recovery_url="http://localhost:3000/auth/recovery"
+        )
 
     async def test_request_recovery_nonexistent_user(
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
         """Test requesting recovery for non-existent user."""
         # Should not raise (don't reveal user existence)
-        await derp.auth.request_password_recovery("nonexistent@example.com")
+        await derp.auth.request_password_recovery(
+            email="nonexistent@example.com",
+            recovery_url="http://localhost:3000/auth/recovery",
+        )
 
     async def test_reset_password(
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
         """Test resetting password."""
         user, _ = await derp.auth.sign_up(
-            email="test@example.com", password="oldpassword123"
+            email="test@example.com",
+            password="oldpassword123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
         assert user.confirmation_token is not None
         await derp.auth.confirm_email(user.confirmation_token)
@@ -380,7 +432,9 @@ class TestPasswordRecovery:
     ) -> None:
         """Test reset with expired token."""
         user, _ = await derp.auth.sign_up(
-            email="test@example.com", password="oldpassword123"
+            email="test@example.com",
+            password="oldpassword123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
 
         token = generate_secure_token()
@@ -404,7 +458,9 @@ class TestSessionManagement:
     async def test_sign_out(self, derp: DerpClient[User], mock_smtp: AsyncMock) -> None:
         """Test signing out a session."""
         user, tokens = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
 
         payload = decode_token(derp.auth._config.jwt, tokens.access_token)
@@ -421,7 +477,9 @@ class TestSessionManagement:
     ) -> None:
         """Test signing out all sessions."""
         user, tokens1 = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
         assert user.confirmation_token is not None
         await derp.auth.confirm_email(user.confirmation_token)
@@ -451,7 +509,9 @@ class TestUserManagement:
     ) -> None:
         """Test getting user by ID."""
         user, _ = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
         assert user.confirmation_token is not None
         await derp.auth.confirm_email(user.confirmation_token)
@@ -472,7 +532,11 @@ class TestUserManagement:
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
         """Test getting user by email."""
-        await derp.auth.sign_up(email="test@example.com", password="password123")
+        await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
 
         found = await derp.auth.get_user(email="test@example.com")
 
@@ -484,7 +548,9 @@ class TestUserManagement:
     ) -> None:
         """Test updating user."""
         user, _ = await derp.auth.sign_up(
-            email="test@example.com", password="password123"
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
         )
 
         updated = await derp.auth.update_user(

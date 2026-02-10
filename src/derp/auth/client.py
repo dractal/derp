@@ -10,6 +10,7 @@ from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     ConfirmationTokenExpiredError,
     ConfirmationTokenInvalidError,
+    ConfirmationURLMissingError,
     EmailNotConfirmedError,
     InvalidCredentialsError,
     MagicLinkExpiredError,
@@ -44,7 +45,7 @@ from derp.auth.providers.base import BaseOAuthProvider
 from derp.auth.providers.github import GitHubProvider
 from derp.auth.providers.google import GoogleProvider
 from derp.config import AuthConfig
-from derp.orm import DatabaseEngine
+from derp.orm import DatabaseEngine, Table
 from derp.orm.loader import find_table_by_name
 
 
@@ -52,24 +53,45 @@ class AuthClient[UserT: BaseUser]:
     """Core authentication client handling all auth operations."""
 
     def __init__(self, config: AuthConfig, schema_path: str):
-        table = find_table_by_name(
-            schema_path,
-            name=config.user_table_name,
-            base_class=BaseUser,
-        )
-        if table is None:
-            raise ValueError(
-                f"Table '{config.user_table_name}' was not found in schema_path."
-            )
-        if not issubclass(table, BaseUser):
-            raise ValueError(
-                f"Table '{config.user_table_name}' must subclass BaseUser."
-            )
+        tables: list[type[Table]] = []
+        for base_class, enabled, name in [
+            (BaseUser, True, "users"),
+            (AuthSession, True, "auth_sessions"),
+            (AuthRefreshToken, True, "auth_refresh_tokens"),
+            (AuthMagicLink, config.enable_magic_link, "auth_magic_links"),
+        ]:
+            table = find_table_by_name(schema_path, name, base_class=base_class)
+            if enabled and table is None:
+                raise ValueError(
+                    f"Expected table '{name}' in schema but it was not found under"
+                    f" the specified schema path '{schema_path}'."
+                )
+            if enabled and table is not None and not issubclass(table, base_class):
+                raise ValueError(
+                    f"Table '{name}' must be a subclass of '{base_class.__name__}'"
+                    f" but got instance of '{table}'. Make sure that you import"
+                    " and implement `BaseUser`, `AuthSession`, `AuthRefreshToken`,"
+                    " tables and optionally the`AuthMagicLink` table and include "
+                    " them in one of the schema modules."
+                )
+            tables.append(table if table is not None else base_class)
+
+        (
+            user_table,
+            auth_session_table,
+            auth_refresh_token_table,
+            auth_magic_link_table,
+        ) = tables
 
         self._config: AuthConfig = config
-        self._user_table: type[UserT] = table
+        self._user_table: type[UserT] = user_table
+        self._auth_session_table: type[AuthSession] = auth_session_table
+        self._auth_refresh_token_table: type[AuthRefreshToken] = (
+            auth_refresh_token_table
+        )
+        self._auth_magic_link_table: type[AuthMagicLink] = auth_magic_link_table
         self._hasher: PasswordHasher = Argon2Hasher()
-        self._email_client: EmailClient = EmailClient(self._config.email)
+        self._email_client: EmailClient | None = None
         self._oauth_providers: dict[AuthProvider, BaseOAuthProvider] = {}
         self._database_client: DatabaseEngine | None = None
 
@@ -100,6 +122,16 @@ class AuthClient[UserT: BaseUser]:
         if self._replica_database_client is not None:
             return self._replica_database_client
         return self._db()
+
+    def set_email(self, email_client: EmailClient | None) -> None:
+        """Set the email client."""
+        self._email_client = email_client
+
+    def _email(self) -> EmailClient:
+        """Get the email client."""
+        if self._email_client is None:
+            raise ValueError("Email client not set. Must call `set_email()` first.")
+        return self._email_client
 
     # =========================================================================
     # User Management
@@ -178,6 +210,8 @@ class AuthClient[UserT: BaseUser]:
         *,
         email: str,
         password: str,
+        confirmation_url: str | None = None,
+        confirmation_subject: str = "Confirm your email address",
         user_agent: str | None = None,
         ip_address: str | None = None,
         **kwargs: Any,
@@ -192,8 +226,12 @@ class AuthClient[UserT: BaseUser]:
             UserAlreadyExistsError: If user already exists
             PasswordValidationError: If password doesn't meet requirements
         """
-        if not self._config.email.enable_signup:
+        if not self._config.enable_signup:
             raise SignupDisabledError()
+        if confirmation_url is None and self._config.enable_confirmation:
+            raise ConfirmationURLMissingError(
+                "`confirmation_url` is required when confirmation is enabled."
+            )
 
         # Validate password
         validation = validate_password(self._config.password, password)
@@ -214,7 +252,7 @@ class AuthClient[UserT: BaseUser]:
         confirmation_sent_at = None
         email_confirmed_at = None
 
-        if self._config.email.enable_confirmation:
+        if self._config.enable_confirmation:
             confirmation_token = generate_secure_token()
             confirmation_sent_at = now
         else:
@@ -248,9 +286,12 @@ class AuthClient[UserT: BaseUser]:
         )
 
         # Send confirmation email if needed
-        if self._config.email.enable_confirmation and confirmation_token:
-            await self._email_client.send_confirmation_email(
-                email.lower(), confirmation_token
+        if self._config.enable_confirmation and confirmation_token:
+            await self._email().send_email(
+                subject=confirmation_subject,
+                to_email=email.lower(),
+                template="confirmation.html",
+                confirmation_url=f"{confirmation_url}?token={confirmation_token}",
             )
 
         # Create session and tokens
@@ -293,7 +334,7 @@ class AuthClient[UserT: BaseUser]:
         if not user.is_active:
             raise UserNotActiveError()
 
-        if self._config.email.enable_confirmation and not user.email_confirmed_at:
+        if self._config.enable_confirmation and not user.email_confirmed_at:
             raise EmailNotConfirmedError()
 
         # Update last sign in
@@ -329,7 +370,7 @@ class AuthClient[UserT: BaseUser]:
     # Magic Link Authentication
     # =========================================================================
 
-    async def sign_in_with_magic_link(self, email: str) -> None:
+    async def sign_in_with_magic_link(self, *, email: str, magic_link_url: str) -> None:
         """Send a magic link email for passwordless sign in.
 
         Creates user if they don't exist (if signup enabled).
@@ -340,7 +381,7 @@ class AuthClient[UserT: BaseUser]:
         user = await self.get_user(email=email.lower())
 
         if not user:
-            if not self._config.email.enable_signup:
+            if not self._config.enable_signup:
                 raise SignupDisabledError()
 
             # Create user for magic link
@@ -367,7 +408,7 @@ class AuthClient[UserT: BaseUser]:
 
         await (
             self._db()
-            .insert(AuthMagicLink)
+            .insert(self._auth_magic_link_table)
             .values(
                 email=email.lower(),
                 token=token,
@@ -377,7 +418,12 @@ class AuthClient[UserT: BaseUser]:
         )
 
         # Send email
-        await self._email_client.send_magic_link_email(email.lower(), token)
+        await self._email().send_email(
+            subject="Sign in to your account",
+            to_email=email.lower(),
+            template="magic_link.html",
+            magic_link_url=f"{magic_link_url}?token={token}",
+        )
 
     async def verify_magic_link(
         self,
@@ -400,8 +446,8 @@ class AuthClient[UserT: BaseUser]:
         # Find magic link
         result = await (
             self._db()
-            .select(AuthMagicLink)
-            .where(AuthMagicLink.c.token == token)
+            .select(self._auth_magic_link_table)
+            .where(self._auth_magic_link_table.c.token == token)
             .execute()
         )
 
@@ -419,9 +465,9 @@ class AuthClient[UserT: BaseUser]:
         # Mark as used
         await (
             self._db()
-            .update(AuthMagicLink)
+            .update(self._auth_magic_link_table)
             .set(used=True)
-            .where(AuthMagicLink.c.id == magic_link.id)
+            .where(self._auth_magic_link_table.c.id == magic_link.id)
             .execute()
         )
 
@@ -590,7 +636,7 @@ class AuthClient[UserT: BaseUser]:
         # Create session
         session = await (
             self._db()
-            .insert(AuthSession)
+            .insert(self._auth_session_table)
             .values(
                 user_id=user_id,
                 user_agent=user_agent,
@@ -598,7 +644,7 @@ class AuthClient[UserT: BaseUser]:
                 created_at=now,
                 not_after=not_after,
             )
-            .returning(AuthSession)
+            .returning(self._auth_session_table)
             .execute()
         )
 
@@ -606,7 +652,7 @@ class AuthClient[UserT: BaseUser]:
         refresh_token = generate_secure_token()
         await (
             self._db()
-            .insert(AuthRefreshToken)
+            .insert(self._auth_refresh_token_table)
             .values(
                 session_id=session.id,
                 token=refresh_token,
@@ -633,8 +679,8 @@ class AuthClient[UserT: BaseUser]:
         # Find refresh token
         result = await (
             self._db()
-            .select(AuthRefreshToken)
-            .where(AuthRefreshToken.c.token == refresh_token)
+            .select(self._auth_refresh_token_table)
+            .where(self._auth_refresh_token_table.c.token == refresh_token)
             .execute()
         )
 
@@ -647,9 +693,12 @@ class AuthClient[UserT: BaseUser]:
             # Token was already used - potential theft, revoke all tokens for session
             await (
                 self._db()
-                .update(AuthRefreshToken)
+                .update(self._auth_refresh_token_table)
                 .set(revoked=True)
-                .where(AuthRefreshToken.c.session_id == token_record.session_id)
+                .where(
+                    self._auth_refresh_token_table.c.session_id
+                    == token_record.session_id
+                )
                 .execute()
             )
             raise RefreshTokenReusedError()
@@ -657,8 +706,8 @@ class AuthClient[UserT: BaseUser]:
         # Get session
         session_result = await (
             self._db()
-            .select(AuthSession)
-            .where(AuthSession.c.id == token_record.session_id)
+            .select(self._auth_session_table)
+            .where(self._auth_session_table.c.id == token_record.session_id)
             .execute()
         )
 
@@ -673,9 +722,9 @@ class AuthClient[UserT: BaseUser]:
         # Revoke old token
         await (
             self._db()
-            .update(AuthRefreshToken)
+            .update(self._auth_refresh_token_table)
             .set(revoked=True)
-            .where(AuthRefreshToken.c.id == token_record.id)
+            .where(self._auth_refresh_token_table.c.id == token_record.id)
             .execute()
         )
 
@@ -683,7 +732,7 @@ class AuthClient[UserT: BaseUser]:
         new_refresh_token = generate_secure_token()
         await (
             self._db()
-            .insert(AuthRefreshToken)
+            .insert(self._auth_refresh_token_table)
             .values(
                 session_id=session.id,
                 token=new_refresh_token,
@@ -703,8 +752,8 @@ class AuthClient[UserT: BaseUser]:
 
         result = await (
             self._db()
-            .select(AuthSession)
-            .where(AuthSession.c.id == str(payload.session_id))
+            .select(self._auth_session_table)
+            .where(self._auth_session_table.c.id == str(payload.session_id))
             .execute()
         )
 
@@ -723,17 +772,17 @@ class AuthClient[UserT: BaseUser]:
         # Revoke all refresh tokens for this session
         await (
             self._db()
-            .update(AuthRefreshToken)
+            .update(self._auth_refresh_token_table)
             .set(revoked=True)
-            .where(AuthRefreshToken.c.session_id == str(session_id))
+            .where(self._auth_refresh_token_table.c.session_id == str(session_id))
             .execute()
         )
 
         # Delete session
         await (
             self._db()
-            .delete(AuthSession)
-            .where(AuthSession.c.id == str(session_id))
+            .delete(self._auth_session_table)
+            .where(self._auth_session_table.c.id == str(session_id))
             .execute()
         )
 
@@ -742,8 +791,8 @@ class AuthClient[UserT: BaseUser]:
         # Get all session IDs
         sessions = await (
             self._db()
-            .select(AuthSession)
-            .where(AuthSession.c.user_id == str(user_id))
+            .select(self._auth_session_table)
+            .where(self._auth_session_table.c.user_id == str(user_id))
             .execute()
         )
 
@@ -754,7 +803,14 @@ class AuthClient[UserT: BaseUser]:
     # Password Recovery
     # =========================================================================
 
-    async def request_password_recovery(self, email: str) -> None:
+    async def request_password_recovery(
+        self,
+        *,
+        email: str,
+        recovery_url: str,
+        recovery_subject: str = "Reset your password",
+        **kwargs: Any,
+    ) -> None:
         """Send a password recovery email.
 
         Does not reveal whether user exists for security.
@@ -778,7 +834,13 @@ class AuthClient[UserT: BaseUser]:
             .execute()
         )
 
-        await self._email_client.send_recovery_email(email.lower(), token)
+        await self._email().send_email(
+            subject=recovery_subject,
+            to_email=email.lower(),
+            template="recovery.html",
+            recovery_url=f"{recovery_url}?token={token}",
+            **kwargs,
+        )
 
     async def reset_password(self, token: str, new_password: str) -> UserT:
         """Reset password using recovery token.
@@ -893,7 +955,14 @@ class AuthClient[UserT: BaseUser]:
 
         return result
 
-    async def resend_confirmation_email(self, email: str) -> None:
+    async def resend_confirmation_email(
+        self,
+        *,
+        email: str,
+        confirmation_url: str,
+        confirmation_subject: str = "Confirm your email address",
+        **kwargs: Any,
+    ) -> None:
         """Resend email confirmation.
 
         Does not reveal whether user exists for security.
@@ -921,4 +990,10 @@ class AuthClient[UserT: BaseUser]:
             .execute()
         )
 
-        await self._email_client.send_confirmation_email(email.lower(), token)
+        await self._email().send_email(
+            subject=confirmation_subject,
+            to_email=email.lower(),
+            template="confirmation.html",
+            confirmation_url=f"{confirmation_url}?token={token}",
+            **kwargs,
+        )

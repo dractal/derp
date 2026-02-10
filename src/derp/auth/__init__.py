@@ -3,14 +3,6 @@
 from __future__ import annotations
 
 from derp.auth.client import AuthClient
-from derp.config import (
-    AuthConfig,
-    EmailConfig,
-    GitHubOAuthConfig,
-    GoogleOAuthConfig,
-    JWTConfig,
-    PasswordConfig,
-)
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     AuthError,
@@ -57,6 +49,14 @@ from derp.auth.providers import (
     GitHubProvider,
     GoogleProvider,
     OAuthUserInfo,
+)
+from derp.config import (
+    AuthConfig,
+    EmailConfig,
+    GitHubOAuthConfig,
+    GoogleOAuthConfig,
+    JWTConfig,
+    PasswordConfig,
 )
 
 __all__ = [

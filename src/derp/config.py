@@ -68,6 +68,23 @@ class DatabaseConfig(BaseModel):
     introspect: IntrospectConfig = Field(default_factory=IntrospectConfig)
 
 
+class EmailConfig(BaseModel):
+    """Configuration for email sending via SMTP."""
+
+    site_name: str
+    site_url: str
+    from_email: str
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    smtp_password: str
+
+    templates_dir: str | None = None
+
+    use_tls: bool = True
+    start_tls: bool = False
+
+
 class JWTConfig(BaseModel):
     """Configuration for JWT tokens."""
 
@@ -108,39 +125,18 @@ class GitHubOAuthConfig(BaseModel):
     scopes: Sequence[str] = ("user:email",)
 
 
-class EmailConfig(BaseModel):
-    """Configuration for email sending."""
-
-    site_name: str
-    site_url: str
-    from_email: str
-    smtp_host: str
-    smtp_port: int
-    smtp_user: str
-    smtp_password: str
-
-    templates_dir: str | None = None
-    confirm_email_url: str = "{site_url}/auth/confirm"
-    recovery_url: str = "{site_url}/auth/recovery"
-    magic_link_url: str = "{site_url}/auth/magic-link"
-
-    enable_signup: bool = True
-    enable_confirmation: bool = True
-    enable_magic_link: bool = False
-    use_tls: bool = True
-    start_tls: bool = False
-
-
 class AuthConfig(BaseModel):
     """Main configuration for the auth module."""
 
-    email: EmailConfig
     jwt: JWTConfig
-    user_table_name: str = "users"
     password: PasswordConfig = Field(default_factory=PasswordConfig)
 
     google_oauth: GoogleOAuthConfig | None = None
     github_oauth: GitHubOAuthConfig | None = None
+
+    enable_signup: bool = True
+    enable_confirmation: bool = True
+    enable_magic_link: bool = False
 
     magic_link_expire_minutes: int = 60
     recovery_token_expire_minutes: int = 60
@@ -190,6 +186,7 @@ class DerpConfig(BaseModel):
     """Derp configuration."""
 
     database: DatabaseConfig
+    email: EmailConfig | None = None
     storage: StorageConfig | None = None
     auth: AuthConfig | None = None
     kv: KVConfig | None = None
@@ -236,6 +233,15 @@ dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # schemas = ["public"]   # Schemas to introspect
 # exclude_tables = ["{MIGRATIONS_TABLE}"]  # Tables to exclude from introspection
 
+# [email]
+# site_name = "My App"  # Site name for email templates
+# site_url = "https://example.com"  # Site URL for email templates
+# from_email = "noreply@example.com"  # From email for sending emails
+# smtp_host = "smtp.example.com"
+# smtp_port = 587
+# smtp_user = "$SMTP_USER"
+# smtp_password = "$SMTP_PASSWORD"
+
 # [storage]
 # endpoint_url = "https://s3.amazonaws.com"
 # access_key_id = "$AWS_ACCESS_KEY_ID"
@@ -244,15 +250,6 @@ dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 
 # [auth]
 # user_table_name = "users"
-
-# [auth.email]
-# site_name = "My App"  # Site name for email templates
-# site_url = "https://example.com"  # Site URL for email templates
-# from_email = "noreply@example.com"  # From email for sending emails
-# smtp_host = "smtp.example.com"
-# smtp_port = 587
-# smtp_user = "$SMTP_USER"
-# smtp_password = "$SMTP_PASSWORD"
 
 # [auth.jwt]
 # secret = "$JWT_SECRET"

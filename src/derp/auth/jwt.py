@@ -9,8 +9,8 @@ from typing import Any
 
 import jwt
 
-from derp.config import JWTConfig
 from derp.auth.exceptions import InvalidTokenError, TokenExpiredError
+from derp.config import JWTConfig
 
 
 @dataclass(kw_only=True)

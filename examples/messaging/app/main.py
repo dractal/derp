@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -13,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from app.routers import auth, conversations, users
 from derp import DerpClient, DerpConfig
 
+load_dotenv(Path(__file__).parent.parent / ".env")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:

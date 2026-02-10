@@ -338,7 +338,7 @@ class FieldInfo[T]:
     def is_auto_increment(self) -> bool:
         """Check if this field auto-increments."""
         return isinstance(self.field_type, Serial | BigSerial)
-    
+
     def __negate__(self) -> Any:
         """Negate the field."""
         return expressions.BinaryOp(

@@ -16,11 +16,6 @@ from derp.orm.fields import (
     Varchar,
 )
 
-# Import authentication tables to include them in the schema.
-_AuthMagicLink = AuthMagicLink
-_AuthRefreshToken = AuthRefreshToken
-_AuthSession = AuthSession
-
 
 class User(BaseUser, table="users"):
     """User model with messaging profile fields."""
@@ -28,6 +23,18 @@ class User(BaseUser, table="users"):
     username: str | None = Field(Varchar(100), nullable=True)
     avatar_url: str | None = Field(Varchar(512), nullable=True)
     bio: str | None = Field(Text(), nullable=True)
+
+
+class AuthSession(AuthSession, table="auth_sessions"):
+    """Authentication session table."""
+
+
+class AuthRefreshToken(AuthRefreshToken, table="auth_refresh_tokens"):
+    """Refresh token table for token rotation."""
+
+
+class AuthMagicLink(AuthMagicLink, table="auth_magic_links"):
+    """Magic link table for passwordless authentication."""
 
 
 class Conversation(Table, table="conversations"):

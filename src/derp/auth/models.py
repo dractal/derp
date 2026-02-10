@@ -58,13 +58,13 @@ class BaseUser(abc.ABC, Table):
     )
 
 
-class AuthSession(Table, table="auth_sessions"):
+class AuthSession(Table):
     """Authentication session table."""
 
     id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
     user_id: uuid.UUID = Field(
         UUID(),
-        foreign_key=ForeignKey(BaseUser, on_delete=ForeignKeyAction.CASCADE),
+        foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
         index=True,
     )
     user_agent: str | None = Field(Text(), nullable=True)
@@ -73,13 +73,13 @@ class AuthSession(Table, table="auth_sessions"):
     not_after: datetime = Field(Timestamp(with_timezone=True))
 
 
-class AuthRefreshToken(Table, table="auth_refresh_tokens"):
+class AuthRefreshToken(Table):
     """Refresh token table for token rotation."""
 
     id: int = Field(Serial(), primary_key=True)
     session_id: uuid.UUID = Field(
         UUID(),
-        foreign_key=ForeignKey(AuthSession, on_delete=ForeignKeyAction.CASCADE),
+        foreign_key=ForeignKey("auth_sessions.id", on_delete=ForeignKeyAction.CASCADE),
         index=True,
     )
     token: str = Field(Varchar(255), unique=True, index=True)
@@ -88,7 +88,7 @@ class AuthRefreshToken(Table, table="auth_refresh_tokens"):
     created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
 
 
-class AuthMagicLink(Table, table="auth_magic_links"):
+class AuthMagicLink(Table):
     """Magic link table for passwordless authentication."""
 
     id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")

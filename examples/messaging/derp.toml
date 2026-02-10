@@ -10,17 +10,18 @@ endpoint_url = "$STORAGE_ENDPOINT_URL"
 access_key_id = "$STORAGE_ACCESS_KEY_ID"
 secret_access_key = "$STORAGE_SECRET_ACCESS_KEY"
 
-[auth]
-user_table_name = "users"
-
-[auth.email]
+[email]
 site_name = "Messaging App"
 site_url = "http://localhost:8000"
 from_email = "noreply@localhost"
+smtp_user = "localhost"
+smtp_password = "123"
 smtp_host = "localhost"
 smtp_port = 1025
-enable_signup = true
-enable_confirmation = true
+use_tls = false
+
+[auth]
+enable_confirmation = false
 enable_magic_link = true
 
 [auth.jwt]

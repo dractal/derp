@@ -9,3 +9,9 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Studio
+src/derp/studio/node_modules/
+src/derp/studio/.next/
+src/derp/studio/out/
+src/derp/studio/bun.lock

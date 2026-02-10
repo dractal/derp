@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from derp.auth import AuthConfig, EmailConfig, JWTConfig
-from derp.auth.models import BaseUser
+from derp.auth.models import AuthMagicLink, AuthRefreshToken, AuthSession, BaseUser
 from derp.config import DerpConfig
 from derp.derp_client import DerpClient
 from derp.orm import DatabaseConfig, DatabaseEngine
@@ -19,6 +19,18 @@ from derp.orm.fields import JSONB, Field
 
 class User(BaseUser, table="users"):
     user_metadata: dict[str, Any] | None = Field(JSONB(), nullable=True)
+
+
+class AuthSession(AuthSession, table="auth_sessions"):
+    pass
+
+
+class AuthRefreshToken(AuthRefreshToken, table="auth_refresh_tokens"):
+    pass
+
+
+class AuthMagicLink(AuthMagicLink, table="auth_magic_links"):
+    pass
 
 
 @pytest.fixture
@@ -38,12 +50,6 @@ def email_config() -> EmailConfig:
     return EmailConfig(
         site_name="Test Site",
         site_url="http://localhost:3000",
-        confirm_email_url="{site_url}/auth/confirm",
-        recovery_url="{site_url}/auth/recovery",
-        magic_link_url="{site_url}/auth/magic-link",
-        enable_signup=True,
-        enable_confirmation=True,
-        enable_magic_link=True,
         from_email="test@example.com",
         smtp_host="localhost",
         smtp_port=587,
@@ -55,14 +61,16 @@ def email_config() -> EmailConfig:
 
 
 @pytest.fixture
-def auth_config(jwt_config: JWTConfig, email_config: EmailConfig) -> AuthConfig[User]:
+def auth_config(jwt_config: JWTConfig) -> AuthConfig[User]:
     """Create an auth config for testing."""
-    return AuthConfig(email=email_config, jwt=jwt_config, user_table_name="users")
+    return AuthConfig(jwt=jwt_config, enable_magic_link=True)
 
 
 @pytest.fixture
 async def derp(
-    clean_database: str, auth_config: AuthConfig
+    clean_database: str,
+    auth_config: AuthConfig,
+    email_config: EmailConfig,
 ) -> AsyncGenerator[DerpClient[User], None]:
     """Create a Derp client for testing."""
     derp = DerpClient(
@@ -72,6 +80,7 @@ async def derp(
                 replica_url=clean_database,
                 schema_path=str(Path(__file__)),
             ),
+            email=email_config,
             auth=auth_config,
         ),
     )
