@@ -1,9 +1,10 @@
 [project]
-name = "derp"
+name = "derp-py"
 version = "0.1.0"
-description = "A strongly-typed async Python ORM for PostgreSQL inspired by Drizzle ORM and SQLModel"
+description = "An async Python backend toolkit for building web apps."
 readme = "README.md"
 authors = [{ name = "hilly12", email = "aahilmehta12@gmail.com" }]
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
@@ -31,6 +32,9 @@ build-backend = "uv_build"
 
 [tool.uv-build]
 packages = ["src/derp"]
+
+[tool.uv.build-backend]
+module-name = "derp"
 
 [dependency-groups]
 dev = [

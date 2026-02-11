@@ -19,7 +19,7 @@ Derp is an async backend toolkit for Python web apps. It includes:
 ## Installation
 
 ```bash
-uv add derp
+uv add derp-py
 ```
 
 ## Quick Start
