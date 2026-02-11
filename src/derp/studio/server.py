@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,8 +21,7 @@ from derp.config import DerpConfig
 from derp.derp_client import DerpClient
 from derp.orm.migrations.introspect.postgres import PostgresIntrospector
 
-ARTIFICIAL_LATENCY_REGEX = re.compile(r"/api/payments/.*|/api/email/templates")
-
+ARTIFICIAL_LATENCY = 0.2
 _INT_TYPES = frozenset({"integer", "bigint", "smallint", "int2", "int4", "int8"})
 _FLOAT_TYPES = frozenset(
     {"real", "double precision", "float4", "float8", "numeric", "decimal"}
@@ -135,11 +133,11 @@ def create_app(
 
     @app.middleware("http")
     async def minimum_latency(request: Request, call_next):
-        if ARTIFICIAL_LATENCY_REGEX.fullmatch(request.url.path):
+        if ARTIFICIAL_LATENCY is not None:
             start = time.perf_counter()
             response = await call_next(request)
             elapsed = time.perf_counter() - start
-            remaining = 0.25 - elapsed
+            remaining = ARTIFICIAL_LATENCY - elapsed
             if remaining > 0:
                 await asyncio.sleep(remaining)
             return response
@@ -177,6 +175,48 @@ def create_app(
         if derp._storage is None:
             raise HTTPException(status_code=400, detail="Storage is not configured.")
         return await derp.storage.list_objects(bucket=bucket, prefix=prefix)
+
+    @app.get("/api/storage/buckets/{bucket}/objects/info")
+    async def get_object_info(
+        bucket: str,
+        key: str,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """Get object metadata (content type, size, etc.)."""
+        if derp._storage is None:
+            raise HTTPException(status_code=400, detail="Storage is not configured.")
+        try:
+            info = await derp.storage.head_object(bucket=bucket, key=key)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=404, detail=f"Object not found: {exc}"
+            ) from exc
+        return info
+
+    @app.get("/api/storage/buckets/{bucket}/objects/content")
+    async def get_object_content(
+        bucket: str,
+        key: str,
+        derp: DerpClient = Depends(get_derp),
+    ) -> Response:
+        """Stream object content with its original content type."""
+        if derp._storage is None:
+            raise HTTPException(status_code=400, detail="Storage is not configured.")
+        try:
+            info = await derp.storage.head_object(bucket=bucket, key=key)
+            data = await derp.storage.fetch_file(bucket=bucket, key=key)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=404, detail=f"Object not found: {exc}"
+            ) from exc
+        return Response(
+            content=data,
+            media_type=info["content_type"],
+            headers={
+                "Content-Length": str(len(data)),
+                "Cache-Control": "private, max-age=60",
+            },
+        )
 
     @app.get("/api/email/templates")
     async def list_email_templates(derp: DerpClient = Depends(get_derp)) -> dict:
@@ -431,6 +471,98 @@ def create_app(
         updated = len(result) if result else 0
 
         return {"updated": updated}
+
+    # --- KV ---
+
+    @app.get("/api/kv/keys")
+    async def list_kv_keys(
+        prefix: str = "",
+        limit: int = 100,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """Scan KV keys with optional prefix filtering."""
+        if derp._kv is None:
+            raise HTTPException(status_code=400, detail="KV is not configured.")
+        limit = min(max(limit, 1), 1000)
+        store = derp.kv.store
+        prefix_bytes = prefix.encode() if prefix else None
+        keys: list[str] = []
+        async for key in store.scan(prefix=prefix_bytes, limit=limit):
+            keys.append(key.decode("utf-8", errors="replace"))
+        return {"keys": keys}
+
+    @app.get("/api/kv/keys/info")
+    async def get_kv_key_info(
+        key: str,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """Get value and TTL for a single KV key."""
+        if derp._kv is None:
+            raise HTTPException(status_code=400, detail="KV is not configured.")
+        store = derp.kv.store
+        key_bytes = key.encode()
+        value = await store.get(key_bytes)
+        if value is None:
+            raise HTTPException(status_code=404, detail=f"Key not found: {key}")
+        ttl = await store.ttl(key_bytes)
+        return {
+            "key": key,
+            "value": value.decode("utf-8", errors="replace"),
+            "ttl": ttl,
+            "size": len(value),
+        }
+
+    @app.delete("/api/kv/keys")
+    async def delete_kv_key(
+        request: Request,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """Delete a single KV key."""
+        if derp._kv is None:
+            raise HTTPException(status_code=400, detail="KV is not configured.")
+        body = await request.json()
+        key: str = body.get("key", "")
+        if not key:
+            raise HTTPException(status_code=400, detail="No key specified.")
+        deleted = await derp.kv.store.delete(key.encode())
+        return {"deleted": deleted}
+
+    # --- Auth ---
+
+    @app.get("/api/auth/users")
+    async def list_auth_users(
+        limit: int = 100,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """List auth users."""
+        if derp._auth is None:
+            raise HTTPException(status_code=400, detail="Auth is not configured.")
+        table = derp.auth._user_table.get_table_name()
+        limit = min(max(limit, 1), 500)
+        rows = await derp.db.execute(
+            f"SELECT id, email, provider, is_active, email_confirmed_at,"
+            f" last_sign_in_at, created_at"
+            f' FROM "{table}" ORDER BY created_at DESC LIMIT $1',
+            [limit],
+        )
+        return {"users": rows}
+
+    @app.get("/api/auth/sessions")
+    async def list_auth_sessions(
+        limit: int = 100,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """List auth sessions."""
+        if derp._auth is None:
+            raise HTTPException(status_code=400, detail="Auth is not configured.")
+        table = derp.auth._auth_session_table.get_table_name()
+        limit = min(max(limit, 1), 500)
+        rows = await derp.db.execute(
+            f"SELECT id, user_id, user_agent, ip_address, created_at, not_after"
+            f' FROM "{table}" ORDER BY created_at DESC LIMIT $1',
+            [limit],
+        )
+        return {"sessions": rows}
 
     # --- Payments ---
 

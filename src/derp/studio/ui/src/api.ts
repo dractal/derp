@@ -216,6 +216,71 @@ export function useUpdateRow(table: string): UseMutationResult<{ updated: number
   });
 }
 
+// --- KV ---
+
+export interface KVKeyInfo {
+  key: string;
+  value: string;
+  ttl: number | null;
+  size: number;
+}
+
+export async function fetchKVKeys(
+  prefix?: string,
+  limit?: number,
+  signal?: AbortSignal,
+): Promise<{ keys: string[] }> {
+  const params = new URLSearchParams();
+  if (prefix) params.set("prefix", prefix);
+  if (limit != null) params.set("limit", String(limit));
+  const response = await fetch(`/api/kv/keys?${params}`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load KV keys: HTTP ${response.status}`);
+  }
+  return (await response.json()) as { keys: string[] };
+}
+
+export async function fetchKVKeyInfo(
+  key: string,
+  signal?: AbortSignal,
+): Promise<KVKeyInfo> {
+  const params = new URLSearchParams({ key });
+  const response = await fetch(`/api/kv/keys/info?${params}`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load KV key info: HTTP ${response.status}`);
+  }
+  return (await response.json()) as KVKeyInfo;
+}
+
+async function deleteKVKey(key: string): Promise<{ deleted: boolean }> {
+  const response = await fetch("/api/kv/keys", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ key }),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Failed to delete KV key: ${text}`);
+  }
+  return (await response.json()) as { deleted: boolean };
+}
+
+export function useDeleteKVKey(): UseMutationResult<{ deleted: boolean }, Error, string> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (key: string) => deleteKVKey(key),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["kv", "keys"] });
+    },
+  });
+}
+
 // --- Storage ---
 
 export interface BucketInfo {
@@ -262,6 +327,82 @@ export async function fetchObjects(
     throw new Error(`Failed to load objects: HTTP ${response.status}`);
   }
   return (await response.json()) as ObjectsResponse;
+}
+
+export interface ObjectDetail {
+  content_type: string;
+  content_length: number;
+  last_modified: string;
+  etag: string;
+  metadata: Record<string, string>;
+}
+
+export async function fetchObjectInfo(
+  bucket: string,
+  key: string,
+  signal?: AbortSignal,
+): Promise<ObjectDetail> {
+  const params = new URLSearchParams({ key });
+  const response = await fetch(
+    `/api/storage/buckets/${encodeURIComponent(bucket)}/objects/info?${params}`,
+    { headers: { Accept: "application/json" }, signal },
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to load object info: HTTP ${response.status}`);
+  }
+  return (await response.json()) as ObjectDetail;
+}
+
+export function objectContentUrl(bucket: string, key: string): string {
+  const params = new URLSearchParams({ key });
+  return `/api/storage/buckets/${encodeURIComponent(bucket)}/objects/content?${params}`;
+}
+
+// --- Auth ---
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  provider: string;
+  is_active: boolean;
+  email_confirmed_at: string | null;
+  last_sign_in_at: string | null;
+  created_at: string;
+}
+
+export interface AuthSessionInfo {
+  id: string;
+  user_id: string;
+  user_agent: string | null;
+  ip_address: string | null;
+  created_at: string;
+  not_after: string;
+}
+
+export async function fetchAuthUsers(
+  signal?: AbortSignal,
+): Promise<{ users: AuthUser[] }> {
+  const response = await fetch("/api/auth/users", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load auth users: HTTP ${response.status}`);
+  }
+  return (await response.json()) as { users: AuthUser[] };
+}
+
+export async function fetchAuthSessions(
+  signal?: AbortSignal,
+): Promise<{ sessions: AuthSessionInfo[] }> {
+  const response = await fetch("/api/auth/sessions", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load auth sessions: HTTP ${response.status}`);
+  }
+  return (await response.json()) as { sessions: AuthSessionInfo[] };
 }
 
 // --- Payments ---

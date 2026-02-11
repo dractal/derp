@@ -18,8 +18,10 @@ import {
   Database,
   Eye,
   EyeOff,
+  GitFork,
   Info,
   Key,
+  LayoutGrid,
   Link,
   Loader2,
   Pencil,
@@ -32,6 +34,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { useDeleteRows, useUpdateRow, type ColumnInfo, type TableInfo } from "../api";
+import { ERDiagram } from "../components/erd";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -1009,6 +1012,8 @@ function RowBrowser({
   );
 }
 
+type DatabaseView = "tables" | "erd";
+
 export function DatabasePage(): JSX.Element {
   const {
     tables,
@@ -1024,8 +1029,18 @@ export function DatabasePage(): JSX.Element {
     goBack,
   } = useDatabase();
 
+  const [view, setView] = useState<DatabaseView>("tables");
+
+  const handleERDTableClick = useCallback(
+    (name: string) => {
+      setView("tables");
+      selectTable(name);
+    },
+    [selectTable],
+  );
+
   return (
-    <div className="flex min-w-0 flex-1 flex-col gap-6 p-6 md:p-10">
+    <div className="flex min-w-0 flex-1 flex-col gap-6 overflow-auto p-6 md:p-10">
       {loading && selectedTable === null ? (
         <>
           <div className="flex items-center gap-2">
@@ -1045,10 +1060,32 @@ export function DatabasePage(): JSX.Element {
 
       {!loading && !error && selectedTable === null ? (
         <>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between">
             <Badge variant="secondary">{tables.length} tables</Badge>
+            <div className="flex items-center gap-1 rounded-lg border p-0.5">
+              <Button
+                variant={view === "tables" ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => setView("tables")}
+              >
+                <LayoutGrid className="size-3.5" />
+                Tables
+              </Button>
+              <Button
+                variant={view === "erd" ? "secondary" : "ghost"}
+                size="sm"
+                onClick={() => setView("erd")}
+              >
+                <GitFork className="size-3.5" />
+                ERD
+              </Button>
+            </div>
           </div>
-          <TableList tables={tables} onSelect={selectTable} />
+          {view === "tables" ? (
+            <TableList tables={tables} onSelect={selectTable} />
+          ) : (
+            <ERDiagram tables={tables} onTableClick={handleERDTableClick} />
+          )}
         </>
       ) : null}
 

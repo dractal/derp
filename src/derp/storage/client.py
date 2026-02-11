@@ -214,6 +214,26 @@ class StorageClient:
             # Re-raise other client errors
             raise
 
+    async def head_object(self, *, bucket: str, key: str) -> dict[str, Any]:
+        """Get object metadata without downloading the content.
+
+        Args:
+            bucket: Name of the S3 bucket.
+            key: S3 object key (path in bucket).
+
+        Returns:
+            Dict with 'content_type', 'content_length', 'last_modified',
+            'etag', and 'metadata' keys.
+        """
+        response = await self.client.head_object(Bucket=bucket, Key=key)
+        return {
+            "content_type": response.get("ContentType", "application/octet-stream"),
+            "content_length": response.get("ContentLength", 0),
+            "last_modified": response["LastModified"].isoformat(),
+            "etag": response.get("ETag", "").strip('"'),
+            "metadata": response.get("Metadata", {}),
+        }
+
     async def list_files(
         self, *, bucket: str, prefix: str = "", max_keys: int | None = None
     ) -> list[str]:

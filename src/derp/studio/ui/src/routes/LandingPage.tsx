@@ -1,10 +1,20 @@
-import { useConfig } from "../api";
+import { useConfig, type StudioConfig } from "../api";
+import { Badge } from "../components/ui/badge";
 import { JsonViewer } from "../components/json-viewer";
 import {
   Card,
   CardContent,
 } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
+
+const SERVICES: { key: keyof StudioConfig; label: string }[] = [
+  { key: "database", label: "Database" },
+  { key: "auth", label: "Auth" },
+  { key: "storage", label: "Storage" },
+  { key: "kv", label: "KV" },
+  { key: "email", label: "Email" },
+  { key: "payments", label: "Payments" },
+];
 
 export function LandingPage(): JSX.Element {
   const { data, isLoading, error } = useConfig();
@@ -23,6 +33,19 @@ export function LandingPage(): JSX.Element {
           .
         </p>
       </header>
+
+      {!isLoading && !error && data ? (
+        <div className="flex flex-wrap gap-2">
+          {SERVICES.map(({ key, label }) => (
+            <Badge
+              key={key}
+              variant={data[key] != null ? "default" : "outline"}
+            >
+              {label}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
 
       {isLoading ? (
         <Card>

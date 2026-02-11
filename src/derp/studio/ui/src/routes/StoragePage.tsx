@@ -1,7 +1,13 @@
 import { ChevronLeft, ChevronRight, File, Folder, HardDrive } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { useConfig, type BucketInfo, type ObjectInfo } from "../api";
+import {
+  useConfig,
+  objectContentUrl,
+  type BucketInfo,
+  type ObjectDetail,
+  type ObjectInfo,
+} from "../api";
 import { Badge } from "../components/ui/badge";
 import {
   Card,
@@ -9,6 +15,13 @@ import {
   CardHeader,
   CardTitle,
 } from "../components/ui/card";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
 import { useStorage } from "../hooks/use-storage";
 
@@ -32,6 +45,168 @@ function formatDate(iso: string): string {
 
 function extractName(keyOrPrefix: string, currentPrefix: string): string {
   return keyOrPrefix.slice(currentPrefix.length).replace(/\/$/, "");
+}
+
+function mimeCategory(
+  contentType: string,
+): "image" | "video" | "audio" | "pdf" | "text" | "json" | null {
+  const ct = contentType.toLowerCase();
+  if (ct.startsWith("image/")) return "image";
+  if (ct.startsWith("video/")) return "video";
+  if (ct.startsWith("audio/")) return "audio";
+  if (ct === "application/pdf") return "pdf";
+  if (ct === "application/json" || ct.endsWith("+json")) return "json";
+  if (
+    ct.startsWith("text/") ||
+    ct === "application/xml" ||
+    ct.endsWith("+xml") ||
+    ct === "application/javascript"
+  )
+    return "text";
+  return null;
+}
+
+function ObjectPreview({
+  bucket,
+  objectKey,
+  contentType,
+}: {
+  bucket: string;
+  objectKey: string;
+  contentType: string;
+}) {
+  const url = objectContentUrl(bucket, objectKey);
+  const category = mimeCategory(contentType);
+
+  if (category === "image") {
+    return (
+      <img
+        src={url}
+        alt={objectKey}
+        className="max-h-80 w-full rounded-md border object-contain"
+      />
+    );
+  }
+
+  if (category === "video") {
+    return (
+      <video
+        src={url}
+        controls
+        className="max-h-80 w-full rounded-md border"
+      />
+    );
+  }
+
+  if (category === "audio") {
+    return <audio src={url} controls className="w-full" />;
+  }
+
+  if (category === "pdf") {
+    return (
+      <iframe
+        src={url}
+        title={objectKey}
+        className="h-80 w-full rounded-md border"
+      />
+    );
+  }
+
+  if (category === "text" || category === "json") {
+    return (
+      <iframe
+        src={url}
+        title={objectKey}
+        className="h-80 w-full rounded-md border bg-white font-mono text-xs"
+        sandbox=""
+      />
+    );
+  }
+
+  return (
+    <p className="text-sm text-muted-foreground">
+      Preview not available for this file type.
+    </p>
+  );
+}
+
+function ObjectDetailSheet({
+  open,
+  onOpenChange,
+  bucket,
+  object,
+  detail,
+  loading,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  bucket: string;
+  object: ObjectInfo;
+  detail: ObjectDetail | null;
+  loading: boolean;
+}) {
+  const fileName = object.key.split("/").pop() ?? object.key;
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="sm:max-w-lg overflow-y-auto">
+        <SheetHeader>
+          <SheetTitle className="break-all text-sm">{fileName}</SheetTitle>
+          <SheetDescription className="break-all">
+            {object.key}
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="flex flex-col gap-4 px-4 pb-4">
+          {loading ? (
+            <div className="space-y-3">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-4 w-36" />
+              <Skeleton className="h-48 w-full" />
+            </div>
+          ) : detail ? (
+            <>
+              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+                <span className="text-muted-foreground">Content Type</span>
+                <span className="font-mono text-xs">
+                  {detail.content_type}
+                </span>
+
+                <span className="text-muted-foreground">Size</span>
+                <span>{formatBytes(detail.content_length)}</span>
+
+                <span className="text-muted-foreground">Last Modified</span>
+                <span>{formatDate(detail.last_modified)}</span>
+
+                <span className="text-muted-foreground">ETag</span>
+                <span className="truncate font-mono text-xs">
+                  {detail.etag}
+                </span>
+
+                {Object.entries(detail.metadata).map(([k, v]) => (
+                  <>
+                    <span key={`k-${k}`} className="text-muted-foreground">
+                      {k}
+                    </span>
+                    <span key={`v-${k}`} className="break-all">
+                      {v}
+                    </span>
+                  </>
+                ))}
+              </div>
+
+              <ObjectPreview
+                bucket={bucket}
+                objectKey={object.key}
+                contentType={detail.content_type}
+              />
+            </>
+          ) : null}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
 }
 
 function BucketList({
@@ -125,6 +300,7 @@ function ObjectBrowser({
   objects,
   onNavigateToPrefix,
   onNavigateUp,
+  onSelectObject,
 }: {
   bucket: string;
   prefix: string;
@@ -132,6 +308,7 @@ function ObjectBrowser({
   objects: ObjectInfo[];
   onNavigateToPrefix: (prefix: string) => void;
   onNavigateUp: () => void;
+  onSelectObject: (obj: ObjectInfo) => void;
 }) {
   return (
     <div className="space-y-4">
@@ -172,6 +349,7 @@ function ObjectBrowser({
                 key={obj.key}
                 type="button"
                 className="flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm hover:bg-muted/50"
+                onClick={() => onSelectObject(obj)}
               >
                 <File className="size-4 text-muted-foreground" />
                 <span className="flex-1">{extractName(obj.key, prefix)}</span>
@@ -204,6 +382,11 @@ export function StoragePage(): JSX.Element {
     selectBucket,
     navigateToPrefix,
     navigateUp,
+    selectedObject,
+    objectDetail,
+    objectDetailLoading,
+    selectObject,
+    deselectObject,
   } = useStorage(isConfigured);
 
   return (
@@ -285,8 +468,22 @@ export function StoragePage(): JSX.Element {
             objects={objects}
             onNavigateToPrefix={navigateToPrefix}
             onNavigateUp={navigateUp}
+            onSelectObject={selectObject}
           />
         )
+      ) : null}
+
+      {selectedBucket && selectedObject ? (
+        <ObjectDetailSheet
+          open={selectedObject !== null}
+          onOpenChange={(open) => {
+            if (!open) deselectObject();
+          }}
+          bucket={selectedBucket}
+          object={selectedObject}
+          detail={objectDetail}
+          loading={objectDetailLoading}
+        />
       ) : null}
     </div>
   );

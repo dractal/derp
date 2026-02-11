@@ -4,11 +4,14 @@ import { useCallback, useState } from "react";
 import {
   fetchBuckets,
   fetchObjects,
+  fetchObjectInfo,
+  type ObjectInfo,
 } from "../api";
 
 export function useStorage(enabled: boolean) {
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
   const [prefix, setPrefix] = useState("");
+  const [selectedObject, setSelectedObject] = useState<ObjectInfo | null>(null);
 
   const bucketsQuery = useQuery({
     queryKey: ["buckets"],
@@ -22,6 +25,14 @@ export function useStorage(enabled: boolean) {
     enabled: enabled && selectedBucket !== null,
   });
 
+  const objectInfoQuery = useQuery({
+    queryKey: ["objectInfo", selectedBucket, selectedObject?.key],
+    queryFn: ({ signal }) =>
+      fetchObjectInfo(selectedBucket!, selectedObject!.key, signal),
+    enabled:
+      enabled && selectedBucket !== null && selectedObject !== null,
+  });
+
   const loading =
     (selectedBucket === null && bucketsQuery.isLoading) ||
     (selectedBucket !== null && objectsQuery.isLoading);
@@ -31,22 +42,33 @@ export function useStorage(enabled: boolean) {
   const selectBucket = useCallback((name: string) => {
     setSelectedBucket(name);
     setPrefix("");
+    setSelectedObject(null);
   }, []);
 
   const navigateToPrefix = useCallback((p: string) => {
     setPrefix(p);
+    setSelectedObject(null);
   }, []);
 
   const navigateUp = useCallback(() => {
     if (prefix === "") {
       setSelectedBucket(null);
+      setSelectedObject(null);
       return;
     }
-    // Strip last path segment: "a/b/c/" -> "a/b/"
     const parts = prefix.replace(/\/$/, "").split("/");
     parts.pop();
     setPrefix(parts.length > 0 ? parts.join("/") + "/" : "");
+    setSelectedObject(null);
   }, [prefix]);
+
+  const selectObject = useCallback((obj: ObjectInfo) => {
+    setSelectedObject(obj);
+  }, []);
+
+  const deselectObject = useCallback(() => {
+    setSelectedObject(null);
+  }, []);
 
   return {
     buckets: bucketsQuery.data ?? [],
@@ -59,5 +81,10 @@ export function useStorage(enabled: boolean) {
     selectBucket,
     navigateToPrefix,
     navigateUp,
+    selectedObject,
+    objectDetail: objectInfoQuery.data ?? null,
+    objectDetailLoading: objectInfoQuery.isLoading,
+    selectObject,
+    deselectObject,
   };
 }

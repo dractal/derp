@@ -1,10 +1,9 @@
 import {
-    CreditCard,
     Package,
     Receipt,
     RefreshCw,
     Users,
-    Zap,
+    Zap
 } from "lucide-react";
 
 import type {
@@ -297,11 +296,6 @@ export function PaymentsPage(): JSX.Element {
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-6 md:p-10">
-      <div className="flex items-center gap-3">
-        <CreditCard className="size-7 text-muted-foreground" />
-        <h1 className="text-3xl font-semibold tracking-tight">Payments</h1>
-      </div>
-
       {!isConfigured && !configLoading ? (
         <Card>
           <CardContent className="pt-6 text-sm text-muted-foreground">
