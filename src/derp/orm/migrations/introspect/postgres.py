@@ -281,7 +281,11 @@ class PostgresIntrospector:
                 not_null=row["not_null"],
                 unique=False,  # Will be set from unique constraints
                 default=row["column_default"],
-                generated=row["generated"] if row["generated"] else None,
+                generated=(
+                    (row["generated"].strip(b"\x00") or None)
+                    if row["generated"]
+                    else None
+                ),
                 identity=identity,
             )
 

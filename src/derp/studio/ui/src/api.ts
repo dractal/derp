@@ -61,6 +61,43 @@ export interface ColumnInfo {
   type: string;
   not_null: boolean;
   primary_key: boolean;
+  unique: boolean;
+  default: string | null;
+  generated: string | null;
+  nullable: boolean;
+}
+
+export interface IndexInfo {
+  name: string;
+  columns: string[];
+  unique: boolean;
+  method: string;
+  where: string | null;
+}
+
+export interface ForeignKeyInfo {
+  name: string;
+  columns: string[];
+  references_table: string;
+  references_columns: string[];
+  references_schema: string;
+  on_delete: string | null;
+  on_update: string | null;
+}
+
+export interface UniqueConstraintInfo {
+  name: string;
+  columns: string[];
+}
+
+export interface CheckConstraintInfo {
+  name: string;
+  expression: string;
+}
+
+export interface PrimaryKeyInfo {
+  name: string | null;
+  columns: string[];
 }
 
 export interface TableInfo {
@@ -68,6 +105,11 @@ export interface TableInfo {
   schema: string;
   columns: ColumnInfo[];
   row_count: number;
+  indexes: IndexInfo[];
+  foreign_keys: ForeignKeyInfo[];
+  unique_constraints: UniqueConstraintInfo[];
+  check_constraints: CheckConstraintInfo[];
+  primary_key: PrimaryKeyInfo | null;
 }
 
 export interface TableRowsResponse {

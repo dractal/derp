@@ -11,14 +11,19 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Columns3,
   Database,
   Eye,
   EyeOff,
+  Info,
+  Key,
+  Link,
   Loader2,
   Pencil,
+  ShieldCheck,
   Table as TableIcon,
   Trash,
   X
@@ -78,10 +83,22 @@ function TableList({
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span>{table.columns.length} columns</span>
               <span>&middot;</span>
               <span>{table.row_count.toLocaleString()} rows</span>
+              {table.indexes.length > 0 ? (
+                <>
+                  <span>&middot;</span>
+                  <span>{table.indexes.length} {table.indexes.length === 1 ? "index" : "indexes"}</span>
+                </>
+              ) : null}
+              {table.foreign_keys.length > 0 ? (
+                <>
+                  <span>&middot;</span>
+                  <span>{table.foreign_keys.length} FK{table.foreign_keys.length !== 1 ? "s" : ""}</span>
+                </>
+              ) : null}
             </div>
           </CardContent>
         </Card>
@@ -120,6 +137,60 @@ function formatCellValue(value: unknown): string {
   return String(value);
 }
 
+type InputKind = "date" | "datetime-local" | "time" | "number" | "boolean" | "json" | "text";
+
+const _INT_TYPES = new Set(["integer", "bigint", "smallint", "int2", "int4", "int8", "serial", "bigserial", "smallserial"]);
+const _FLOAT_TYPES = new Set(["real", "double precision", "float4", "float8", "numeric", "decimal", "money"]);
+const _BOOL_TYPES = new Set(["boolean", "bool"]);
+const _JSON_TYPES = new Set(["json", "jsonb"]);
+
+function inputKindForColumn(colType: string): InputKind {
+  const t = colType.toLowerCase();
+  if (t === "date") return "date";
+  if (t.startsWith("timestamp")) return "datetime-local";
+  if (t.startsWith("time")) return "time";
+  if (_INT_TYPES.has(t) || _FLOAT_TYPES.has(t) || t.startsWith("numeric")) return "number";
+  if (_BOOL_TYPES.has(t)) return "boolean";
+  if (_JSON_TYPES.has(t)) return "json";
+  if (t === "text") return "json";
+  return "text";
+}
+
+function toInputValue(value: unknown, kind: InputKind): string {
+  if (value === null || value === undefined) return "";
+  const s = String(value);
+  if (kind === "date") {
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    return s.slice(0, 10);
+  }
+  if (kind === "datetime-local") {
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 23);
+    return s;
+  }
+  if (kind === "time") {
+    const match = s.match(/(\d{2}:\d{2}(?::\d{2})?)/);
+    return match ? match[1] : s;
+  }
+  if (kind === "boolean") return value === true || s.toLowerCase() === "true" ? "true" : "false";
+  if (kind === "json") {
+    if (typeof value === "object") return JSON.stringify(value, null, 2);
+    return s;
+  }
+  return formatCellValue(value);
+}
+
+function fromInputValue(raw: string, kind: InputKind): unknown {
+  if (raw === "") return "";
+  if (kind === "datetime-local") return new Date(raw).toISOString();
+  if (kind === "boolean") return raw === "true";
+  if (kind === "json") {
+    try { return JSON.parse(raw); } catch { return raw; }
+  }
+  return raw;
+}
+
 type Row = Record<string, unknown>;
 
 const columnHelper = createColumnHelper<Row>();
@@ -128,6 +199,225 @@ function SortIcon({ direction }: { direction: false | "asc" | "desc" }) {
   if (direction === "asc") return <ArrowUp className="size-3" />;
   if (direction === "desc") return <ArrowDown className="size-3" />;
   return <ArrowUpDown className="size-3 text-muted-foreground/50" />;
+}
+
+function ColumnInfoDropdown({ col }: { col: ColumnInfo }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 rounded border px-1 py-0 text-[10px] font-mono text-muted-foreground hover:bg-muted/50 cursor-pointer"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        {col.type}
+        <Info className="size-2.5" />
+      </button>
+      {open ? (
+        <div
+          className="absolute left-0 top-full z-30 mt-1 w-56 max-h-64 overflow-y-auto rounded-lg border bg-background shadow-lg text-xs"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <table className="w-full">
+            <tbody className="divide-y">
+              <tr>
+                <td className="px-2.5 py-1.5 text-right text-muted-foreground whitespace-nowrap">Type</td>
+                <td className="px-2.5 py-1.5 font-mono text-left break-all">{col.type}</td>
+              </tr>
+              <tr>
+                <td className="px-2.5 py-1.5 text-right text-muted-foreground whitespace-nowrap">Nullable</td>
+                <td className="px-2.5 py-1.5 text-left">{col.nullable ? "Yes" : "No"}</td>
+              </tr>
+              {col.primary_key ? (
+                <tr>
+                  <td className="px-2.5 py-1.5 text-right text-muted-foreground whitespace-nowrap">Primary Key</td>
+                  <td className="px-2.5 py-1.5 text-left">Yes</td>
+                </tr>
+              ) : null}
+              {col.unique ? (
+                <tr>
+                  <td className="px-2.5 py-1.5 text-right text-muted-foreground whitespace-nowrap">Unique</td>
+                  <td className="px-2.5 py-1.5 text-left">Yes</td>
+                </tr>
+              ) : null}
+              {col.default ? (
+                <tr>
+                  <td className="px-2.5 py-1.5 text-right text-muted-foreground whitespace-nowrap align-top">Default</td>
+                  <td className="px-2.5 py-1.5 font-mono text-left break-all">{col.default}</td>
+                </tr>
+              ) : null}
+              {col.generated ? (
+                <tr>
+                  <td className="px-2.5 py-1.5 text-right text-muted-foreground whitespace-nowrap align-top">Generated</td>
+                  <td className="px-2.5 py-1.5 font-mono text-left break-all">{col.generated}</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MetadataSection({
+  icon,
+  title,
+  count,
+  open,
+  onToggle,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  if (count === 0) return null;
+  return (
+    <div className="rounded-lg border">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-2 text-xs font-medium text-muted-foreground hover:bg-muted/50 cursor-pointer"
+        onClick={onToggle}
+      >
+        {icon}
+        <span>{title}</span>
+        <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{count}</Badge>
+        <ChevronDown className={`ml-auto size-3 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open ? <div className="border-t px-3 py-2">{children}</div> : null}
+    </div>
+  );
+}
+
+function TableMetadata({ table }: { table: TableInfo }) {
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({});
+  const toggle = (key: string) =>
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+
+  const hasMetadata =
+    table.indexes.length > 0 ||
+    table.foreign_keys.length > 0 ||
+    table.unique_constraints.length > 0 ||
+    table.check_constraints.length > 0;
+
+  if (!hasMetadata) return null;
+
+  return (
+    <div className="space-y-2">
+      <MetadataSection
+        icon={<Key className="size-3" />}
+        title="Indexes"
+        count={table.indexes.length}
+        open={openSections.indexes ?? false}
+        onToggle={() => toggle("indexes")}
+      >
+        <div className="space-y-2">
+          {table.indexes.map((idx) => (
+            <div key={idx.name} className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="font-mono font-medium">{idx.name}</span>
+              {idx.unique ? (
+                <Badge variant="default" className="text-[10px] px-1 py-0">UNIQUE</Badge>
+              ) : null}
+              <Badge variant="secondary" className="font-mono text-[10px] px-1 py-0">
+                {idx.method.toUpperCase()}
+              </Badge>
+              <span className="text-muted-foreground">on</span>
+              <span className="font-mono">({idx.columns.join(", ")})</span>
+              {idx.where ? (
+                <span className="text-muted-foreground font-mono">WHERE {idx.where}</span>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </MetadataSection>
+
+      <MetadataSection
+        icon={<Link className="size-3" />}
+        title="Foreign Keys"
+        count={table.foreign_keys.length}
+        open={openSections.foreign_keys ?? false}
+        onToggle={() => toggle("foreign_keys")}
+      >
+        <div className="space-y-2">
+          {table.foreign_keys.map((fk) => (
+            <div key={fk.name} className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="font-mono font-medium">{fk.name}</span>
+              <span className="font-mono">({fk.columns.join(", ")})</span>
+              <span className="text-muted-foreground">&rarr;</span>
+              <span className="font-mono">
+                {fk.references_schema !== "public" ? `${fk.references_schema}.` : ""}
+                {fk.references_table}({fk.references_columns.join(", ")})
+              </span>
+              {fk.on_delete ? (
+                <Badge variant="secondary" className="font-mono text-[10px] px-1 py-0">
+                  ON DELETE {fk.on_delete.toUpperCase()}
+                </Badge>
+              ) : null}
+              {fk.on_update ? (
+                <Badge variant="secondary" className="font-mono text-[10px] px-1 py-0">
+                  ON UPDATE {fk.on_update.toUpperCase()}
+                </Badge>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      </MetadataSection>
+
+      <MetadataSection
+        icon={<ShieldCheck className="size-3" />}
+        title="Unique Constraints"
+        count={table.unique_constraints.length}
+        open={openSections.unique_constraints ?? false}
+        onToggle={() => toggle("unique_constraints")}
+      >
+        <div className="space-y-2">
+          {table.unique_constraints.map((uc) => (
+            <div key={uc.name} className="flex items-center gap-1.5 text-xs">
+              <span className="font-mono font-medium">{uc.name}</span>
+              <span className="font-mono">({uc.columns.join(", ")})</span>
+            </div>
+          ))}
+        </div>
+      </MetadataSection>
+
+      <MetadataSection
+        icon={<ShieldCheck className="size-3" />}
+        title="Check Constraints"
+        count={table.check_constraints.length}
+        open={openSections.check_constraints ?? false}
+        onToggle={() => toggle("check_constraints")}
+      >
+        <div className="space-y-2">
+          {table.check_constraints.map((cc) => (
+            <div key={cc.name} className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="font-mono font-medium">{cc.name}</span>
+              <span className="font-mono text-muted-foreground">{cc.expression}</span>
+            </div>
+          ))}
+        </div>
+      </MetadataSection>
+    </div>
+  );
 }
 
 function RowBrowser({
@@ -236,11 +526,33 @@ function RowBrowser({
     const row = rows[Number(rowId)];
     const values: Record<string, string> = {};
     for (const col of editableColumns) {
-      values[col.name] = row[col.name] === null ? "" : formatCellValue(row[col.name]);
+      const itype = inputKindForColumn(col.type);
+      values[col.name] = row[col.name] === null ? "" : toInputValue(row[col.name], itype);
     }
     setUpdateFormValues(values);
     setUpdateDialogOpen(true);
   }, [selectedRows, rows, editableColumns]);
+
+  const getChangedValues = useCallback((): Record<string, unknown> => {
+    if (selectedRows.size !== 1 || !updateDialogOpen) return {};
+    const rowId = Array.from(selectedRows)[0];
+    const row = rows[Number(rowId)];
+    const values: Record<string, unknown> = {};
+    for (const col of editableColumns) {
+      const raw = updateFormValues[col.name] ?? "";
+      const kind = inputKindForColumn(col.type);
+      const originalRaw = row[col.name] === null ? "" : toInputValue(row[col.name], kind);
+      if (raw !== originalRaw) {
+        values[col.name] = raw === "" ? null : fromInputValue(raw, kind);
+      }
+    }
+    return values;
+  }, [selectedRows, rows, editableColumns, updateFormValues, updateDialogOpen]);
+
+  const hasUpdateChanges = useMemo(
+    () => Object.keys(getChangedValues()).length > 0,
+    [getChangedValues],
+  );
 
   const confirmUpdateRow = useCallback(() => {
     if (selectedRows.size !== 1 || pkColumns.length === 0) return;
@@ -249,10 +561,11 @@ function RowBrowser({
     const key: Record<string, unknown> = {};
     for (const pk of pkColumns) key[pk] = row[pk];
 
-    const values: Record<string, unknown> = {};
-    for (const col of editableColumns) {
-      const raw = updateFormValues[col.name];
-      values[col.name] = raw === "" ? null : raw;
+    const values = getChangedValues();
+
+    if (Object.keys(values).length === 0) {
+      setUpdateDialogOpen(false);
+      return;
     }
 
     updateRow.mutate(
@@ -268,7 +581,7 @@ function RowBrowser({
         },
       },
     );
-  }, [selectedRows, rows, pkColumns, editableColumns, updateFormValues, updateRow]);
+  }, [selectedRows, rows, pkColumns, getChangedValues, updateRow]);
 
   const handleCellClick = useCallback(
     (rowId: string, colId: string) => setFocusedCell({ rowId, colId }),
@@ -281,21 +594,7 @@ function RowBrowser({
         columnHelper.accessor((row) => row[col.name], {
           id: col.name,
           size: 180,
-          header: () => (
-            <div className="flex flex-col gap-1">
-              <span>{col.name}</span>
-              <div className="flex items-center gap-1">
-                <Badge variant="secondary" className="font-mono text-[10px] px-1 py-0">
-                  {col.type}
-                </Badge>
-                {col.primary_key ? (
-                  <Badge variant="default" className="text-[10px] px-1 py-0">
-                    PK
-                  </Badge>
-                ) : null}
-              </div>
-            </div>
-          ),
+          header: col.name,
           cell: (info) => {
             const value = info.getValue();
             return (
@@ -460,6 +759,8 @@ function RowBrowser({
         </div>
       ) : null}
 
+      <TableMetadata table={table} />
+
       <div className="flex items-start gap-2 rounded-lg border bg-muted/30 px-3 py-2 font-mono text-xs">
         {focusedCell ? (
           <>
@@ -473,7 +774,7 @@ function RowBrowser({
         )}
       </div>
 
-      <div className="overflow-auto rounded-lg border">
+      <div className={`overflow-auto rounded-lg border ${rows.length > 0 && rows.length <= 5 ? "min-h-96" : ""}`}>
         <table className="w-full text-sm">
           <thead className="border-b bg-muted/50">
             {reactTable.getHeaderGroups().map((headerGroup) => (
@@ -491,14 +792,32 @@ function RowBrowser({
                     className="whitespace-nowrap px-3 py-2 text-left text-xs font-medium text-muted-foreground"
                   >
                     {header.isPlaceholder ? null : (
-                      <button
-                        type="button"
-                        className="flex items-center justify-center w-full gap-1 cursor-pointer select-none"
-                        onClick={header.column.getToggleSortingHandler()}
-                      >
-                        {flexRender(header.column.columnDef.header, header.getContext())}
-                        <SortIcon direction={header.column.getIsSorted()} />
-                      </button>
+                      <div className="flex flex-col gap-1">
+                        <button
+                          type="button"
+                          className="flex items-center gap-1 cursor-pointer select-none"
+                          onClick={header.column.getToggleSortingHandler()}
+                        >
+                          <span>{header.column.id}</span>
+                          <SortIcon direction={header.column.getIsSorted()} />
+                        </button>
+                        <div className="flex items-center gap-1">
+                          {(() => {
+                            const col = table.columns.find((c) => c.name === header.column.id);
+                            if (!col) return null;
+                            return (
+                              <>
+                                <ColumnInfoDropdown col={col} />
+                                {col.primary_key ? (
+                                  <Badge variant="default" className="text-[10px] px-1 py-0">
+                                    PK
+                                  </Badge>
+                                ) : null}
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
                     )}
                   </th>
                 ))}
@@ -523,9 +842,13 @@ function RowBrowser({
               <tr>
                 <td
                   colSpan={columns.length + 1}
-                  className="px-3 py-8 text-center text-sm text-muted-foreground"
+                  className="px-3 py-32 text-center align-middle"
                 >
-                  No rows found.
+                  <div className="flex flex-col items-center gap-2">
+                    <Database className="size-10 text-muted-foreground/30" />
+                    <p className="text-sm font-medium text-muted-foreground">No rows found</p>
+                    <p className="text-xs text-muted-foreground/70">This table is empty.</p>
+                  </div>
                 </td>
               </tr>
             ) : (
@@ -622,30 +945,60 @@ function RowBrowser({
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="grid gap-3 py-4">
-            {editableColumns.map((col) => (
-              <div key={col.name} className="grid gap-1.5">
-                <label className="text-sm font-medium" htmlFor={`update-${col.name}`}>
-                  {col.name}
-                  <Badge variant="secondary" className="ml-2 font-mono text-[10px] px-1 py-0">
-                    {col.type}
-                  </Badge>
-                </label>
-                <Input
-                  id={`update-${col.name}`}
-                  value={updateFormValues[col.name] ?? ""}
-                  onChange={(e) =>
-                    setUpdateFormValues((prev) => ({ ...prev, [col.name]: e.target.value }))
-                  }
-                  placeholder="NULL"
-                />
-              </div>
-            ))}
+            {editableColumns.map((col) => {
+              const kind = inputKindForColumn(col.type);
+              const fieldId = `update-${col.name}`;
+              const val = updateFormValues[col.name] ?? "";
+              const setVal = (v: string) =>
+                setUpdateFormValues((prev) => ({ ...prev, [col.name]: v }));
+
+              return (
+                <div key={col.name} className="grid gap-1.5">
+                  <label className="text-sm font-medium" htmlFor={fieldId}>
+                    {col.name}
+                    <Badge variant="secondary" className="ml-2 font-mono text-[10px] px-1 py-0">
+                      {col.type}
+                    </Badge>
+                  </label>
+                  {kind === "boolean" ? (
+                    <div className="flex items-center gap-2 h-9">
+                      <Checkbox
+                        id={fieldId}
+                        checked={val === "true"}
+                        onCheckedChange={(checked) => setVal(checked ? "true" : "false")}
+                      />
+                      <span className="text-sm text-muted-foreground">
+                        {val === "true" ? "true" : "false"}
+                      </span>
+                    </div>
+                  ) : kind === "json" ? (
+                    <textarea
+                      id={fieldId}
+                      className="border-input focus-visible:border-ring focus-visible:ring-ring/50 dark:bg-input/30 min-h-20 w-full rounded-md border bg-transparent px-3 py-2 font-mono text-sm shadow-xs outline-none focus-visible:ring-[3px]"
+                      value={val}
+                      onChange={(e) => setVal(e.target.value)}
+                      placeholder="NULL"
+                      rows={4}
+                    />
+                  ) : (
+                    <Input
+                      id={fieldId}
+                      type={kind}
+                      step={kind === "datetime-local" ? "1" : kind === "number" && _FLOAT_TYPES.has(col.type.toLowerCase()) ? "any" : undefined}
+                      value={val}
+                      onChange={(e) => setVal(e.target.value)}
+                      placeholder="NULL"
+                    />
+                  )}
+                </div>
+              );
+            })}
           </div>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={updateRow.isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={confirmUpdateRow}
-              disabled={updateRow.isPending}
+              disabled={updateRow.isPending || !hasUpdateChanges}
             >
               {updateRow.isPending ? <><Loader2 className="size-3 animate-spin" /> Updating</> : "Update"}
             </AlertDialogAction>

@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime
+from datetime import time as dt_time
+from decimal import Decimal
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
@@ -18,6 +23,49 @@ from derp.derp_client import DerpClient
 from derp.orm.migrations.introspect.postgres import PostgresIntrospector
 
 ARTIFICIAL_LATENCY_REGEX = re.compile(r"/api/payments/.*|/api/email/templates")
+
+_INT_TYPES = frozenset({"integer", "bigint", "smallint", "int2", "int4", "int8"})
+_FLOAT_TYPES = frozenset(
+    {"real", "double precision", "float4", "float8", "numeric", "decimal"}
+)
+_BOOL_TYPES = frozenset({"boolean", "bool"})
+_UUID_TYPES = frozenset({"uuid"})
+
+
+_JSON_TYPES = frozenset({"json", "jsonb"})
+
+
+def _coerce_value(value: object, col_type: str) -> object:
+    """Coerce a JSON-decoded value to the Python type asyncpg expects."""
+    if value is None:
+        return None
+
+    col_lower = col_type.lower().strip()
+
+    # asyncpg expects JSON/JSONB as a serialised string.
+    if col_lower in _JSON_TYPES:
+        return json.dumps(value) if not isinstance(value, str) else value
+
+    if not isinstance(value, str):
+        return value
+
+    col_lower = col_type.lower().strip()
+    if col_lower == "date":
+        # Value may be a full ISO timestamp; extract date part.
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    if col_lower.startswith("timestamp"):
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if col_lower.startswith("time"):
+        return dt_time.fromisoformat(value.replace("Z", "+00:00"))
+    if col_lower in _INT_TYPES:
+        return int(value)
+    if col_lower in _FLOAT_TYPES or col_lower.startswith("numeric"):
+        return Decimal(value)
+    if col_lower in _BOOL_TYPES:
+        return value.lower() in {"true", "t", "1", "yes"}
+    if col_lower in _UUID_TYPES:
+        return UUID(value)
+    return value
 
 
 def get_derp(request: Request) -> DerpClient:
@@ -168,9 +216,54 @@ def create_app(
                     "type": col.type,
                     "not_null": col.not_null,
                     "primary_key": col.primary_key,
+                    "unique": col.unique,
+                    "default": col.default,
+                    "generated": col.generated or None,
+                    "nullable": not col.not_null,
                 }
                 for col in table.columns.values()
             ]
+            indexes = [
+                {
+                    "name": idx.name,
+                    "columns": idx.columns,
+                    "unique": idx.unique,
+                    "method": idx.method,
+                    "where": idx.where,
+                }
+                for idx in table.indexes.values()
+            ]
+            foreign_keys = [
+                {
+                    "name": fk.name,
+                    "columns": fk.columns,
+                    "references_table": fk.references_table,
+                    "references_columns": fk.references_columns,
+                    "references_schema": fk.references_schema,
+                    "on_delete": fk.on_delete,
+                    "on_update": fk.on_update,
+                }
+                for fk in table.foreign_keys.values()
+            ]
+            unique_constraints = [
+                {
+                    "name": uc.name,
+                    "columns": uc.columns,
+                }
+                for uc in table.unique_constraints.values()
+            ]
+            check_constraints = [
+                {
+                    "name": cc.name,
+                    "expression": cc.expression,
+                }
+                for cc in table.check_constraints.values()
+            ]
+            primary_key = (
+                {"name": table.primary_key.name, "columns": table.primary_key.columns}
+                if table.primary_key
+                else None
+            )
             qualified = (
                 f'"{table.schema_name}"."{table.name}"'
                 if table.schema_name != "public"
@@ -186,6 +279,11 @@ def create_app(
                     "schema": table.schema_name,
                     "columns": columns,
                     "row_count": row_count,
+                    "indexes": indexes,
+                    "foreign_keys": foreign_keys,
+                    "unique_constraints": unique_constraints,
+                    "check_constraints": check_constraints,
+                    "primary_key": primary_key,
                 }
             )
         return {"tables": tables}
@@ -306,11 +404,13 @@ def create_app(
 
         qualified = f'"{schema}"."{table}"' if schema != "public" else f'"{table}"'
 
+        col_types = {c.name: c.type for c in table_snapshot.columns.values()}
+
         set_clauses = []
         params: list = []
         for i, (col, val) in enumerate(values.items(), 1):
             set_clauses.append(f'"{col}" = ${i}')
-            params.append(val)
+            params.append(_coerce_value(val, col_types.get(col, "text")))
 
         conditions = []
         for pk_col in pk_columns:
