@@ -65,7 +65,7 @@ def valkey_server() -> Iterator[tuple[str, int]]:
 async def test_valkey_store_roundtrip(valkey_server: tuple[str, int]) -> None:
     host, port = valkey_server
     config = valkey_mod.ValkeyConfig(host=host, port=port)
-    store = valkey_mod.ValkeyStore(config)
+    store = valkey_mod.ValkeyClient(config)
     await store.connect()
 
     await store.set(b"a", b"1")

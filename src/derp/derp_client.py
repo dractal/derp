@@ -8,7 +8,8 @@ from typing import Self
 from derp.auth import AuthClient, BaseUser
 from derp.auth.email import EmailClient
 from derp.config import DerpConfig
-from derp.kv.client import KVClients
+from derp.kv.base import KVClient
+from derp.kv.valkey import ValkeyClient
 from derp.orm import DatabaseEngine
 from derp.payments import PaymentsClient
 from derp.storage import StorageClient
@@ -19,9 +20,23 @@ class DerpClient[UserT: BaseUser]:
 
     def __init__(self, config: DerpConfig):
         self._config: DerpConfig = config
-        self._db: DatabaseEngine = DatabaseEngine(config.database.db_url)
+        self._db: DatabaseEngine = DatabaseEngine(
+            config.database.db_url,
+            min_size=config.database.pool_min_size,
+            max_size=config.database.pool_max_size,
+        )
         self._replica_db: DatabaseEngine | None = (
-            DatabaseEngine(config.database.replica_url)
+            DatabaseEngine(
+                config.database.replica_url,
+                min_size=(
+                    config.database.replica_pool_min_size
+                    or config.database.pool_min_size
+                ),
+                max_size=(
+                    config.database.replica_pool_max_size
+                    or config.database.pool_max_size
+                ),
+            )
             if config.database.replica_url is not None
             else None
         )
@@ -38,9 +53,9 @@ class DerpClient[UserT: BaseUser]:
             if self._config.auth is not None
             else None
         )
-        self._kv: KVClients | None = (
-            KVClients(self._config.kv, self._config.database.schema_path)
-            if self._config.kv is not None
+        self._kv: KVClient | None = (
+            ValkeyClient(self._config.kv.valkey)
+            if self._config.kv is not None and self._config.kv.valkey is not None
             else None
         )
         self._payments: PaymentsClient | None = (
@@ -71,6 +86,16 @@ class DerpClient[UserT: BaseUser]:
         if self._auth is not None:
             self._auth.set_db(self._db, replica_db=self._replica_db)
             self._auth.set_email(self._email)
+            if (
+                self._kv is not None
+                and self._config.auth
+                and self._config.auth.use_kv_cache
+            ):
+                self._auth.set_cache(self._kv)
+        if self._kv is not None:
+            self._db.set_cache(self._kv)
+            if self._replica_db is not None:
+                self._replica_db.set_cache(self._kv)
 
         self._in_session = True
 
@@ -90,6 +115,10 @@ class DerpClient[UserT: BaseUser]:
         if self._auth is not None:
             self._auth.set_db(None, replica_db=None)
             self._auth.set_email(None)
+            self._auth.set_cache(None)
+        self._db.set_cache(None)
+        if self._replica_db is not None:
+            self._replica_db.set_cache(None)
 
         self._in_session = False
 
@@ -149,8 +178,8 @@ class DerpClient[UserT: BaseUser]:
         return self._auth
 
     @property
-    def kv(self) -> KVClients:
-        """Get the KV clients."""
+    def kv(self) -> KVClient:
+        """Get the KV client."""
         if not self._in_session:
             raise ValueError("Not in a session. Call `connect()` first.")
         if self._kv is None:
@@ -165,7 +194,7 @@ class DerpClient[UserT: BaseUser]:
         if self._payments is None:
             raise ValueError("`PaymentsConfig` was not passed to `DerpConfig`.")
         return self._payments
-    
+
     @property
     def config(self) -> DerpConfig:
         """Get the Derp configuration."""

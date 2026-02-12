@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from enum import StrEnum
@@ -9,6 +10,7 @@ from typing import Any, Self, overload
 
 import asyncpg
 
+from derp.kv.base import KVClient
 from derp.orm.fields import JSON, JSONB, FieldInfo
 from derp.orm.query.expressions import Expression
 from derp.orm.table import Table
@@ -55,6 +57,8 @@ class SelectQuery[T]:
         self,
         pool: asyncpg.Pool | None,
         columns: tuple[type[Table] | FieldInfo[Any], ...],
+        *,
+        cache_store: KVClient | None = None,
     ):
         self._pool = pool
         self._columns = columns
@@ -65,6 +69,8 @@ class SelectQuery[T]:
         self._limit_value: int | None = None
         self._offset_value: int | None = None
         self._group_by: list[FieldInfo[Any] | str] = []
+        self._cache_store: KVClient | None = cache_store
+        self._cache_ttl: float | None = None
 
         # Infer from table if first column is a Table class
         if columns and isinstance(columns[0], type) and issubclass(columns[0], Table):
@@ -125,6 +131,11 @@ class SelectQuery[T]:
     def group_by(self, *columns: FieldInfo[Any] | str) -> Self:
         """Add GROUP BY clause."""
         self._group_by.extend(columns)
+        return self
+
+    def cache(self, ttl: float) -> Self:
+        """Cache this query's results for ``ttl`` seconds."""
+        self._cache_ttl = ttl
         return self
 
     def build(self) -> tuple[str, list[Any]]:
@@ -203,16 +214,56 @@ class SelectQuery[T]:
 
         return sql, params
 
+    def _cache_key(self, sql: str, params: list[Any]) -> str:
+        """Derive a cache key from SQL and parameters."""
+        raw = sql + json.dumps(params, default=str)
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        return f"derp:query:{digest}"
+
     async def execute(self) -> list[T]:
         """Execute the query and return results."""
         if not self._pool:
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
+
+        # Check cache
+        if self._cache_store is not None and self._cache_ttl is not None:
+            cache_key = self._cache_key(sql, params).encode()
+            cached = await self._cache_store.get(cache_key)
+            if cached is not None:
+                rows_data: list[dict[str, Any]] = json.loads(cached)
+                return self._hydrate(rows_data)
+
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *params)
 
-        # If selecting a single table, hydrate model instances
+        rows_data = self._rows_to_dicts(rows)
+
+        # Populate cache
+        if self._cache_store is not None and self._cache_ttl is not None:
+            await self._cache_store.set(
+                cache_key,
+                json.dumps(rows_data, default=str).encode(),
+                ttl=self._cache_ttl,
+            )
+
+        return self._hydrate(rows_data)
+
+    def _rows_to_dicts(self, rows: list[asyncpg.Record]) -> list[dict[str, Any]]:
+        """Convert asyncpg Records to plain dicts with JSON deserialization."""
+        if self._from_table:
+            return [_deserialize_row(self._from_table, dict(row)) for row in rows]
+        if (
+            len(self._columns) == 1
+            and isinstance(self._columns[0], type)
+            and issubclass(self._columns[0], Table)
+        ):
+            return [_deserialize_row(self._columns[0], dict(row)) for row in rows]
+        return [dict(row) for row in rows]
+
+    def _hydrate(self, rows_data: list[dict[str, Any]]) -> list[T]:
+        """Hydrate dicts into model instances or return as-is."""
         if (
             len(self._columns) == 1
             and isinstance(self._columns[0], type)
@@ -220,14 +271,9 @@ class SelectQuery[T]:
         ):
             model_class = self._columns[0]
             return [  # type: ignore[return-value]
-                model_class.model_validate(_deserialize_row(model_class, row))
-                for row in rows
+                model_class.model_validate(row) for row in rows_data
             ]
-
-        # Otherwise return dicts
-        if self._from_table:
-            return [_deserialize_row(self._from_table, row) for row in rows]  # type: ignore[return-value]
-        return [dict(row) for row in rows]  # type: ignore[return-value]
+        return rows_data  # type: ignore[return-value]
 
     async def first_or_none(self) -> T | None:
         """Execute and return first result or None."""

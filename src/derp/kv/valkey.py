@@ -1,20 +1,21 @@
-"""Valkey-backed KV store using Valkey GLIDE."""
+"""Valkey-backed KV client using Valkey GLIDE."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Sequence
 
 from etils import epy
 
 from derp.config import ValkeyConfig
-from derp.kv.base import KVStore
+from derp.kv.base import KVClient
 
 with epy.lazy_imports():
     import glide
 
 
-class ValkeyStore(KVStore):
-    """Byte-level KV store backed by Valkey GLIDE."""
+class ValkeyClient(KVClient):
+    """Byte-level KV client backed by Valkey GLIDE."""
 
     supports_ttl = True
     supports_scan = True
@@ -51,7 +52,7 @@ class ValkeyStore(KVStore):
     @property
     def client(self) -> glide.GlideClient:
         if self._client is None:
-            raise RuntimeError("Valkey store not connected. Call connect() first.")
+            raise RuntimeError("Valkey client not connected. Call connect() first.")
         return self._client
 
     async def get(self, key: bytes) -> bytes | None:
@@ -80,11 +81,11 @@ class ValkeyStore(KVStore):
             return
         mapping = {key: value for key, value in items}
         await self.client.mset(mapping)
-        if ttl is None:
-            return
-        ttl_seconds = int(ttl)
-        for key, _ in items:
-            await self.client.expire(key, ttl_seconds)
+        if ttl is not None:
+            ttl_seconds = int(ttl)
+            await asyncio.gather(
+                *(self.client.expire(key, ttl_seconds) for key, _ in items)
+            )
 
     async def delete_many(self, keys: Sequence[bytes]) -> int:
         if not keys:

@@ -253,14 +253,14 @@ async def test_kv_service_available_in_session(
     value = b"world"
 
     try:
-        await client.kv.store.set(key, value)
-        assert await client.kv.store.get(key) == value
-        assert await client.kv.store.exists(key) is True
-        assert await client.kv.store.delete(key) is True
-        assert await client.kv.store.exists(key) is False
+        await client.kv.set(key, value)
+        assert await client.kv.get(key) == value
+        assert await client.kv.exists(key) is True
+        assert await client.kv.delete(key) is True
+        assert await client.kv.exists(key) is False
     finally:
         try:
-            await client.kv.store.delete(key)
+            await client.kv.delete(key)
         finally:
             await client.disconnect()
 

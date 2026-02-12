@@ -45,6 +45,7 @@ from derp.auth.providers.base import BaseOAuthProvider
 from derp.auth.providers.github import GitHubProvider
 from derp.auth.providers.google import GoogleProvider
 from derp.config import AuthConfig
+from derp.kv.base import KVClient
 from derp.orm import DatabaseEngine, Table
 from derp.orm.loader import find_table_by_name
 
@@ -94,6 +95,7 @@ class AuthClient[UserT: BaseUser]:
         self._email_client: EmailClient | None = None
         self._oauth_providers: dict[AuthProvider, BaseOAuthProvider] = {}
         self._database_client: DatabaseEngine | None = None
+        self._cache_store: KVClient | None = None
 
         if self._config.google_oauth is not None:
             self._oauth_providers[AuthProvider.GOOGLE] = GoogleProvider(
@@ -122,6 +124,10 @@ class AuthClient[UserT: BaseUser]:
         if self._replica_database_client is not None:
             return self._replica_database_client
         return self._db()
+
+    def set_cache(self, store: KVClient | None) -> None:
+        """Set the KV store for session and user caching."""
+        self._cache_store = store
 
     def set_email(self, email_client: EmailClient | None) -> None:
         """Set the email client."""
@@ -152,11 +158,25 @@ class AuthClient[UserT: BaseUser]:
         if user_id is not None and email is not None:
             raise ValueError("Cannot get a user by both ID and email address.")
         elif user_id is not None:
+            # Try cache for ID lookups
+            cache_key = f"derp:user:{user_id}".encode()
+            if self._cache_store is not None:
+                cached = await self._cache_store.get(cache_key)
+                if cached is not None:
+                    return self._user_table.model_validate_json(cached)
+
             result = await (
                 db.select(self._user_table)
                 .where(self._user_table.c.id == str(user_id))
                 .execute()
             )
+
+            if self._config.use_kv_cache and result and self._cache_store is not None:
+                await self._cache_store.set(
+                    cache_key,
+                    result[0].model_dump_json().encode(),
+                    ttl=self._config.cache_user_ttl_seconds,
+                )
         elif email is not None:
             result = await (
                 db.select(self._user_table)
@@ -199,6 +219,11 @@ class AuthClient[UserT: BaseUser]:
             .returning(self._user_table)
             .execute()
         )
+
+        # Invalidate user cache
+        if self._cache_store is not None:
+            await self._cache_store.delete(f"derp:user:{user_id}".encode())
+
         return result
 
     # =========================================================================
@@ -749,11 +774,23 @@ class AuthClient[UserT: BaseUser]:
     async def validate_session(self, token: str) -> AuthSession | None:
         """Validate a session is active and not expired."""
         payload = decode_token(self._config.jwt, token)
+        session_id = str(payload.session_id)
+        cache_key = f"derp:session:{session_id}".encode()
 
+        # Try cache first
+        if self._cache_store is not None:
+            cached = await self._cache_store.get(cache_key)
+            if cached is not None:
+                session = self._auth_session_table.model_validate_json(cached)
+                if session.not_after < datetime.now(UTC):
+                    return None
+                return session
+
+        # Cache miss — query DB
         result = await (
             self._db()
             .select(self._auth_session_table)
-            .where(self._auth_session_table.c.id == str(payload.session_id))
+            .where(self._auth_session_table.c.id == session_id)
             .execute()
         )
 
@@ -764,6 +801,15 @@ class AuthClient[UserT: BaseUser]:
 
         if session.not_after < datetime.now(UTC):
             return None
+
+        # Populate cache with TTL capped at session expiry
+        if self._cache_store is not None and self._config.use_kv_cache:
+            remaining = (session.not_after - datetime.now(UTC)).total_seconds()
+            ttl = min(self._config.cache_session_ttl_seconds, remaining)
+            if ttl > 0:
+                await self._cache_store.set(
+                    cache_key, session.model_dump_json().encode(), ttl=ttl
+                )
 
         return session
 
@@ -786,9 +832,12 @@ class AuthClient[UserT: BaseUser]:
             .execute()
         )
 
+        # Invalidate session cache
+        if self._cache_store is not None:
+            await self._cache_store.delete(f"derp:session:{session_id}".encode())
+
     async def sign_out_all(self, user_id: str | uuid.UUID) -> None:
         """Sign out all sessions for a user."""
-        # Get all session IDs
         sessions = await (
             self._db()
             .select(self._auth_session_table)
@@ -796,8 +845,32 @@ class AuthClient[UserT: BaseUser]:
             .execute()
         )
 
-        for session in sessions:
-            await self.sign_out(session.id)
+        if not sessions:
+            return
+
+        session_ids = [session.id for session in sessions]
+
+        # Bulk revoke all refresh tokens
+        await (
+            self._db()
+            .update(self._auth_refresh_token_table)
+            .set(revoked=True)
+            .where(self._auth_refresh_token_table.c.session_id.in_(session_ids))
+            .execute()
+        )
+
+        # Bulk delete all sessions
+        await (
+            self._db()
+            .delete(self._auth_session_table)
+            .where(self._auth_session_table.c.id.in_(session_ids))
+            .execute()
+        )
+
+        # Invalidate all session caches
+        if self._cache_store is not None:
+            cache_keys = [f"derp:session:{sid}".encode() for sid in session_ids]
+            await self._cache_store.delete_many(cache_keys)
 
     # =========================================================================
     # Password Recovery

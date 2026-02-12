@@ -84,6 +84,12 @@ class DatabaseConfig(BaseModel):
     migrations: MigrationsConfig = Field(default_factory=MigrationsConfig)
     introspect: IntrospectConfig = Field(default_factory=IntrospectConfig)
 
+    pool_min_size: int = 10
+    pool_max_size: int = 20
+
+    replica_pool_min_size: int | None = None
+    replica_pool_max_size: int | None = None
+
 
 class EmailConfig(BaseModel):
     """Configuration for email sending via SMTP."""
@@ -142,6 +148,13 @@ class GitHubOAuthConfig(BaseModel):
     scopes: Sequence[str] = ("user:email",)
 
 
+class AuthCacheConfig(BaseModel):
+    """Configuration for auth session and user caching."""
+
+    session_ttl_seconds: int = 300
+    user_ttl_seconds: int = 300
+
+
 class AuthConfig(BaseModel):
     """Main configuration for the auth module."""
 
@@ -159,6 +172,10 @@ class AuthConfig(BaseModel):
     recovery_token_expire_minutes: int = 60
     confirmation_token_expire_hours: int = 24
     session_expire_days: int = 30
+
+    use_kv_cache: bool = True
+    cache_session_ttl_seconds: int = 300
+    cache_user_ttl_seconds: int = 300
 
 
 class StorageConfig(BaseModel):

@@ -1,16 +1,13 @@
-"""Base interfaces for KV stores."""
+"""Base interface for KV clients."""
 
 from __future__ import annotations
 
 import abc
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, get_type_hints
-
-from derp.kv.errors import KVError
 
 
-class KVStore(abc.ABC):
-    """Byte-level async KV store protocol."""
+class KVClient(abc.ABC):
+    """Byte-level async KV client."""
 
     supports_ttl: bool
     supports_scan: bool
@@ -70,54 +67,3 @@ class KVStore(abc.ABC):
         yield b""  # pragma: no cover
         raise NotImplementedError  # pragma: no cover
 
-
-class KVMeta(type):
-    """Metaclass enforcing key/value-only annotations."""
-
-    def __new__(mcls, name: str, bases: tuple[type, ...], namespace: dict[str, Any]):
-        cls = super().__new__(mcls, name, bases, namespace)
-        if name == "KVBase":
-            return cls
-
-        hints = get_type_hints(cls, include_extras=True)
-        if not hints:
-            raise TypeError("KV store must define 'key' and 'value' annotations.")
-
-        allowed = {"key", "value"}
-        extra = set(hints.keys()) - allowed
-        missing = allowed - set(hints.keys())
-        if extra:
-            raise TypeError(
-                "KV store may only define 'key' and 'value' annotations; "
-                f"got extra: {sorted(extra)}"
-            )
-        if missing:
-            raise TypeError(
-                "KV store must define both 'key' and 'value' annotations; "
-                f"missing: {sorted(missing)}"
-            )
-
-        cls._key_type: type[Any] = hints["key"]
-        cls._value_type: type[Any] = hints["value"]
-        return cls
-
-
-class KVBase[K, V](metaclass=KVMeta):
-    """Base class for typed KV stores."""
-
-    _key_type: type[Any]
-    _value_type: type[Any]
-
-    @classmethod
-    def key_type(cls) -> type[Any]:
-        """Return the key type for this KV store."""
-        if not hasattr(cls, "_key_type"):
-            raise KVError("KV store types not resolved.")
-        return cls._key_type
-
-    @classmethod
-    def value_type(cls) -> type[Any]:
-        """Return the value type for this KV store."""
-        if not hasattr(cls, "_value_type"):
-            raise KVError("KV store types not resolved.")
-        return cls._value_type

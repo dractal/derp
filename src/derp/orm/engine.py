@@ -9,6 +9,7 @@ from typing import Any, overload
 
 import asyncpg
 
+from derp.kv.base import KVClient
 from derp.orm.fields import FieldInfo
 from derp.orm.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
 from derp.orm.table import Table
@@ -67,6 +68,7 @@ class DatabaseEngine:
         self._min_size = min_size
         self._max_size = max_size
         self._pool: asyncpg.Pool | None = None
+        self._cache_store: KVClient | None = None
 
     async def connect(self) -> None:
         """Establish connection pool."""
@@ -95,6 +97,10 @@ class DatabaseEngine:
         exc_tb: TracebackType | None,
     ) -> None:
         await self.disconnect()
+
+    def set_cache(self, store: KVClient | None) -> None:
+        """Set the KV store for query result caching."""
+        self._cache_store = store
 
     @property
     def pool(self) -> asyncpg.Pool:
@@ -138,7 +144,7 @@ class DatabaseEngine:
               .from_(Post)
               .inner_join(User, Post.c.author_id == User.c.id)
         """
-        return SelectQuery(self._pool, columns)
+        return SelectQuery(self._pool, columns, cache_store=self._cache_store)
 
     def insert[T: Table](self, table: type[T]) -> InsertQuery[T]:
         """Start an INSERT query.
