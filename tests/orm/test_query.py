@@ -711,3 +711,68 @@ def test_delete_with_multiple_conditions():
     assert "OR" in sql
     assert "RETURNING *" in sql
     assert params == [18, 65]
+
+
+# =============================================================================
+# COUNT Tests
+# =============================================================================
+
+
+def test_count_all():
+    """Test COUNT(*) query building."""
+    query = SelectQuery[User](None, (User,))
+    sql, params = query.build_count()
+
+    assert sql == "SELECT COUNT(*) FROM users"
+    assert params == []
+
+
+def test_count_where():
+    """Test COUNT(*) with WHERE clause."""
+    query = SelectQuery[User](None, (User,)).where(User.c.age > 18)
+    sql, params = query.build_count()
+
+    assert sql == "SELECT COUNT(*) FROM users WHERE (users.age > $1)"
+    assert params == [18]
+
+
+def test_count_join():
+    """Test COUNT(*) with JOIN clause."""
+    query = (
+        SelectQuery[User](None, (User,))
+        .inner_join(Post, User.c.id == Post.c.user_id)
+        .where(Post.c.published == True)  # noqa: E712
+    )
+    sql, params = query.build_count()
+
+    assert "SELECT COUNT(*) FROM users" in sql
+    assert "INNER JOIN posts ON" in sql
+    assert "(posts.published = $1)" in sql
+    assert params == [True]
+
+
+def test_count_ignores_order_limit_offset():
+    """Test that COUNT(*) ignores ORDER BY, LIMIT, and OFFSET."""
+    query = (
+        SelectQuery[User](None, (User,))
+        .where(User.c.age > 18)
+        .order_by(User.c.name)
+        .limit(10)
+        .offset(20)
+    )
+    sql, params = query.build_count()
+
+    assert "ORDER BY" not in sql
+    assert "LIMIT" not in sql
+    assert "OFFSET" not in sql
+    assert sql == "SELECT COUNT(*) FROM users WHERE (users.age > $1)"
+    assert params == [18]
+
+
+def test_count_ignores_column_selection():
+    """Test that COUNT(*) ignores the selected columns."""
+    query = SelectQuery[Any](None, (User.c.id, User.c.name)).from_(User)
+    sql, params = query.build_count()
+
+    assert sql == "SELECT COUNT(*) FROM users"
+    assert params == []

@@ -28,7 +28,7 @@ function EmailTemplatesSkeleton(): JSX.Element {
             </CardHeader>
             <CardContent>
               <div className="overflow-hidden rounded-lg border bg-white p-3">
-                <Skeleton className="h-[496px] w-full" />
+                <Skeleton className="h-124 w-full" />
               </div>
             </CardContent>
           </Card>
@@ -113,7 +113,7 @@ export function EmailPage(): JSX.Element {
                         title={`${template.name} preview`}
                         srcDoc={template.html}
                         sandbox=""
-                        className="h-[520px] w-full"
+                        className="h-130 w-full"
                       />
                     </div>
                   </CardContent>

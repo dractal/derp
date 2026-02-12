@@ -46,5 +46,7 @@ export function useKV(enabled: boolean) {
       : null,
     keyInfo: (keyInfoQuery.data ?? null) as KVKeyInfo | null,
     keyInfoLoading: keyInfoQuery.isLoading,
+    refetch: keysQuery.refetch,
+    refreshing: keysQuery.isRefetching,
   };
 }

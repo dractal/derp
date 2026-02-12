@@ -66,4 +66,3 @@ class KVClient(abc.ABC):
         """Iterate keys with optional prefix and limit."""
         yield b""  # pragma: no cover
         raise NotImplementedError  # pragma: no cover
-

@@ -5,7 +5,7 @@ import type { TableInfo } from "../api";
 
 // --- Layout constants ---
 
-const TABLE_WIDTH = 220;
+const TABLE_WIDTH = 320;
 const HEADER_HEIGHT = 32;
 const ROW_HEIGHT = 24;
 const TABLE_GAP_X = 80;
@@ -111,6 +111,25 @@ function TableBox({
   edges: Edge[];
   onTableClick?: (name: string) => void;
 }) {
+  const lastClickRef = useRef<{ table: string; time: number }>({
+    table: "",
+    time: 0,
+  });
+
+  const handleClick = useCallback(
+    (name: string) => {
+      const now = Date.now();
+      const last = lastClickRef.current;
+      if (last.table === name && now - last.time < 400) {
+        onTableClick?.(name);
+        lastClickRef.current = { table: "", time: 0 };
+      } else {
+        lastClickRef.current = { table: name, time: now };
+      }
+    },
+    [onTableClick],
+  );
+
   const { table, x, y, width } = node;
 
   // Columns that are FKs
@@ -129,7 +148,7 @@ function TableBox({
   return (
     <g
       className="cursor-pointer"
-      onClick={() => onTableClick?.(table.name)}
+      onClick={() => handleClick(table.name)}
     >
       {/* Shadow */}
       <rect
@@ -427,7 +446,7 @@ export function ERDiagram({
   return (
     <div
       ref={containerRef}
-      className={`w-full h-full min-h-[500px] rounded-lg border bg-muted/20 overflow-hidden ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+      className={`w-full h-full min-h-125 rounded-lg border bg-muted/20 overflow-hidden ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}

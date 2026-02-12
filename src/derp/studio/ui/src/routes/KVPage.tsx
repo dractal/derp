@@ -1,6 +1,17 @@
-import { Key, Search, Trash2 } from "lucide-react";
+import { Key, RefreshCw, Search, Trash2 } from "lucide-react";
 
 import { useConfig, useDeleteKVKey, type KVKeyInfo } from "../api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "../components/ui/alert-dialog";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { Card, CardContent } from "../components/ui/card";
@@ -21,6 +32,15 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const value = bytes / Math.pow(1024, i);
   return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+function formatValue(raw: string): { text: string; lang: "json" | "text" } {
+  try {
+    const parsed = JSON.parse(raw);
+    return { text: JSON.stringify(parsed, null, 2), lang: "json" };
+  } catch {
+    return { text: raw, lang: "text" };
+  }
 }
 
 function formatTTL(ttl: number | null): string {
@@ -78,24 +98,48 @@ function KeyDetailSheet({
               </div>
 
               <div>
-                <span className="mb-1.5 block text-sm text-muted-foreground">
-                  Value
-                </span>
-                <pre className="max-h-96 overflow-auto rounded-md border bg-muted/50 p-3 font-mono text-xs">
-                  {keyInfo.value}
+                <div className="mb-1.5 flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">Value</span>
+                  <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                    {formatValue(keyInfo.value).lang}
+                  </Badge>
+                </div>
+                <pre className="max-h-96 overflow-auto rounded-md border bg-muted/50 p-3 font-mono text-xs whitespace-pre wrap-break-word">
+                  {formatValue(keyInfo.value).text}
                 </pre>
               </div>
 
-              <Button
-                variant="destructive"
-                size="sm"
-                className="w-fit"
-                onClick={onDelete}
-                disabled={deleting}
-              >
-                <Trash2 className="mr-2 size-4" />
-                {deleting ? "Deleting..." : "Delete Key"}
-              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    className="w-fit"
+                    disabled={deleting}
+                  >
+                    <Trash2 className="mr-2 size-4" />
+                    {deleting ? "Deleting..." : "Delete Key"}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete key?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will permanently delete{" "}
+                      <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                        {keyInfo?.key}
+                      </code>
+                      . This action cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={onDelete}>
+                      Delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </>
           ) : null}
         </div>
@@ -150,6 +194,8 @@ export function KVPage(): JSX.Element {
     error,
     keyInfo,
     keyInfoLoading,
+    refetch,
+    refreshing,
   } = useKV(isConfigured);
 
   const deleteMutation = useDeleteKVKey();
@@ -191,6 +237,14 @@ export function KVPage(): JSX.Element {
                 className="pl-9"
               />
             </div>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => refetch()}
+              disabled={refreshing}
+            >
+              <RefreshCw className={`size-4 ${refreshing ? "animate-spin" : ""}`} />
+            </Button>
             <Badge variant="secondary">{keys.length} keys</Badge>
           </div>
 

@@ -1,11 +1,12 @@
 import { useConfig, type StudioConfig } from "../api";
-import { Badge } from "../components/ui/badge";
 import { JsonViewer } from "../components/json-viewer";
+import { Badge } from "../components/ui/badge";
 import {
   Card,
   CardContent,
 } from "../components/ui/card";
 import { Skeleton } from "../components/ui/skeleton";
+import { cn } from "../lib/utils";
 
 const SERVICES: { key: keyof StudioConfig; label: string }[] = [
   { key: "database", label: "Database" },
@@ -36,14 +37,28 @@ export function LandingPage(): JSX.Element {
 
       {!isLoading && !error && data ? (
         <div className="flex flex-wrap gap-2">
-          {SERVICES.map(({ key, label }) => (
-            <Badge
-              key={key}
-              variant={data[key] != null ? "default" : "outline"}
-            >
-              {label}
-            </Badge>
-          ))}
+          {SERVICES.map(({ key, label }) => {
+            const enabled = data[key] != null;
+            return (
+              <Badge
+                key={key}
+                variant={enabled ? "outline" : "secondary"}
+                className={
+                  enabled
+                    ? "gap-1.5 cursor-default hover:bg-secondary"
+                    : "gap-1.5 opacity-60 cursor-default hover:bg-secondary"
+                }
+              >
+                <span
+                  className={cn(
+                    "inline-block h-1.5 w-1.5 rounded-full",
+                    enabled ? "bg-green-400" : "bg-muted-foreground/50"
+                  )}
+                />
+                {label}
+              </Badge>
+            );
+          })}
         </div>
       ) : null}
 

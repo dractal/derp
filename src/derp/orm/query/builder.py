@@ -81,9 +81,9 @@ class SelectQuery[T]:
         self._from_table = table
         return self
 
-    def where(self, condition: Expression) -> Self:
+    def where(self, cond: Expression) -> Self:
         """Add WHERE clause."""
-        self._where_clause = condition
+        self._where_clause = cond
         return self
 
     def inner_join(self, table: type[Table], condition: Expression) -> Self:
@@ -214,6 +214,25 @@ class SelectQuery[T]:
 
         return sql, params
 
+    def build_count(self) -> tuple[str, list[Any]]:
+        """Build a COUNT(*) SQL query and parameters."""
+        params: list[Any] = []
+        sql = "SELECT COUNT(*)"
+
+        if self._from_table:
+            sql += f" FROM {self._from_table.get_table_name()}"
+
+        for join in self._joins:
+            join_table = join.table.get_table_name()
+            condition_sql = join.condition.to_sql(params)
+            sql += f" {join.join_type} JOIN {join_table} ON {condition_sql}"
+
+        if self._where_clause:
+            where_sql = self._where_clause.to_sql(params)
+            sql += f" WHERE {where_sql}"
+
+        return sql, params
+
     def _cache_key(self, sql: str, params: list[Any]) -> str:
         """Derive a cache key from SQL and parameters."""
         raw = sql + json.dumps(params, default=str)
@@ -287,6 +306,18 @@ class SelectQuery[T]:
         if result is None:
             raise RuntimeError("SELECT query returned no results")
         return result
+
+    async def count(self) -> int:
+        """Execute a COUNT(*) query and return the count."""
+        if not self._pool:
+            raise RuntimeError("No database connection. Call db.connect() first.")
+
+        sql, params = self.build_count()
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+
+        return row[0] if row else 0
 
 
 # =============================================================================
@@ -482,9 +513,9 @@ class UpdateQuery[T: Table](_UpdateQueryBase[T]):
         self._set_values = kwargs
         return self
 
-    def where(self, condition: Expression) -> UpdateQuery[T]:
+    def where(self, cond: Expression) -> UpdateQuery[T]:
         """Add WHERE clause."""
-        self._where_clause = condition
+        self._where_clause = cond
         return self
 
     @overload
@@ -540,9 +571,9 @@ class UpdateQueryReturning[T: Table](_UpdateQueryBase[T]):
         self._set_values = kwargs
         return self
 
-    def where(self, condition: Expression) -> UpdateQueryReturning[T]:
+    def where(self, cond: Expression) -> UpdateQueryReturning[T]:
         """Add WHERE clause."""
-        self._where_clause = condition
+        self._where_clause = cond
         return self
 
     def build(self) -> tuple[str, list[Any]]:
@@ -571,9 +602,9 @@ class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
         self._set_values = kwargs
         return self
 
-    def where(self, condition: Expression) -> UpdateQueryReturningDict[T]:
+    def where(self, cond: Expression) -> UpdateQueryReturningDict[T]:
         """Add WHERE clause."""
-        self._where_clause = condition
+        self._where_clause = cond
         return self
 
     def build(self) -> tuple[str, list[Any]]:
@@ -631,9 +662,9 @@ class _DeleteQueryBase[T: Table]:
 class DeleteQuery[T: Table](_DeleteQueryBase[T]):
     """DELETE query without RETURNING - execute() returns None."""
 
-    def where(self, condition: Expression) -> DeleteQuery[T]:
+    def where(self, cond: Expression) -> DeleteQuery[T]:
         """Add WHERE clause."""
-        self._where_clause = condition
+        self._where_clause = cond
         return self
 
     @overload
@@ -682,9 +713,9 @@ class DeleteQuery[T: Table](_DeleteQueryBase[T]):
 class DeleteQueryReturning[T: Table](_DeleteQueryBase[T]):
     """DELETE query with RETURNING table - execute() returns list[T]."""
 
-    def where(self, condition: Expression) -> DeleteQueryReturning[T]:
+    def where(self, cond: Expression) -> DeleteQueryReturning[T]:
         """Add WHERE clause."""
-        self._where_clause = condition
+        self._where_clause = cond
         return self
 
     def build(self) -> tuple[str, list[Any]]:
@@ -708,9 +739,9 @@ class DeleteQueryReturning[T: Table](_DeleteQueryBase[T]):
 class DeleteQueryReturningDict[T: Table](_DeleteQueryBase[T]):
     """DELETE query with RETURNING columns - execute() returns list[dict]."""
 
-    def where(self, condition: Expression) -> DeleteQueryReturningDict[T]:
+    def where(self, cond: Expression) -> DeleteQueryReturningDict[T]:
         """Add WHERE clause."""
-        self._where_clause = condition
+        self._where_clause = cond
         return self
 
     def build(self) -> tuple[str, list[Any]]:

@@ -11,6 +11,7 @@ from datetime import datetime
 from datetime import time as dt_time
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -484,10 +485,9 @@ def create_app(
         if derp._kv is None:
             raise HTTPException(status_code=400, detail="KV is not configured.")
         limit = min(max(limit, 1), 1000)
-        store = derp.kv.store
         prefix_bytes = prefix.encode() if prefix else None
         keys: list[str] = []
-        async for key in store.scan(prefix=prefix_bytes, limit=limit):
+        async for key in derp.kv.scan(prefix=prefix_bytes, limit=limit):
             keys.append(key.decode("utf-8", errors="replace"))
         return {"keys": keys}
 
@@ -499,12 +499,11 @@ def create_app(
         """Get value and TTL for a single KV key."""
         if derp._kv is None:
             raise HTTPException(status_code=400, detail="KV is not configured.")
-        store = derp.kv.store
         key_bytes = key.encode()
-        value = await store.get(key_bytes)
+        value = await derp.kv.get(key_bytes)
         if value is None:
             raise HTTPException(status_code=404, detail=f"Key not found: {key}")
-        ttl = await store.ttl(key_bytes)
+        ttl = await derp.kv.ttl(key_bytes)
         return {
             "key": key,
             "value": value.decode("utf-8", errors="replace"),
@@ -520,11 +519,11 @@ def create_app(
         """Delete a single KV key."""
         if derp._kv is None:
             raise HTTPException(status_code=400, detail="KV is not configured.")
-        body = await request.json()
+        body: dict[str, Any] = await request.json()
         key: str = body.get("key", "")
         if not key:
             raise HTTPException(status_code=400, detail="No key specified.")
-        deleted = await derp.kv.store.delete(key.encode())
+        deleted = await derp.kv.delete(key.encode())
         return {"deleted": deleted}
 
     # --- Auth ---

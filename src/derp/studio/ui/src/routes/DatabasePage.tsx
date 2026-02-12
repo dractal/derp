@@ -874,7 +874,7 @@ function RowBrowser({
                       return (
                         <td
                           key={cell.id}
-                          className={`max-w-[180px] truncate whitespace-nowrap px-3 py-2 font-mono text-xs cursor-pointer ${isFocused ? "bg-muted ring-1 ring-ring" : ""}`}
+                          className={`max-w-45 truncate whitespace-nowrap px-3 py-2 font-mono text-xs cursor-pointer ${isFocused ? "bg-muted ring-1 ring-ring" : ""}`}
                           onClick={() => handleCellClick(row.id, cell.column.id)}
                         >
                           {flexRender(cell.column.columnDef.cell, cell.getContext())}

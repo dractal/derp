@@ -59,16 +59,15 @@ async def list_conversations(
             continue
 
         # Count unread messages
-        unread_result = await derp.db.execute(
-            """
-            SELECT COUNT(*) as count FROM messages
-            WHERE conversation_id = $1
-            AND sender_id != $2
-            AND read_at IS NULL
-            """,
-            [str(conv.id), str(user.id)],
+        unread_count = await (
+            derp.db.select(Message)
+            .where(
+                (Message.c.conversation_id == str(conv.id))
+                & (Message.c.sender_id != str(user.id))
+                & (Message.c.read_at.is_null())
+            )
+            .count()
         )
-        unread_count = unread_result[0]["count"] if unread_result else 0
 
         result.append(
             ConversationResponse(
@@ -298,16 +297,16 @@ async def mark_messages_read(
 
     now = datetime.now(UTC)
 
-    result = await derp.db.execute(
-        """
-        UPDATE messages
-        SET read_at = $1
-        WHERE conversation_id = $2
-        AND sender_id != $3
-        AND read_at IS NULL
-        RETURNING id
-        """,
-        [now, str(conversation_id), str(user.id)],
+    result = (
+        await derp.db.update(Message)
+        .set(read_at=now)
+        .where(
+            (Conversation.c.id == str(conversation_id))
+            & (Message.c.sender_id != str(user.id))
+            & (Message.c.read_at.is_null())
+        )
+        .returning(Message.c.id)
+        .execute()
     )
 
     return MarkReadResponse(marked_count=len(result))

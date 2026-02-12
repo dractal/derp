@@ -20,6 +20,10 @@ smtp_host = "localhost"
 smtp_port = 1025
 use_tls = false
 
+[kv.valkey]
+host = "localhost"
+port = 6379
+
 [auth]
 enable_confirmation = false
 enable_magic_link = true
