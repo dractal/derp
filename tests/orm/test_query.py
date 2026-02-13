@@ -2,6 +2,9 @@
 
 from datetime import datetime
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from derp.orm import Table
 from derp.orm.fields import Boolean, Field, Integer, Serial, Timestamp, Varchar
@@ -10,6 +13,7 @@ from derp.orm.query.builder import (
     InsertQuery,
     SelectQuery,
     UpdateQuery,
+    _acquire,
 )
 
 
@@ -776,3 +780,88 @@ def test_count_ignores_column_selection():
 
     assert sql == "SELECT COUNT(*) FROM users"
     assert params == []
+
+
+# =============================================================================
+# Transaction-bound builder tests
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_acquire_uses_pool_acquire():
+    """_acquire acquires from pool when given a Pool-like object."""
+    mock_conn = AsyncMock()
+    mock_pool = MagicMock()
+    mock_pool.acquire.return_value.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    # asyncpg.Pool is the type we check with isinstance, so make it look like one
+    mock_pool.__class__ = type("Pool", (), {})
+
+    # When given a non-Pool connection, _acquire yields it directly
+    async with _acquire(mock_conn) as conn:
+        assert conn is mock_conn
+
+
+@pytest.mark.asyncio
+async def test_acquire_yields_connection_directly():
+    """_acquire yields connection directly when given a Connection."""
+    mock_conn = AsyncMock()
+    async with _acquire(mock_conn) as conn:
+        assert conn is mock_conn
+
+
+def test_insert_returning_preserves_connection():
+    """returning() propagates the pool/connection to the new builder."""
+    sentinel = object()
+    query = InsertQuery(sentinel, User).values(name="Alice")  # type: ignore[arg-type]
+    returning_query = query.returning(User)
+    assert returning_query._pool is sentinel
+
+
+def test_insert_returning_dict_preserves_connection():
+    """returning() with columns propagates the pool/connection."""
+    sentinel = object()
+    query = InsertQuery(sentinel, User).values(name="Alice")  # type: ignore[arg-type]
+    returning_query = query.returning(User.c.id)
+    assert returning_query._pool is sentinel
+
+
+def test_update_returning_preserves_connection():
+    """returning() propagates the pool/connection to the new builder."""
+    sentinel = object()
+    query = UpdateQuery(sentinel, User).set(name="Bob")  # type: ignore[arg-type]
+    returning_query = query.returning(User)
+    assert returning_query._pool is sentinel
+
+
+def test_update_returning_dict_preserves_connection():
+    """returning() with columns propagates the pool/connection."""
+    sentinel = object()
+    query = UpdateQuery(sentinel, User).set(name="Bob")  # type: ignore[arg-type]
+    returning_query = query.returning(User.c.id)
+    assert returning_query._pool is sentinel
+
+
+def test_delete_returning_preserves_connection():
+    """returning() propagates the pool/connection to the new builder."""
+    sentinel = object()
+    query = DeleteQuery(sentinel, User).where(User.c.id == 1)  # type: ignore[arg-type]
+    returning_query = query.returning(User)
+    assert returning_query._pool is sentinel
+
+
+def test_delete_returning_dict_preserves_connection():
+    """returning() with columns propagates the pool/connection."""
+    sentinel = object()
+    query = DeleteQuery(sentinel, User).where(User.c.id == 1)  # type: ignore[arg-type]
+    returning_query = query.returning(User.c.id)
+    assert returning_query._pool is sentinel
+
+
+def test_select_builds_with_connection():
+    """SelectQuery builds valid SQL regardless of pool vs connection."""
+    sentinel = object()
+    query = SelectQuery[User](sentinel, (User,)).where(User.c.id == 1)  # type: ignore[arg-type]
+    sql, params = query.build()
+    assert sql == "SELECT users.* FROM users WHERE (users.id = $1)"
+    assert params == [1]

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Self, overload
@@ -14,6 +16,18 @@ from derp.kv.base import KVClient
 from derp.orm.fields import JSON, JSONB, FieldInfo
 from derp.orm.query.expressions import Expression
 from derp.orm.table import Table
+
+
+@asynccontextmanager
+async def _acquire(
+    pool_or_conn: asyncpg.Pool | asyncpg.Connection,
+) -> AsyncIterator[asyncpg.Connection]:
+    """Resolve a connection: acquire from pool or use directly."""
+    if isinstance(pool_or_conn, asyncpg.Pool):
+        async with pool_or_conn.acquire() as conn:
+            yield conn
+    else:
+        yield pool_or_conn
 
 
 class JoinType(StrEnum):
@@ -55,7 +69,7 @@ class SelectQuery[T]:
 
     def __init__(
         self,
-        pool: asyncpg.Pool | None,
+        pool: asyncpg.Pool | asyncpg.Connection | None,
         columns: tuple[type[Table] | FieldInfo[Any], ...],
         *,
         cache_store: KVClient | None = None,
@@ -254,7 +268,7 @@ class SelectQuery[T]:
                 rows_data: list[dict[str, Any]] = json.loads(cached)
                 return self._hydrate(rows_data)
 
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
 
         rows_data = self._rows_to_dicts(rows)
@@ -314,7 +328,7 @@ class SelectQuery[T]:
 
         sql, params = self.build_count()
 
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             row = await conn.fetchrow(sql, *params)
 
         return row[0] if row else 0
@@ -328,7 +342,7 @@ class SelectQuery[T]:
 class _InsertQueryBase[T: Table]:
     """Base class for INSERT queries with shared implementation."""
 
-    def __init__(self, pool: asyncpg.Pool | None, table: type[T]):
+    def __init__(self, pool: asyncpg.Pool | asyncpg.Connection | None, table: type[T]):
         self._pool = pool
         self._table = table
         self._values: dict[str, Any] = {}
@@ -408,7 +422,7 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             await conn.execute(sql, *params)
 
 
@@ -430,7 +444,7 @@ class InsertQueryReturning[T: Table](_InsertQueryBase[T]):
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             row = await conn.fetchrow(sql, *params)
             if row is None:
                 raise RuntimeError("INSERT RETURNING returned no rows")
@@ -455,7 +469,7 @@ class InsertQueryReturningDict[T: Table](_InsertQueryBase[T]):
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             row = await conn.fetchrow(sql, *params)
             if row is None:
                 raise RuntimeError("INSERT RETURNING returned no rows")
@@ -470,7 +484,7 @@ class InsertQueryReturningDict[T: Table](_InsertQueryBase[T]):
 class _UpdateQueryBase[T: Table]:
     """Base class for UPDATE queries with shared implementation."""
 
-    def __init__(self, pool: asyncpg.Pool | None, table: type[T]):
+    def __init__(self, pool: asyncpg.Pool | asyncpg.Connection | None, table: type[T]):
         self._pool = pool
         self._table = table
         self._set_values: dict[str, Any] = {}
@@ -559,7 +573,7 @@ class UpdateQuery[T: Table](_UpdateQueryBase[T]):
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             await conn.execute(sql, *params)
 
 
@@ -586,7 +600,7 @@ class UpdateQueryReturning[T: Table](_UpdateQueryBase[T]):
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
             return [
                 self._table.model_validate(_deserialize_row(self._table, row))
@@ -617,7 +631,7 @@ class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
             return [_deserialize_row(self._table, row) for row in rows]
 
@@ -630,7 +644,7 @@ class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
 class _DeleteQueryBase[T: Table]:
     """Base class for DELETE queries with shared implementation."""
 
-    def __init__(self, pool: asyncpg.Pool | None, table: type[T]):
+    def __init__(self, pool: asyncpg.Pool | asyncpg.Connection | None, table: type[T]):
         self._pool = pool
         self._table = table
         self._where_clause: Expression | None = None
@@ -706,7 +720,7 @@ class DeleteQuery[T: Table](_DeleteQueryBase[T]):
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             await conn.execute(sql, *params)
 
 
@@ -728,7 +742,7 @@ class DeleteQueryReturning[T: Table](_DeleteQueryBase[T]):
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
             return [
                 self._table.model_validate(_deserialize_row(self._table, row))
@@ -754,7 +768,7 @@ class DeleteQueryReturningDict[T: Table](_DeleteQueryBase[T]):
             raise RuntimeError("No database connection. Call db.connect() first.")
 
         sql, params = self.build()
-        async with self._pool.acquire() as conn:
+        async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
             return [_deserialize_row(self._table, row) for row in rows]
 

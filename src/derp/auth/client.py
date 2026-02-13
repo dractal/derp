@@ -702,17 +702,15 @@ class AuthClient[UserT: BaseUser]:
             SessionExpiredError: If session has expired
         """
         # Find refresh token
-        result = await (
+        token_record = await (
             self._db()
             .select(self._auth_refresh_token_table)
             .where(self._auth_refresh_token_table.c.token == refresh_token)
-            .execute()
+            .first_or_none()
         )
 
-        if not result:
+        if token_record is None:
             raise RefreshTokenRevokedError("Invalid refresh token")
-
-        token_record = result[0]
 
         if token_record.revoked:
             # Token was already used - potential theft, revoke all tokens for session

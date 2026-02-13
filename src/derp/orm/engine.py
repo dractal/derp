@@ -16,7 +16,18 @@ from derp.orm.table import Table
 
 
 class Transaction:
-    """Transaction context manager."""
+    """Transaction context manager with query builder support.
+
+    Queries created via this transaction's ``select``, ``insert``,
+    ``update``, and ``delete`` methods reuse the transaction's
+    connection instead of acquiring a new one from the pool.
+
+    Example::
+
+        async with db.transaction() as txn:
+            user = await txn.insert(User).values(name="Alice").returning(User).execute()
+            await txn.update(Profile).set(user_id=user.id).execute()
+    """
 
     def __init__(self, connection: asyncpg.Connection):
         self._connection = connection
@@ -39,6 +50,32 @@ class Transaction:
             await self._transaction.rollback()
         else:
             await self._transaction.commit()
+
+    # Single table selection - returns model instances
+    @overload
+    def select[T: Table](self, table: type[T], /) -> SelectQuery[T]: ...
+
+    # Fallback for column selections and mixed cases - returns dicts
+    @overload
+    def select(
+        self, *columns: type[Table] | FieldInfo[Any]
+    ) -> SelectQuery[dict[str, Any]]: ...
+
+    def select(self, *columns: type[Table] | FieldInfo[Any]) -> SelectQuery[Any]:
+        """Start a SELECT query bound to this transaction's connection."""
+        return SelectQuery(self._connection, columns)
+
+    def insert[T: Table](self, table: type[T]) -> InsertQuery[T]:
+        """Start an INSERT query bound to this transaction's connection."""
+        return InsertQuery(self._connection, table)
+
+    def update[T: Table](self, table: type[T]) -> UpdateQuery[T]:
+        """Start an UPDATE query bound to this transaction's connection."""
+        return UpdateQuery(self._connection, table)
+
+    def delete[T: Table](self, table: type[T]) -> DeleteQuery[T]:
+        """Start a DELETE query bound to this transaction's connection."""
+        return DeleteQuery(self._connection, table)
 
 
 class DatabaseEngine:
