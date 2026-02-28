@@ -1,0 +1,662 @@
+{
+  "version": "1",
+  "dialect": "postgresql",
+  "tables": {
+    "users": {
+      "name": "users",
+      "schema": "public",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primary_key": true,
+          "not_null": true,
+          "unique": false,
+          "default": "gen_random_uuid()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "email": {
+          "name": "email",
+          "type": "varchar(255)",
+          "primary_key": false,
+          "not_null": true,
+          "unique": true,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "email_confirmed_at": {
+          "name": "email_confirmed_at",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "encrypted_password": {
+          "name": "encrypted_password",
+          "type": "text",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "provider": {
+          "name": "provider",
+          "type": "auth_provider",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "provider_id": {
+          "name": "provider_id",
+          "type": "varchar(255)",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "is_active": {
+          "name": "is_active",
+          "type": "boolean",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": "TRUE",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "is_superuser": {
+          "name": "is_superuser",
+          "type": "boolean",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": "FALSE",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": "now()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": "now()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "last_sign_in_at": {
+          "name": "last_sign_in_at",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "username": {
+          "name": "username",
+          "type": "varchar(100)",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "avatar_url": {
+          "name": "avatar_url",
+          "type": "varchar(512)",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "bio": {
+          "name": "bio",
+          "type": "text",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        }
+      },
+      "primary_key": {
+        "name": null,
+        "columns": [
+          "id"
+        ]
+      },
+      "foreign_keys": {},
+      "indexes": {
+        "idx_users_email": {
+          "name": "idx_users_email",
+          "columns": [
+            "email"
+          ],
+          "unique": false,
+          "where": null,
+          "method": "btree",
+          "concurrently": false,
+          "nulls_not_distinct": false,
+          "include": [],
+          "with_options": {}
+        }
+      },
+      "unique_constraints": {
+        "users_email_unique": {
+          "name": "users_email_unique",
+          "columns": [
+            "email"
+          ],
+          "nulls_not_distinct": false
+        }
+      },
+      "check_constraints": {},
+      "rls_enabled": false,
+      "rls_forced": false
+    },
+    "auth_sessions": {
+      "name": "auth_sessions",
+      "schema": "public",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primary_key": true,
+          "not_null": true,
+          "unique": false,
+          "default": "gen_random_uuid()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "session_id": {
+          "name": "session_id",
+          "type": "uuid",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": "gen_random_uuid()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "token": {
+          "name": "token",
+          "type": "varchar(255)",
+          "primary_key": false,
+          "not_null": true,
+          "unique": true,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "revoked": {
+          "name": "revoked",
+          "type": "boolean",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": "FALSE",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "user_agent": {
+          "name": "user_agent",
+          "type": "text",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "ip_address": {
+          "name": "ip_address",
+          "type": "varchar(45)",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "not_after": {
+          "name": "not_after",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": "now()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        }
+      },
+      "primary_key": {
+        "name": null,
+        "columns": [
+          "id"
+        ]
+      },
+      "foreign_keys": {
+        "auth_sessions_user_id_fkey": {
+          "name": "auth_sessions_user_id_fkey",
+          "columns": [
+            "user_id"
+          ],
+          "references_schema": "public",
+          "references_table": "users",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "cascade",
+          "on_update": null,
+          "deferrable": false,
+          "initially_deferred": false
+        }
+      },
+      "indexes": {
+        "idx_auth_sessions_user_id": {
+          "name": "idx_auth_sessions_user_id",
+          "columns": [
+            "user_id"
+          ],
+          "unique": false,
+          "where": null,
+          "method": "btree",
+          "concurrently": false,
+          "nulls_not_distinct": false,
+          "include": [],
+          "with_options": {}
+        },
+        "idx_auth_sessions_session_id": {
+          "name": "idx_auth_sessions_session_id",
+          "columns": [
+            "session_id"
+          ],
+          "unique": false,
+          "where": null,
+          "method": "btree",
+          "concurrently": false,
+          "nulls_not_distinct": false,
+          "include": [],
+          "with_options": {}
+        },
+        "idx_auth_sessions_token": {
+          "name": "idx_auth_sessions_token",
+          "columns": [
+            "token"
+          ],
+          "unique": false,
+          "where": null,
+          "method": "btree",
+          "concurrently": false,
+          "nulls_not_distinct": false,
+          "include": [],
+          "with_options": {}
+        }
+      },
+      "unique_constraints": {
+        "auth_sessions_token_unique": {
+          "name": "auth_sessions_token_unique",
+          "columns": [
+            "token"
+          ],
+          "nulls_not_distinct": false
+        }
+      },
+      "check_constraints": {},
+      "rls_enabled": false,
+      "rls_forced": false
+    },
+    "conversations": {
+      "name": "conversations",
+      "schema": "public",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primary_key": true,
+          "not_null": true,
+          "unique": false,
+          "default": "gen_random_uuid()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "user1_id": {
+          "name": "user1_id",
+          "type": "uuid",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "user2_id": {
+          "name": "user2_id",
+          "type": "uuid",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "last_message_at": {
+          "name": "last_message_at",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": "now()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        }
+      },
+      "primary_key": {
+        "name": null,
+        "columns": [
+          "id"
+        ]
+      },
+      "foreign_keys": {
+        "conversations_user1_id_fkey": {
+          "name": "conversations_user1_id_fkey",
+          "columns": [
+            "user1_id"
+          ],
+          "references_schema": "public",
+          "references_table": "users",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "cascade",
+          "on_update": null,
+          "deferrable": false,
+          "initially_deferred": false
+        },
+        "conversations_user2_id_fkey": {
+          "name": "conversations_user2_id_fkey",
+          "columns": [
+            "user2_id"
+          ],
+          "references_schema": "public",
+          "references_table": "users",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "cascade",
+          "on_update": null,
+          "deferrable": false,
+          "initially_deferred": false
+        }
+      },
+      "indexes": {
+        "idx_conversations_user1_id": {
+          "name": "idx_conversations_user1_id",
+          "columns": [
+            "user1_id"
+          ],
+          "unique": false,
+          "where": null,
+          "method": "btree",
+          "concurrently": false,
+          "nulls_not_distinct": false,
+          "include": [],
+          "with_options": {}
+        },
+        "idx_conversations_user2_id": {
+          "name": "idx_conversations_user2_id",
+          "columns": [
+            "user2_id"
+          ],
+          "unique": false,
+          "where": null,
+          "method": "btree",
+          "concurrently": false,
+          "nulls_not_distinct": false,
+          "include": [],
+          "with_options": {}
+        }
+      },
+      "unique_constraints": {},
+      "check_constraints": {},
+      "rls_enabled": false,
+      "rls_forced": false
+    },
+    "messages": {
+      "name": "messages",
+      "schema": "public",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primary_key": true,
+          "not_null": true,
+          "unique": false,
+          "default": "gen_random_uuid()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "sender_id": {
+          "name": "sender_id",
+          "type": "uuid",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "read_at": {
+          "name": "read_at",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": false,
+          "unique": false,
+          "default": null,
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primary_key": false,
+          "not_null": true,
+          "unique": false,
+          "default": "now()",
+          "generated": null,
+          "identity": null,
+          "array_dimensions": 0
+        }
+      },
+      "primary_key": {
+        "name": null,
+        "columns": [
+          "id"
+        ]
+      },
+      "foreign_keys": {
+        "messages_conversation_id_fkey": {
+          "name": "messages_conversation_id_fkey",
+          "columns": [
+            "conversation_id"
+          ],
+          "references_schema": "public",
+          "references_table": "conversations",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "cascade",
+          "on_update": null,
+          "deferrable": false,
+          "initially_deferred": false
+        },
+        "messages_sender_id_fkey": {
+          "name": "messages_sender_id_fkey",
+          "columns": [
+            "sender_id"
+          ],
+          "references_schema": "public",
+          "references_table": "users",
+          "references_columns": [
+            "id"
+          ],
+          "on_delete": "cascade",
+          "on_update": null,
+          "deferrable": false,
+          "initially_deferred": false
+        }
+      },
+      "indexes": {
+        "idx_messages_conversation_id": {
+          "name": "idx_messages_conversation_id",
+          "columns": [
+            "conversation_id"
+          ],
+          "unique": false,
+          "where": null,
+          "method": "btree",
+          "concurrently": false,
+          "nulls_not_distinct": false,
+          "include": [],
+          "with_options": {}
+        }
+      },
+      "unique_constraints": {},
+      "check_constraints": {},
+      "rls_enabled": false,
+      "rls_forced": false
+    }
+  },
+  "enums": {
+    "auth_provider": {
+      "name": "auth_provider",
+      "schema": "public",
+      "values": [
+        "email",
+        "magic_link",
+        "google",
+        "github"
+      ]
+    }
+  },
+  "sequences": {},
+  "schemas": [
+    "public"
+  ],
+  "policies": {},
+  "roles": {},
+  "grants": [],
+  "id": "0001",
+  "prev_id": "0000"
+}
