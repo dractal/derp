@@ -172,7 +172,7 @@ def generate(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
 
-    migrations_dir = Path(config.database.migrations.dir)
+    migrations_dir = Path(config.database.migrations_dir)
     schema_path = config.database.schema_path
 
     if custom:
@@ -277,7 +277,7 @@ def generate(
 
 def _generate_custom_migration(config: DerpConfig, name: str) -> None:
     """Generate an empty migration for custom SQL."""
-    migrations_dir = Path(config.database.migrations.dir)
+    migrations_dir = Path(config.database.migrations_dir)
     journal = load_journal(migrations_dir)
 
     next_version = get_next_version(journal)

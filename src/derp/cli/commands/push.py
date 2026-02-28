@@ -86,8 +86,8 @@ def push(
             # Introspect current database
             introspector = PostgresIntrospector(pool)
             db_snapshot = await introspector.introspect(
-                schemas=config.database.introspect.schemas,
-                exclude_tables=config.database.introspect.exclude_tables,
+                schemas=config.database.introspect_schemas,
+                exclude_tables=config.database.introspect_exclude_tables,
             )
 
             typer.echo(f"Introspected {len(db_snapshot.tables)} existing table(s)")

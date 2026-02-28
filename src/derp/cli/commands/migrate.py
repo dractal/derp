@@ -35,7 +35,7 @@ def migrate(
         raise typer.Exit(1)
 
     db_url = config.database.db_url
-    migrations_dir = Path(config.database.migrations.dir)
+    migrations_dir = Path(config.database.migrations_dir)
 
     # Load journal
     journal = load_journal(migrations_dir)

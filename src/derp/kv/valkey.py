@@ -59,9 +59,10 @@ class ValkeyClient(KVClient):
         return await self.client.get(key)
 
     async def set(self, key: bytes, value: bytes, *, ttl: float | None = None) -> None:
-        await self.client.set(key, value)
-        if ttl is not None:
-            await self.client.expire(key, int(ttl))
+        expiry = (
+            glide.ExpirySet(glide.ExpiryType.SEC, int(ttl)) if ttl is not None else None
+        )
+        await self.client.set(key, value, expiry=expiry)
 
     async def delete(self, key: bytes) -> bool:
         return (await self.client.delete([key])) > 0

@@ -125,12 +125,15 @@ def find_table_by_name(
     schema_path: str,
     name: str,
     *,
+    tables: list[type[Table]] | None = None,
     base_class: type[Table] | None = None,
     exclude_base: bool = True,
 ) -> type[Table] | None:
     """Find a Table subclass by its SQL table name."""
+    if tables is None:
+        tables = load_tables(schema_path)
     matches: list[type[Table]] = [
-        table for table in load_tables(schema_path) if table.get_table_name() == name
+        table for table in tables if table.get_table_name() == name
     ]
     if base_class is not None:
         matches = [

@@ -3,27 +3,52 @@
 from __future__ import annotations
 
 import abc
+import asyncio
+import concurrent.futures
 import dataclasses
 import re
 import secrets
 
+from etils import epy
+
 from derp.config import PasswordConfig
+
+with epy.lazy_imports():
+    import argon2
+    import argon2.exceptions as argon2_exceptions
 
 
 class PasswordHasher(abc.ABC):
     """Abstract base class for password hashers."""
 
+    def __init__(self, *, max_workers: int = 8) -> None:
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers, thread_name_prefix="password-hasher"
+        )
+
     @abc.abstractmethod
     def hash(self, password: str) -> str:
-        """Hash a password."""
+        """Hash a password synchronously."""
 
     @abc.abstractmethod
     def verify(self, password: str, hashed: str) -> bool:
-        """Verify a password against a hash."""
+        """Verify a password synchronously."""
 
     @abc.abstractmethod
     def needs_rehash(self, hashed: str) -> bool:
         """Check if a hash needs to be rehashed (e.g., algorithm upgrade)."""
+
+    async def async_hash(self, password: str) -> str:
+        """Hash a password without blocking the event loop."""
+        return await asyncio.get_running_loop().run_in_executor(
+            self._executor, self.hash, password
+        )
+
+    async def async_verify(self, password: str, hashed: str) -> bool:
+        """Verify a password without blocking the event loop."""
+        return await asyncio.get_running_loop().run_in_executor(
+            self._executor, self.verify, password, hashed
+        )
 
 
 class Argon2Hasher(PasswordHasher):
@@ -34,23 +59,15 @@ class Argon2Hasher(PasswordHasher):
         time_cost: int = 3,
         memory_cost: int = 65536,
         parallelism: int = 4,
+        *,
+        max_workers: int = 8,
     ):
-        try:
-            from argon2 import PasswordHasher as Argon2PasswordHasher
-            from argon2.exceptions import InvalidHashError, VerifyMismatchError
-        except ImportError as e:
-            raise ImportError(
-                "argon2-cffi is required for Argon2 hashing. "
-                "Install it with: pip install argon2-cffi"
-            ) from e
-
-        self._hasher = Argon2PasswordHasher(
+        super().__init__(max_workers=max_workers)
+        self._hasher = argon2.PasswordHasher(
             time_cost=time_cost,
             memory_cost=memory_cost,
             parallelism=parallelism,
         )
-        self._verify_mismatch_error = VerifyMismatchError
-        self._invalid_hash_error = InvalidHashError
 
     def hash(self, password: str) -> str:
         """Hash a password using Argon2id."""
@@ -61,7 +78,10 @@ class Argon2Hasher(PasswordHasher):
         try:
             self._hasher.verify(hashed, password)
             return True
-        except (self._verify_mismatch_error, self._invalid_hash_error):
+        except (
+            argon2_exceptions.VerifyMismatchError,
+            argon2_exceptions.InvalidHashError,
+        ):
             return False
 
     def needs_rehash(self, hashed: str) -> bool:

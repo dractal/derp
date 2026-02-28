@@ -106,13 +106,6 @@ class MagicLinkExpiredError(AuthError):
         super().__init__(message, code="magic_link_expired")
 
 
-class MagicLinkUsedError(AuthError):
-    """Raised when a magic link has already been used."""
-
-    def __init__(self, message: str = "Magic link has already been used"):
-        super().__init__(message, code="magic_link_used")
-
-
 class PasswordValidationError(AuthError):
     """Raised when a password fails validation."""
 
@@ -157,25 +150,11 @@ class EmailSendError(AuthError):
         super().__init__(message, code="email_send_error")
 
 
-class RecoveryTokenExpiredError(AuthError):
-    """Raised when a password recovery token has expired."""
-
-    def __init__(self, message: str = "Recovery token has expired"):
-        super().__init__(message, code="recovery_token_expired")
-
-
 class RecoveryTokenInvalidError(AuthError):
     """Raised when a password recovery token is invalid."""
 
     def __init__(self, message: str = "Invalid recovery token"):
         super().__init__(message, code="recovery_token_invalid")
-
-
-class ConfirmationTokenExpiredError(AuthError):
-    """Raised when an email confirmation token has expired."""
-
-    def __init__(self, message: str = "Confirmation token has expired"):
-        super().__init__(message, code="confirmation_token_expired")
 
 
 class ConfirmationTokenInvalidError(AuthError):

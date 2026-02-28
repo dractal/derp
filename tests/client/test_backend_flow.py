@@ -47,10 +47,6 @@ async def _create_backend_tables(db: DatabaseEngine) -> None:
             provider_id VARCHAR(255),
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             is_superuser BOOLEAN NOT NULL DEFAULT FALSE,
-            recovery_token VARCHAR(255),
-            recovery_sent_at TIMESTAMP WITH TIME ZONE,
-            confirmation_token VARCHAR(255),
-            confirmation_sent_at TIMESTAMP WITH TIME ZONE,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
             updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
             last_sign_in_at TIMESTAMP WITH TIME ZONE,
@@ -62,31 +58,12 @@ async def _create_backend_tables(db: DatabaseEngine) -> None:
         CREATE TABLE IF NOT EXISTS auth_sessions (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            user_agent TEXT,
-            ip_address VARCHAR(45),
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-            not_after TIMESTAMP WITH TIME ZONE NOT NULL
-        )
-    """)
-
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
-            id SERIAL PRIMARY KEY,
-            session_id UUID NOT NULL REFERENCES auth_sessions(id) ON DELETE CASCADE,
+            session_id UUID NOT NULL DEFAULT gen_random_uuid(),
             token VARCHAR(255) UNIQUE NOT NULL,
             revoked BOOLEAN NOT NULL DEFAULT FALSE,
-            parent VARCHAR(255),
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
-        )
-    """)
-
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS auth_magic_links (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            email VARCHAR(255) NOT NULL,
-            token VARCHAR(255) UNIQUE NOT NULL,
-            used BOOLEAN NOT NULL DEFAULT FALSE,
-            expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+            user_agent TEXT,
+            ip_address VARCHAR(45),
+            not_after TIMESTAMP WITH TIME ZONE NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
         )
     """)
@@ -168,7 +145,7 @@ def _auth_config() -> AuthConfig:
             refresh_token_expire_days=7,
         ),
         enable_signup=True,
-        enable_confirmation=True,
+        enable_confirmation=False,
         enable_magic_link=True,
     )
 
@@ -211,10 +188,7 @@ async def test_backend_handler_auth_storage_db_chain(
         user, _ = await derp.auth.sign_up(
             email="backend@example.com",
             password="password123",
-            confirmation_url="http://localhost:3000/auth/confirm",
         )
-        assert user.confirmation_token is not None
-        await derp.auth.confirm_email(user.confirmation_token)
 
         _, tokens = await derp.auth.sign_in_with_password(
             email="backend@example.com",

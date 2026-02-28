@@ -59,7 +59,7 @@ def check() -> None:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
 
-    migrations_dir = Path(config.database.migrations.dir)
+    migrations_dir = Path(config.database.migrations_dir)
     schema_path = config.database.schema_path
 
     # Load tables from schema module

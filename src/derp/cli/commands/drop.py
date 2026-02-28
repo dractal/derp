@@ -42,7 +42,7 @@ def drop(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
 
-    migrations_dir = Path(config.database.migrations.dir)
+    migrations_dir = Path(config.database.migrations_dir)
 
     if not migrations_dir.exists():
         typer.echo("No migrations directory found.")

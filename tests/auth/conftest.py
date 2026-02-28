@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Generator
+import shutil
+import socket
+import subprocess
+import time
+from collections.abc import AsyncGenerator, Generator, Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -10,9 +14,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from derp.auth import AuthConfig, EmailConfig, JWTConfig
-from derp.auth.models import AuthMagicLink, AuthRefreshToken, AuthSession, BaseUser
-from derp.config import DerpConfig
+from derp.auth.models import AuthSession, BaseUser
+from derp.config import DerpConfig, ValkeyConfig
 from derp.derp_client import DerpClient
+from derp.kv.valkey import ValkeyClient
 from derp.orm import DatabaseConfig, DatabaseEngine
 from derp.orm.fields import JSONB, Field
 
@@ -25,12 +30,65 @@ class AuthSession(AuthSession, table="auth_sessions"):
     pass
 
 
-class AuthRefreshToken(AuthRefreshToken, table="auth_refresh_tokens"):
-    pass
+def _pick_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
-class AuthMagicLink(AuthMagicLink, table="auth_magic_links"):
-    pass
+def _wait_for_port(host: str, port: int, timeout: float = 10.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.2)
+            if sock.connect_ex((host, port)) == 0:
+                return
+        time.sleep(0.05)
+    raise RuntimeError(f"Service did not start on {host}:{port}")
+
+
+@pytest.fixture(scope="module")
+def valkey_server() -> Iterator[tuple[str, int]]:
+    if shutil.which("valkey-server") is None:
+        pytest.skip("valkey-server binary not found on PATH")
+
+    host = "127.0.0.1"
+    port = _pick_free_port()
+    process = subprocess.Popen(
+        [
+            "valkey-server",
+            "--bind",
+            host,
+            "--port",
+            str(port),
+            "--save",
+            "",
+            "--appendonly",
+            "no",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_for_port(host, port)
+        yield host, port
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+
+
+@pytest.fixture
+async def kv_client(
+    valkey_server: tuple[str, int],
+) -> AsyncGenerator[ValkeyClient, None]:
+    host, port = valkey_server
+    client = ValkeyClient(ValkeyConfig(host=host, port=port))
+    await client.connect()
+    yield client
+    await client.disconnect()
 
 
 @pytest.fixture
@@ -71,6 +129,7 @@ async def derp(
     clean_database: str,
     auth_config: AuthConfig,
     email_config: EmailConfig,
+    kv_client: ValkeyClient,
 ) -> AsyncGenerator[DerpClient[User], None]:
     """Create a Derp client for testing."""
     derp = DerpClient(
@@ -86,6 +145,7 @@ async def derp(
     )
     await derp.connect()
     await _create_auth_tables(derp.db)
+    derp.auth.set_kv(kv_client)
     yield derp
     await derp.disconnect()
 
@@ -103,10 +163,6 @@ async def _create_auth_tables(db: DatabaseEngine) -> None:
             provider_id VARCHAR(255),
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             is_superuser BOOLEAN NOT NULL DEFAULT FALSE,
-            recovery_token VARCHAR(255),
-            recovery_sent_at TIMESTAMP WITH TIME ZONE,
-            confirmation_token VARCHAR(255),
-            confirmation_sent_at TIMESTAMP WITH TIME ZONE,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
             updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
             last_sign_in_at TIMESTAMP WITH TIME ZONE,
@@ -118,34 +174,28 @@ async def _create_auth_tables(db: DatabaseEngine) -> None:
         CREATE TABLE IF NOT EXISTS auth_sessions (
             id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
             user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            user_agent TEXT,
-            ip_address VARCHAR(45),
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-            not_after TIMESTAMP WITH TIME ZONE NOT NULL
-        )
-    """)
-
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
-            id SERIAL PRIMARY KEY,
-            session_id UUID NOT NULL REFERENCES auth_sessions(id) ON DELETE CASCADE,
+            session_id UUID NOT NULL DEFAULT gen_random_uuid(),
             token VARCHAR(255) UNIQUE NOT NULL,
             revoked BOOLEAN NOT NULL DEFAULT FALSE,
-            parent VARCHAR(255),
+            user_agent TEXT,
+            ip_address VARCHAR(45),
+            not_after TIMESTAMP WITH TIME ZONE NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
         )
     """)
 
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS auth_magic_links (
-            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            email VARCHAR(255) NOT NULL,
-            token VARCHAR(255) UNIQUE NOT NULL,
-            used BOOLEAN NOT NULL DEFAULT FALSE,
-            expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
-        )
-    """)
+
+async def get_confirmation_token(
+    kv: ValkeyClient, prefix: str, user_id: str
+) -> str | None:
+    """Scan KV for a confirmation token belonging to the given user_id."""
+    key_prefix = f"{prefix}:confirmation:".encode()
+    async for key in kv.scan(prefix=key_prefix):
+        value = await kv.get(key)
+        if value is not None and value.decode() == user_id:
+            # Strip the prefix to get just the token
+            return key.decode().removeprefix(f"{prefix}:confirmation:")
+    return None
 
 
 @pytest.fixture

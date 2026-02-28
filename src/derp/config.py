@@ -58,31 +58,16 @@ def _resolve_env_value(
     return value
 
 
-class MigrationsConfig(BaseModel):
-    """Migrations configuration."""
-
-    dir: str = DEFAULT_MIGRATIONS_DIR
-    breakpoints: bool = True
-    strict: bool = False
-    verbose: bool = False
-
-
-class IntrospectConfig(BaseModel):
-    """Introspection configuration."""
-
-    schemas: Sequence[str] = ("public",)
-    tables: Sequence[str] | None = None
-    exclude_tables: Sequence[str] = (MIGRATIONS_TABLE,)
-
-
 class DatabaseConfig(BaseModel):
     """Database configuration."""
 
     db_url: str
     replica_url: str | None = None
     schema_path: str
-    migrations: MigrationsConfig = Field(default_factory=MigrationsConfig)
-    introspect: IntrospectConfig = Field(default_factory=IntrospectConfig)
+
+    migrations_dir: str = DEFAULT_MIGRATIONS_DIR
+    introspect_schemas: Sequence[str] = ("public",)
+    introspect_exclude_tables: Sequence[str] = (MIGRATIONS_TABLE,)
 
     pool_min_size: int = 10
     pool_max_size: int = 20
@@ -148,13 +133,6 @@ class GitHubOAuthConfig(BaseModel):
     scopes: Sequence[str] = ("user:email",)
 
 
-class AuthCacheConfig(BaseModel):
-    """Configuration for auth session and user caching."""
-
-    session_ttl_seconds: int = 300
-    user_ttl_seconds: int = 300
-
-
 class AuthConfig(BaseModel):
     """Main configuration for the auth module."""
 
@@ -174,6 +152,7 @@ class AuthConfig(BaseModel):
     session_expire_days: int = 30
 
     use_kv_cache: bool = True
+    cache_prefix: str = "derp:auth"
     cache_session_ttl_seconds: int = 300
     cache_user_ttl_seconds: int = 300
 
@@ -270,16 +249,9 @@ def create_default_config() -> str:
 db_url = "$DATABASE_URL"  # Environment variable containing the database URL
 schema_path = "src/schema.py"  # Path to your schema module
 # replica_url = "$REPLICA_DATABASE_URL"  # Optional replica database URL
-
-[database.migrations]
-dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
-# breakpoints = true   # Add SQL breakpoints
-# strict = false       # Strict mode (fail on warnings)
-# verbose = false      # Verbose output
-
-# [database.introspect]
-# schemas = ["public"]   # Schemas to introspect
-# exclude_tables = ["{MIGRATIONS_TABLE}"]  # Tables to exclude from introspection
+migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
+# introspect_schemas = ["public"]   # Schemas to introspect
+# introspect_exclude_tables = ["{MIGRATIONS_TABLE}"]  # Tables to exclude
 
 # [email]
 # site_name = "My App"  # Site name for email templates

@@ -8,20 +8,16 @@ from typing import Any
 
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
-    ConfirmationTokenExpiredError,
     ConfirmationTokenInvalidError,
     ConfirmationURLMissingError,
     EmailNotConfirmedError,
     InvalidCredentialsError,
     MagicLinkExpiredError,
-    MagicLinkUsedError,
     PasswordValidationError,
-    RecoveryTokenExpiredError,
     RecoveryTokenInvalidError,
     RefreshTokenReusedError,
     RefreshTokenRevokedError,
     SessionExpiredError,
-    SessionNotFoundError,
     SignupDisabledError,
     UserAlreadyExistsError,
     UserNotActiveError,
@@ -29,9 +25,7 @@ from derp.auth.exceptions import (
 )
 from derp.auth.jwt import TokenPair, create_token_pair, decode_token
 from derp.auth.models import (
-    AuthMagicLink,
     AuthProvider,
-    AuthRefreshToken,
     AuthSession,
     BaseUser,
 )
@@ -47,55 +41,43 @@ from derp.auth.providers.google import GoogleProvider
 from derp.config import AuthConfig
 from derp.kv.base import KVClient
 from derp.orm import DatabaseEngine, Table
-from derp.orm.loader import find_table_by_name
+from derp.orm.loader import find_table_by_name, load_tables
 
 
 class AuthClient[UserT: BaseUser]:
     """Core authentication client handling all auth operations."""
 
     def __init__(self, config: AuthConfig, schema_path: str):
+        all_tables = load_tables(schema_path)
         tables: list[type[Table]] = []
-        for base_class, enabled, name in [
-            (BaseUser, True, "users"),
-            (AuthSession, True, "auth_sessions"),
-            (AuthRefreshToken, True, "auth_refresh_tokens"),
-            (AuthMagicLink, config.enable_magic_link, "auth_magic_links"),
-        ]:
-            table = find_table_by_name(schema_path, name, base_class=base_class)
-            if enabled and table is None:
+        for base_class, name in [(BaseUser, "users"), (AuthSession, "auth_sessions")]:
+            table = find_table_by_name(
+                schema_path, name, tables=all_tables, base_class=base_class
+            )
+            if table is None:
                 raise ValueError(
                     f"Expected table '{name}' in schema but it was not found under"
                     f" the specified schema path '{schema_path}'."
                 )
-            if enabled and table is not None and not issubclass(table, base_class):
+            if not issubclass(table, base_class):
                 raise ValueError(
                     f"Table '{name}' must be a subclass of '{base_class.__name__}'"
                     f" but got instance of '{table}'. Make sure that you import"
-                    " and implement `BaseUser`, `AuthSession`, `AuthRefreshToken`,"
-                    " tables and optionally the`AuthMagicLink` table and include "
-                    " them in one of the schema modules."
+                    " and implement `BaseUser` and `AuthSession`"
+                    " tables and include them in one of the schema modules."
                 )
-            tables.append(table if table is not None else base_class)
+            tables.append(table)
 
-        (
-            user_table,
-            auth_session_table,
-            auth_refresh_token_table,
-            auth_magic_link_table,
-        ) = tables
+        user_table, auth_session_table = tables
 
         self._config: AuthConfig = config
         self._user_table: type[UserT] = user_table
         self._auth_session_table: type[AuthSession] = auth_session_table
-        self._auth_refresh_token_table: type[AuthRefreshToken] = (
-            auth_refresh_token_table
-        )
-        self._auth_magic_link_table: type[AuthMagicLink] = auth_magic_link_table
         self._hasher: PasswordHasher = Argon2Hasher()
         self._email_client: EmailClient | None = None
         self._oauth_providers: dict[AuthProvider, BaseOAuthProvider] = {}
         self._database_client: DatabaseEngine | None = None
-        self._cache_store: KVClient | None = None
+        self._kv_client: KVClient | None = None
 
         if self._config.google_oauth is not None:
             self._oauth_providers[AuthProvider.GOOGLE] = GoogleProvider(
@@ -106,12 +88,9 @@ class AuthClient[UserT: BaseUser]:
                 self._config.github_oauth
             )
 
-    def set_db(
-        self, db: DatabaseEngine | None, replica_db: DatabaseEngine | None = None
-    ) -> None:
+    def set_db(self, db: DatabaseEngine | None) -> None:
         """Set the database client."""
         self._database_client = db
-        self._replica_database_client = replica_db
 
     def _db(self) -> DatabaseEngine:
         """Get the database client."""
@@ -119,15 +98,18 @@ class AuthClient[UserT: BaseUser]:
             raise ValueError("Database client not set. Must call `set_db()` first.")
         return self._database_client
 
-    def _maybe_replica_db(self) -> DatabaseEngine:
-        """Get the replica database client."""
-        if self._replica_database_client is not None:
-            return self._replica_database_client
-        return self._db()
+    def set_kv(self, kv: KVClient | None) -> None:
+        """Set the KV store for caching and token storage."""
+        self._kv_client = kv
 
-    def set_cache(self, store: KVClient | None) -> None:
-        """Set the KV store for session and user caching."""
-        self._cache_store = store
+    def _kv(self) -> KVClient:
+        """Get the KV client. Required for token operations."""
+        if self._kv_client is None:
+            raise ValueError(
+                "KV client not set. Token operations (recovery, confirmation, "
+                "magic link) require a KV store. Call `set_kv()` first."
+            )
+        return self._kv_client
 
     def set_email(self, email_client: EmailClient | None) -> None:
         """Set the email client."""
@@ -139,54 +121,56 @@ class AuthClient[UserT: BaseUser]:
             raise ValueError("Email client not set. Must call `set_email()` first.")
         return self._email_client
 
+    async def _invalidate_user_cache(self, user_id: str | uuid.UUID) -> None:
+        """Invalidate cached user data in KV store."""
+        if self._kv_client is not None:
+            await self._kv_client.delete(
+                f"{self._config.cache_prefix}:user:{user_id}".encode()
+            )
+
     # =========================================================================
     # User Management
     # =========================================================================
 
     async def get_user(
-        self,
-        user_id: str | uuid.UUID | None = None,
-        *,
-        email: str | None = None,
-        use_primary: bool = False,
+        self, user_id: str | uuid.UUID | None = None, *, email: str | None = None
     ) -> UserT | None:
         """Get a user by their ID or email address."""
-        # Default to replica for fetching users to reduce load on primary.
-        # This endpoint tends to be called more frequently than others.
-        db = self._db() if use_primary else self._maybe_replica_db()
 
         if user_id is not None and email is not None:
             raise ValueError("Cannot get a user by both ID and email address.")
         elif user_id is not None:
             # Try cache for ID lookups
-            cache_key = f"derp:user:{user_id}".encode()
-            if self._cache_store is not None:
-                cached = await self._cache_store.get(cache_key)
+            cache_key = f"{self._config.cache_prefix}:user:{user_id}".encode()
+            if self._kv_client is not None:
+                cached = await self._kv_client.get(cache_key)
                 if cached is not None:
                     return self._user_table.model_validate_json(cached)
 
             result = await (
-                db.select(self._user_table)
+                self._db()
+                .select(self._user_table)
                 .where(self._user_table.c.id == str(user_id))
-                .execute()
+                .first_or_none()
             )
 
-            if self._config.use_kv_cache and result and self._cache_store is not None:
-                await self._cache_store.set(
+            if self._config.use_kv_cache and result and self._kv_client is not None:
+                await self._kv_client.set(
                     cache_key,
-                    result[0].model_dump_json().encode(),
+                    result.model_dump_json().encode(),
                     ttl=self._config.cache_user_ttl_seconds,
                 )
         elif email is not None:
             result = await (
-                db.select(self._user_table)
+                self._db()
+                .select(self._user_table)
                 .where(self._user_table.c.email == email.lower())
-                .execute()
+                .first_or_none()
             )
         else:
             raise ValueError("Must provide either ID or email address.")
 
-        return result[0] if result else None
+        return result
 
     async def update_user(
         self,
@@ -220,9 +204,7 @@ class AuthClient[UserT: BaseUser]:
             .execute()
         )
 
-        # Invalidate user cache
-        if self._cache_store is not None:
-            await self._cache_store.delete(f"derp:user:{user_id}".encode())
+        await self._invalidate_user_cache(user_id)
 
         return result
 
@@ -269,20 +251,10 @@ class AuthClient[UserT: BaseUser]:
             raise UserAlreadyExistsError()
 
         # Create user
-        hashed_password = self._hasher.hash(password)
+        hashed_password = await self._hasher.async_hash(password)
         now = datetime.now(UTC)
 
-        # Generate confirmation token if email confirmation is enabled
-        confirmation_token = None
-        confirmation_sent_at = None
-        email_confirmed_at = None
-
-        if self._config.enable_confirmation:
-            confirmation_token = generate_secure_token()
-            confirmation_sent_at = now
-        else:
-            # Auto-confirm email if confirmation not required
-            email_confirmed_at = now
+        email_confirmed_at = None if self._config.enable_confirmation else now
 
         vals: dict[str, Any] = {}
         for key, value in kwargs.items():
@@ -299,8 +271,6 @@ class AuthClient[UserT: BaseUser]:
                 encrypted_password=hashed_password,
                 provider=AuthProvider.EMAIL,
                 email_confirmed_at=email_confirmed_at,
-                confirmation_token=confirmation_token,
-                confirmation_sent_at=confirmation_sent_at,
                 created_at=now,
                 updated_at=now,
                 last_sign_in_at=now,
@@ -310,8 +280,16 @@ class AuthClient[UserT: BaseUser]:
             .execute()
         )
 
-        # Send confirmation email if needed
-        if self._config.enable_confirmation and confirmation_token:
+        # Store confirmation token in KV and send email if needed
+        if self._config.enable_confirmation:
+            confirmation_token = generate_secure_token()
+            ttl = self._config.confirmation_token_expire_hours * 3600
+            await self._kv().set(
+                f"{self._config.cache_prefix}:confirmation:{confirmation_token}".encode(),
+                str(user.id).encode(),
+                ttl=ttl,
+            )
+
             await self._email().send_email(
                 subject=confirmation_subject,
                 to_email=email.lower(),
@@ -353,7 +331,7 @@ class AuthClient[UserT: BaseUser]:
         if not user.encrypted_password:
             raise InvalidCredentialsError()
 
-        if not self._hasher.verify(password, user.encrypted_password):
+        if not await self._hasher.async_verify(password, user.encrypted_password):
             raise InvalidCredentialsError()
 
         if not user.is_active:
@@ -362,26 +340,22 @@ class AuthClient[UserT: BaseUser]:
         if self._config.enable_confirmation and not user.email_confirmed_at:
             raise EmailNotConfirmedError()
 
-        # Update last sign in
+        # Update last sign in (and rehash password if needed) in a single write
         now = datetime.now(UTC)
+        updates: dict[str, Any] = {"last_sign_in_at": now, "updated_at": now}
+
+        if self._hasher.needs_rehash(user.encrypted_password):
+            updates["encrypted_password"] = await self._hasher.async_hash(password)
+
         await (
             self._db()
             .update(self._user_table)
-            .set(last_sign_in_at=now, updated_at=now)
+            .set(**updates)
             .where(self._user_table.c.id == user.id)
             .execute()
         )
 
-        # Rehash password if needed
-        if self._hasher.needs_rehash(user.encrypted_password):
-            new_hash = self._hasher.hash(password)
-            await (
-                self._db()
-                .update(self._user_table)
-                .set(encrypted_password=new_hash)
-                .where(self._user_table.c.id == user.id)
-                .execute()
-            )
+        await self._invalidate_user_cache(user.id)
 
         token_pair = await self._create_session(
             user.id,
@@ -425,21 +399,13 @@ class AuthClient[UserT: BaseUser]:
                 .execute()
             )
 
-        # Create magic link
+        # Store magic link token in KV
         token = generate_secure_token()
-        expires_at = datetime.now(UTC) + timedelta(
-            minutes=self._config.magic_link_expire_minutes
-        )
-
-        await (
-            self._db()
-            .insert(self._auth_magic_link_table)
-            .values(
-                email=email.lower(),
-                token=token,
-                expires_at=expires_at,
-            )
-            .execute()
+        ttl = self._config.magic_link_expire_minutes * 60
+        await self._kv().set(
+            f"{self._config.cache_prefix}:magic_link:{token}".encode(),
+            email.lower().encode(),
+            ttl=ttl,
         )
 
         # Send email
@@ -463,41 +429,21 @@ class AuthClient[UserT: BaseUser]:
             Tuple of (user, token_pair)
 
         Raises:
-            MagicLinkUsedError: If the magic link was already used
-            MagicLinkExpiredError: If the magic link has expired
+            MagicLinkExpiredError: If the magic link has expired or is invalid
             UserNotFoundError: If the user doesn't exist
             UserNotActiveError: If the user is disabled
         """
-        # Find magic link
-        result = await (
-            self._db()
-            .select(self._auth_magic_link_table)
-            .where(self._auth_magic_link_table.c.token == token)
-            .execute()
-        )
+        kv_key = f"{self._config.cache_prefix}:magic_link:{token}".encode()
+        email_bytes = await self._kv().get(kv_key)
 
-        if not result:
-            raise MagicLinkExpiredError("Invalid magic link")
-
-        magic_link = result[0]
-
-        if magic_link.used:
-            raise MagicLinkUsedError()
-
-        if magic_link.expires_at < datetime.now(UTC):
+        if email_bytes is None:
             raise MagicLinkExpiredError()
 
-        # Mark as used
-        await (
-            self._db()
-            .update(self._auth_magic_link_table)
-            .set(used=True)
-            .where(self._auth_magic_link_table.c.id == magic_link.id)
-            .execute()
-        )
+        # Delete on use (single use)
+        await self._kv().delete(kv_key)
 
-        # Get user
-        user = await self.get_user(email=magic_link.email)
+        email = email_bytes.decode()
+        user = await self.get_user(email=email)
         if not user:
             raise UserNotFoundError()
 
@@ -521,6 +467,8 @@ class AuthClient[UserT: BaseUser]:
             .where(self._user_table.c.id == user.id)
             .execute()
         )
+
+        await self._invalidate_user_cache(user.id)
 
         token_pair = await self._create_session(
             user.id,
@@ -618,6 +566,8 @@ class AuthClient[UserT: BaseUser]:
                 .where(self._user_table.c.id == user.id)
                 .execute()
             )
+
+            await self._invalidate_user_cache(user.id)
         else:
             user = await (
                 self._db()
@@ -657,36 +607,26 @@ class AuthClient[UserT: BaseUser]:
         """Create a new session and return tokens."""
         now = datetime.now(UTC)
         not_after = now + timedelta(days=self._config.session_expire_days)
+        refresh_token = generate_secure_token()
 
-        # Create session
         session = await (
             self._db()
             .insert(self._auth_session_table)
             .values(
                 user_id=user_id,
+                token=refresh_token,
                 user_agent=user_agent,
                 ip_address=ip_address,
-                created_at=now,
                 not_after=not_after,
+                created_at=now,
             )
             .returning(self._auth_session_table)
             .execute()
         )
 
-        # Create refresh token
-        refresh_token = generate_secure_token()
-        await (
-            self._db()
-            .insert(self._auth_refresh_token_table)
-            .values(
-                session_id=session.id,
-                token=refresh_token,
-                created_at=now,
-            )
-            .execute()
+        return create_token_pair(
+            self._config.jwt, user_id, session.session_id, refresh_token
         )
-
-        return create_token_pair(self._config.jwt, user_id, session.id, refresh_token)
 
     async def refresh_token(self, refresh_token: str) -> TokenPair:
         """Refresh an access token using a refresh token.
@@ -701,11 +641,10 @@ class AuthClient[UserT: BaseUser]:
             RefreshTokenReusedError: If token reuse detected (potential theft)
             SessionExpiredError: If session has expired
         """
-        # Find refresh token
         token_record = await (
             self._db()
-            .select(self._auth_refresh_token_table)
-            .where(self._auth_refresh_token_table.c.token == refresh_token)
+            .select(self._auth_session_table)
+            .where(self._auth_session_table.c.token == refresh_token)
             .first_or_none()
         )
 
@@ -713,129 +652,123 @@ class AuthClient[UserT: BaseUser]:
             raise RefreshTokenRevokedError("Invalid refresh token")
 
         if token_record.revoked:
-            # Token was already used - potential theft, revoke all tokens for session
+            # Token reuse detected — potential theft, revoke all for session.
             await (
                 self._db()
-                .update(self._auth_refresh_token_table)
+                .update(self._auth_session_table)
                 .set(revoked=True)
-                .where(
-                    self._auth_refresh_token_table.c.session_id
-                    == token_record.session_id
+                .where(self._auth_session_table.c.session_id == token_record.session_id)
+                .execute()
+            )
+
+            # Invalidate session cache so revoked sessions aren't served from cache
+            if self._kv_client is not None:
+                await self._kv_client.delete(
+                    f"{self._config.cache_prefix}:session:{token_record.session_id}".encode()
+                )
+
+            raise RefreshTokenReusedError()
+
+        if token_record.not_after < datetime.now(UTC):
+            raise SessionExpiredError()
+
+        # Rotate: revoke old + insert new atomically
+        async with self._db().transaction() as txn:
+            await (
+                txn.update(self._auth_session_table)
+                .set(revoked=True)
+                .where(self._auth_session_table.c.id == token_record.id)
+                .execute()
+            )
+
+            new_refresh_token = generate_secure_token()
+            await (
+                txn.insert(self._auth_session_table)
+                .values(
+                    user_id=token_record.user_id,
+                    session_id=token_record.session_id,
+                    token=new_refresh_token,
+                    user_agent=token_record.user_agent,
+                    ip_address=token_record.ip_address,
+                    not_after=token_record.not_after,
+                    created_at=datetime.now(UTC),
                 )
                 .execute()
             )
-            raise RefreshTokenReusedError()
 
-        # Get session
-        session_result = await (
-            self._db()
-            .select(self._auth_session_table)
-            .where(self._auth_session_table.c.id == token_record.session_id)
-            .execute()
-        )
-
-        if not session_result:
-            raise SessionNotFoundError()
-
-        session = session_result[0]
-
-        if session.not_after < datetime.now(UTC):
-            raise SessionExpiredError()
-
-        # Revoke old token
-        await (
-            self._db()
-            .update(self._auth_refresh_token_table)
-            .set(revoked=True)
-            .where(self._auth_refresh_token_table.c.id == token_record.id)
-            .execute()
-        )
-
-        # Create new refresh token (rotation)
-        new_refresh_token = generate_secure_token()
-        await (
-            self._db()
-            .insert(self._auth_refresh_token_table)
-            .values(
-                session_id=session.id,
-                token=new_refresh_token,
-                parent=refresh_token,  # Track lineage for reuse detection
-                created_at=datetime.now(UTC),
+        # Invalidate stale session cache so next validate_session re-fetches
+        if self._kv_client is not None:
+            await self._kv_client.delete(
+                f"{self._config.cache_prefix}:session:{token_record.session_id}".encode()
             )
-            .execute()
-        )
 
         return create_token_pair(
-            self._config.jwt, session.user_id, session.id, new_refresh_token
+            self._config.jwt,
+            token_record.user_id,
+            token_record.session_id,
+            new_refresh_token,
         )
 
     async def validate_session(self, token: str) -> AuthSession | None:
         """Validate a session is active and not expired."""
         payload = decode_token(self._config.jwt, token)
         session_id = str(payload.session_id)
-        cache_key = f"derp:session:{session_id}".encode()
+        cache_key = f"{self._config.cache_prefix}:session:{session_id}".encode()
 
         # Try cache first
-        if self._cache_store is not None:
-            cached = await self._cache_store.get(cache_key)
+        if self._kv_client is not None:
+            cached = await self._kv_client.get(cache_key)
             if cached is not None:
                 session = self._auth_session_table.model_validate_json(cached)
                 if session.not_after < datetime.now(UTC):
                     return None
                 return session
 
-        # Cache miss — query DB
+        # Cache miss — find latest non-revoked token for this session
         result = await (
             self._db()
             .select(self._auth_session_table)
-            .where(self._auth_session_table.c.id == session_id)
-            .execute()
+            .where(
+                (self._auth_session_table.c.session_id == session_id)
+                & ~self._auth_session_table.c.revoked
+            )
+            .first_or_none()
         )
 
         if not result:
             return None
 
-        [session] = result
-
-        if session.not_after < datetime.now(UTC):
+        if result.not_after < datetime.now(UTC):
             return None
 
         # Populate cache with TTL capped at session expiry
-        if self._cache_store is not None and self._config.use_kv_cache:
-            remaining = (session.not_after - datetime.now(UTC)).total_seconds()
+        if self._kv_client is not None and self._config.use_kv_cache:
+            remaining = (result.not_after - datetime.now(UTC)).total_seconds()
             ttl = min(self._config.cache_session_ttl_seconds, remaining)
             if ttl > 0:
-                await self._cache_store.set(
-                    cache_key, session.model_dump_json().encode(), ttl=ttl
+                await self._kv_client.set(
+                    cache_key, result.model_dump_json().encode(), ttl=ttl
                 )
 
-        return session
+        return result
 
     async def sign_out(self, session_id: str | uuid.UUID) -> None:
-        """Sign out and revoke a session."""
-        # Revoke all refresh tokens for this session
-        await (
-            self._db()
-            .update(self._auth_refresh_token_table)
-            .set(revoked=True)
-            .where(self._auth_refresh_token_table.c.session_id == str(session_id))
-            .execute()
-        )
-
-        # Delete session
+        """Sign out by deleting all tokens for a session."""
         await (
             self._db()
             .delete(self._auth_session_table)
-            .where(self._auth_session_table.c.id == str(session_id))
+            .where(self._auth_session_table.c.session_id == str(session_id))
             .execute()
         )
 
         # Invalidate session cache
-        if self._cache_store is not None:
-            await self._cache_store.delete(f"derp:session:{session_id}".encode())
+        if self._kv_client is not None:
+            await self._kv_client.delete(
+                f"{self._config.cache_prefix}:session:{session_id}".encode()
+            )
 
     async def sign_out_all(self, user_id: str | uuid.UUID) -> None:
-        """Sign out all sessions for a user."""
+        """Sign out all sessions for a user by deleting all tokens."""
         sessions = await (
             self._db()
             .select(self._auth_session_table)
@@ -846,29 +779,22 @@ class AuthClient[UserT: BaseUser]:
         if not sessions:
             return
 
-        session_ids = [session.id for session in sessions]
+        session_ids = {str(s.session_id) for s in sessions}
 
-        # Bulk revoke all refresh tokens
-        await (
-            self._db()
-            .update(self._auth_refresh_token_table)
-            .set(revoked=True)
-            .where(self._auth_refresh_token_table.c.session_id.in_(session_ids))
-            .execute()
-        )
-
-        # Bulk delete all sessions
         await (
             self._db()
             .delete(self._auth_session_table)
-            .where(self._auth_session_table.c.id.in_(session_ids))
+            .where(self._auth_session_table.c.user_id == str(user_id))
             .execute()
         )
 
         # Invalidate all session caches
-        if self._cache_store is not None:
-            cache_keys = [f"derp:session:{sid}".encode() for sid in session_ids]
-            await self._cache_store.delete_many(cache_keys)
+        if self._kv_client is not None:
+            cache_keys = [
+                f"{self._config.cache_prefix}:session:{sid}".encode()
+                for sid in session_ids
+            ]
+            await self._kv_client.delete_many(cache_keys)
 
     # =========================================================================
     # Password Recovery
@@ -893,16 +819,13 @@ class AuthClient[UserT: BaseUser]:
         if not user.is_active:
             return  # Don't reveal user is disabled
 
-        # Generate recovery token
+        # Store recovery token in KV
         token = generate_secure_token()
-        now = datetime.now(UTC)
-
-        await (
-            self._db()
-            .update(self._user_table)
-            .set(recovery_token=token, recovery_sent_at=now, updated_at=now)
-            .where(self._user_table.c.id == user.id)
-            .execute()
+        ttl = self._config.recovery_token_expire_minutes * 60
+        await self._kv().set(
+            f"{self._config.cache_prefix}:recovery:{token}".encode(),
+            str(user.id).encode(),
+            ttl=ttl,
         )
 
         await self._email().send_email(
@@ -920,8 +843,7 @@ class AuthClient[UserT: BaseUser]:
             Updated user
 
         Raises:
-            RecoveryTokenInvalidError: If token is invalid
-            RecoveryTokenExpiredError: If token has expired
+            RecoveryTokenInvalidError: If token is invalid or expired
             PasswordValidationError: If new password doesn't meet requirements
         """
         # Validate password
@@ -929,44 +851,34 @@ class AuthClient[UserT: BaseUser]:
         if not validation.valid:
             raise PasswordValidationError("; ".join(validation.errors))
 
-        # Find user with this token
-        result = await (
-            self._db()
-            .select(self._user_table)
-            .where(self._user_table.c.recovery_token == token)
-            .execute()
-        )
+        # Look up recovery token in KV
+        kv_key = f"{self._config.cache_prefix}:recovery:{token}".encode()
+        user_id_bytes = await self._kv().get(kv_key)
 
-        if not result:
+        if user_id_bytes is None:
             raise RecoveryTokenInvalidError()
 
-        user = result[0]
+        # Delete token (single use)
+        await self._kv().delete(kv_key)
 
-        # Check expiry
-        if user.recovery_sent_at:
-            expires_at = user.recovery_sent_at + timedelta(
-                minutes=self._config.recovery_token_expire_minutes
-            )
-            if datetime.now(UTC) > expires_at:
-                raise RecoveryTokenExpiredError()
+        user = await self.get_user(user_id=user_id_bytes.decode())
+        if user is None:
+            raise RecoveryTokenInvalidError()
 
-        # Update password and clear recovery token
-        hashed_password = self._hasher.hash(new_password)
+        # Update password
+        hashed_password = await self._hasher.async_hash(new_password)
         now = datetime.now(UTC)
 
         [result] = await (
             self._db()
             .update(self._user_table)
-            .set(
-                encrypted_password=hashed_password,
-                recovery_token=None,
-                recovery_sent_at=None,
-                updated_at=now,
-            )
+            .set(encrypted_password=hashed_password, updated_at=now)
             .where(self._user_table.c.id == user.id)
             .returning(self._user_table)
             .execute()
         )
+
+        await self._invalidate_user_cache(user.id)
 
         # Sign out all sessions (security measure)
         await self.sign_out_all(user.id)
@@ -984,45 +896,33 @@ class AuthClient[UserT: BaseUser]:
             Updated user
 
         Raises:
-            ConfirmationTokenInvalidError: If token is invalid
-            ConfirmationTokenExpiredError: If token has expired
+            ConfirmationTokenInvalidError: If token is invalid or expired
         """
-        # Find user with this token
-        result = await (
-            self._db()
-            .select(self._user_table)
-            .where(self._user_table.c.confirmation_token == token)
-            .execute()
-        )
+        kv_key = f"{self._config.cache_prefix}:confirmation:{token}".encode()
+        user_id_bytes = await self._kv().get(kv_key)
 
-        if not result:
+        if user_id_bytes is None:
             raise ConfirmationTokenInvalidError()
 
-        user = result[0]
+        # Delete token (single use)
+        await self._kv().delete(kv_key)
 
-        # Check expiry
-        if user.confirmation_sent_at:
-            expires_at = user.confirmation_sent_at + timedelta(
-                hours=self._config.confirmation_token_expire_hours
-            )
-            if datetime.now(UTC) > expires_at:
-                raise ConfirmationTokenExpiredError()
+        user = await self.get_user(user_id=user_id_bytes.decode())
+        if user is None:
+            raise ConfirmationTokenInvalidError()
 
         # Confirm email
         now = datetime.now(UTC)
         [result] = await (
             self._db()
             .update(self._user_table)
-            .set(
-                email_confirmed_at=now,
-                confirmation_token=None,
-                confirmation_sent_at=None,
-                updated_at=now,
-            )
+            .set(email_confirmed_at=now, updated_at=now)
             .where(self._user_table.c.id == user.id)
             .returning(self._user_table)
             .execute()
         )
+
+        await self._invalidate_user_cache(user.id)
 
         return result
 
@@ -1045,20 +945,13 @@ class AuthClient[UserT: BaseUser]:
         if user.email_confirmed_at:
             return  # Already confirmed
 
-        # Generate new token
+        # Store new confirmation token in KV
         token = generate_secure_token()
-        now = datetime.now(UTC)
-
-        await (
-            self._db()
-            .update(self._user_table)
-            .set(
-                confirmation_token=token,
-                confirmation_sent_at=now,
-                updated_at=now,
-            )
-            .where(self._user_table.c.id == user.id)
-            .execute()
+        ttl = self._config.confirmation_token_expire_hours * 3600
+        await self._kv().set(
+            f"{self._config.cache_prefix}:confirmation:{token}".encode(),
+            str(user.id).encode(),
+            ttl=ttl,
         )
 
         await self._email().send_email(

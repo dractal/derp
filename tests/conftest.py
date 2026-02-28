@@ -168,12 +168,9 @@ def temp_config_file(
 db_url = "$TEST_DATABASE_URL"
 schema_path = "{temp_schema_file}"
 
-[database.migrations]
-dir = "{temp_migrations_dir}"
-
-[database.introspect]
-schemas = ["public"]
-exclude_tables = ["_derp_migrations"]
+migrations_dir = "{temp_migrations_dir}"
+introspect_schemas = ["public"]
+introspect_exclude_tables = ["_derp_migrations"]
 '''
     config_path = temp_dir / "derp.toml"
     config_path.write_text(config_content)

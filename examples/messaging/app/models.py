@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from derp.auth.models import AuthMagicLink, AuthRefreshToken, AuthSession, BaseUser
+from derp.auth.models import AuthSession, BaseUser
 from derp.orm import Field, Table
 from derp.orm.fields import (
     UUID,
@@ -27,14 +27,6 @@ class User(BaseUser, table="users"):
 
 class AuthSession(AuthSession, table="auth_sessions"):
     """Authentication session table."""
-
-
-class AuthRefreshToken(AuthRefreshToken, table="auth_refresh_tokens"):
-    """Refresh token table for token rotation."""
-
-
-class AuthMagicLink(AuthMagicLink, table="auth_magic_links"):
-    """Magic link table for passwordless authentication."""
 
 
 class Conversation(Table, table="conversations"):

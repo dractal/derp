@@ -325,8 +325,8 @@ def _make_mock_derp() -> MagicMock:
     mock._storage = None
     mock._email = None
     mock.config = MagicMock()
-    mock.config.database.introspect.schemas = ("public",)
-    mock.config.database.introspect.exclude_tables = ("derp_migrations",)
+    mock.config.database.introspect_schemas = ("public",)
+    mock.config.database.introspect_exclude_tables = ("derp_migrations",)
     mock.config.email = None
     mock.config.model_dump.return_value = {"database": {"db_url": "test"}}
     return mock

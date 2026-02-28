@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from derp.auth.models import AuthMagicLink, AuthRefreshToken, AuthSession, BaseUser
+from derp.auth.models import AuthSession, BaseUser
 from derp.orm import Table
 from derp.orm.fields import (
     UUID,
@@ -33,15 +33,7 @@ class User(BaseUser, table="users"):
     display_name: str | None = Field(Varchar(255), nullable=True)
 
 
-class AuthRefreshToken(AuthRefreshToken, table="auth_refresh_tokens"):
-    pass
-
-
 class AuthSession(AuthSession, table="auth_sessions"):
-    pass
-
-
-class AuthMagicLink(AuthMagicLink, table="auth_magic_links"):
     pass
 
 

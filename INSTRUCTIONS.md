@@ -26,9 +26,7 @@ Run `derp init` or create `derp.toml` manually in the project root:
 [database]
 db_url = "$DATABASE_URL"         # Environment variable, NOT the actual URL
 schema_path = "src/schema.py"    # Path to your schema file(s)
-
-[database.migrations]
-dir = "migrations"
+migrations_dir = "migrations"
 ```
 
 **Important**: Database URLs are NEVER stored directly in config. Use `$ENV_VAR` syntax to reference environment variables. Create a `.env` file for local development:
@@ -487,27 +485,21 @@ refresh_token_expire_days = 7
 ### Define user and auth tables
 
 ```python
-from derp.auth.models import AuthMagicLink, AuthRefreshToken, AuthSession, BaseUser
+from derp.auth.models import AuthSession, BaseUser
 from derp.orm import Field, Table
 from derp.orm.fields import Varchar, Text
 
 
 class User(BaseUser, table="users"):
     # BaseUser provides: id, email, encrypted_password, provider,
-    # is_active, is_superuser, email_confirmed_at, recovery_token,
-    # confirmation_token, created_at, updated_at, last_sign_in_at
+    # provider_id, is_active, is_superuser, email_confirmed_at,
+    # created_at, updated_at, last_sign_in_at
     username: str | None = Field(Varchar(100), nullable=True)
     bio: str | None = Field(Text(), nullable=True)
 
 
-# These are required for auth to function
+# Required for auth to function
 class AuthSession(AuthSession, table="auth_sessions"):
-    pass
-
-class AuthRefreshToken(AuthRefreshToken, table="auth_refresh_tokens"):
-    pass
-
-class AuthMagicLink(AuthMagicLink, table="auth_magic_links"):
     pass
 ```
 

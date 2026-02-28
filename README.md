@@ -212,9 +212,7 @@ async with derp:
 db_url = "$DATABASE_URL"
 schema_path = "src/schema.py"
 # replica_url = "$REPLICA_DATABASE_URL"
-
-[database.migrations]
-dir = "./migrations"
+migrations_dir = "./migrations"
 
 # [storage]
 # endpoint_url = "http://localhost:9000"

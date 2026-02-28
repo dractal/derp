@@ -30,7 +30,7 @@ class TestInitCommand:
 
         content = config_path.read_text()
         assert "[database]" in content
-        assert "[database.migrations]" in content
+        assert "migrations_dir" in content
         assert "[payments]" in content
         assert "STRIPE_SECRET_KEY" in content
 

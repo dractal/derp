@@ -6,19 +6,16 @@ from derp.auth.client import AuthClient
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     AuthError,
-    ConfirmationTokenExpiredError,
     ConfirmationTokenInvalidError,
     EmailNotConfirmedError,
     EmailSendError,
     InvalidCredentialsError,
     InvalidTokenError,
     MagicLinkExpiredError,
-    MagicLinkUsedError,
     OAuthError,
     OAuthProviderError,
     OAuthStateError,
     PasswordValidationError,
-    RecoveryTokenExpiredError,
     RecoveryTokenInvalidError,
     RefreshTokenReusedError,
     RefreshTokenRevokedError,
@@ -32,9 +29,7 @@ from derp.auth.exceptions import (
 )
 from derp.auth.jwt import TokenPair, TokenPayload
 from derp.auth.models import (
-    AuthMagicLink,
     AuthProvider,
-    AuthRefreshToken,
     AuthSession,
     BaseUser,
 )
@@ -69,19 +64,16 @@ __all__ = [
     "PasswordConfig",
     # Exceptions
     "AuthError",
-    "ConfirmationTokenExpiredError",
     "ConfirmationTokenInvalidError",
     "EmailNotConfirmedError",
     "EmailSendError",
     "InvalidCredentialsError",
     "InvalidTokenError",
     "MagicLinkExpiredError",
-    "MagicLinkUsedError",
     "OAuthError",
     "OAuthProviderError",
     "OAuthStateError",
     "PasswordValidationError",
-    "RecoveryTokenExpiredError",
     "RecoveryTokenInvalidError",
     "RefreshTokenRevokedError",
     "RefreshTokenReusedError",
@@ -97,9 +89,7 @@ __all__ = [
     "TokenPair",
     "TokenPayload",
     # Models
-    "AuthMagicLink",
     "AuthProvider",
-    "AuthRefreshToken",
     "AuthSession",
     "BaseUser",
     # Password

@@ -143,6 +143,7 @@ class Table(BaseModel, metaclass=TableMeta):
     __table_name__: ClassVar[str]
     __explicit_table__: ClassVar[bool]
     __columns__: ClassVar[dict[str, FieldInfo[Any]]]
+    __indexes__: ClassVar[list[tuple[str, ...]]]
     c: ClassVar[ColumnAccessor]
 
     model_config = {"from_attributes": True}
@@ -220,6 +221,13 @@ class Table(BaseModel, metaclass=TableMeta):
                     f"CREATE INDEX idx_{table_name}_{col_name} ON "
                     f"{table_name}({col_name});"
                 )
+
+        # Composite indexes from __indexes__
+        composite = getattr(cls, "__indexes__", [])
+        for cols in composite:
+            idx_name = "idx_" + table_name + "_" + "_".join(cols)
+            col_list = ", ".join(cols)
+            indexes.append(f"CREATE INDEX {idx_name} ON {table_name}({col_list});")
 
         all_defs = column_defs + constraints
         ddl = f"CREATE TABLE {table_name} (\n"

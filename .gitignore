@@ -15,3 +15,5 @@ src/derp/studio/ui/node_modules/
 src/derp/studio/ui/.next/
 src/derp/studio/ui/out/
 src/derp/studio/static/
+
+.DS_Store

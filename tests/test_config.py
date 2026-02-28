@@ -23,20 +23,16 @@ def test_env_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 [database]
 db_url = "$TEST_DATABASE_URL"
 schema_path = "src/schema.py"
-
-[database.migrations]
-dir = "./migrations"
-
-[database.introspect]
-schemas = ["public"]
+migrations_dir = "./migrations"
+introspect_schemas = ["public"]
 """,
     )
 
     config = DerpConfig.load(config_path)
     assert config.database.db_url == "postgresql://example"
     assert config.database.schema_path == "src/schema.py"
-    assert config.database.migrations.dir == "./migrations"
-    assert config.database.introspect.schemas == ["public"]
+    assert config.database.migrations_dir == "./migrations"
+    assert config.database.introspect_schemas == ["public"]
     assert config.auth is None
     assert config.storage is None
     assert config.payments is None
@@ -49,9 +45,7 @@ def test_missing_env_raises(tmp_path: Path) -> None:
         """
 [database]
 db_url = "$MISSING_DATABASE_URL"
-
-[database.migrations]
-dir = "./migrations"
+schema_path = "src/schema.py"
 """,
     )
 
@@ -71,12 +65,6 @@ def test_auth_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 [database]
 db_url = "$TEST_DATABASE_URL"
 schema_path = "src/schema.py"
-
-[database.migrations]
-dir = "./migrations"
-
-[database.introspect]
-schemas = ["public"]
 
 [auth]
 user_table_name = "users"
@@ -111,9 +99,6 @@ def test_payments_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
 [database]
 db_url = "$TEST_DATABASE_URL"
 schema_path = "src/schema.py"
-
-[database.migrations]
-dir = "./migrations"
 
 [payments]
 api_key = "$STRIPE_SECRET_KEY"

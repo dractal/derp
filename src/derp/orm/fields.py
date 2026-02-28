@@ -339,8 +339,8 @@ class FieldInfo[T]:
         """Check if this field auto-increments."""
         return isinstance(self.field_type, Serial | BigSerial)
 
-    def __negate__(self) -> Any:
-        """Negate the field."""
+    def __invert__(self) -> Any:
+        """Bitwise NOT (~field) — produces ``field = FALSE`` for boolean columns."""
         return expressions.BinaryOp(
             self,
             expressions.ComparisonOperator.EQ,

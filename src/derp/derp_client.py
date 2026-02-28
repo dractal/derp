@@ -84,14 +84,10 @@ class DerpClient[UserT: BaseUser]:
         if self._payments is not None:
             await self._payments.connect()
         if self._auth is not None:
-            self._auth.set_db(self._db, replica_db=self._replica_db)
+            self._auth.set_db(self._db)
             self._auth.set_email(self._email)
-            if (
-                self._kv is not None
-                and self._config.auth
-                and self._config.auth.use_kv_cache
-            ):
-                self._auth.set_cache(self._kv)
+            if self._kv is not None:
+                self._auth.set_kv(self._kv)
         if self._kv is not None:
             self._db.set_cache(self._kv)
             if self._replica_db is not None:
@@ -113,9 +109,9 @@ class DerpClient[UserT: BaseUser]:
         if self._payments is not None:
             await self._payments.disconnect()
         if self._auth is not None:
-            self._auth.set_db(None, replica_db=None)
+            self._auth.set_db(None)
             self._auth.set_email(None)
-            self._auth.set_cache(None)
+            self._auth.set_kv(None)
         self._db.set_cache(None)
         if self._replica_db is not None:
             self._replica_db.set_cache(None)

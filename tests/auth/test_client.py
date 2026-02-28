@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -11,9 +10,7 @@ import pytest
 from derp.auth.exceptions import (
     InvalidCredentialsError,
     MagicLinkExpiredError,
-    MagicLinkUsedError,
     PasswordValidationError,
-    RecoveryTokenExpiredError,
     RecoveryTokenInvalidError,
     RefreshTokenReusedError,
     RefreshTokenRevokedError,
@@ -25,7 +22,8 @@ from derp.auth.exceptions import (
 from derp.auth.jwt import decode_token
 from derp.auth.password import generate_secure_token
 from derp.derp_client import DerpClient
-from tests.auth.conftest import User
+from derp.kv.valkey import ValkeyClient
+from tests.auth.conftest import User, get_confirmation_token
 
 
 class TestSignUp:
@@ -128,6 +126,7 @@ class TestSignIn:
     async def test_sign_in_success(
         self,
         derp: DerpClient[User],
+        kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test successful sign in."""
@@ -136,8 +135,11 @@ class TestSignIn:
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
-        assert user.confirmation_token is not None
-        await derp.auth.confirm_email(user.confirmation_token)
+        token = await get_confirmation_token(
+            kv_client, derp.auth._config.cache_prefix, str(user.id)
+        )
+        assert token is not None
+        await derp.auth.confirm_email(token)
 
         user, tokens = await derp.auth.sign_in_with_password(
             email="test@example.com", password="password123"
@@ -190,7 +192,10 @@ class TestSignIn:
             )
 
     async def test_sign_in_case_insensitive_email(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self,
+        derp: DerpClient[User],
+        kv_client: ValkeyClient,
+        mock_smtp: AsyncMock,
     ) -> None:
         """Test sign in with different email case."""
         user, _ = await derp.auth.sign_up(
@@ -198,8 +203,11 @@ class TestSignIn:
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
-        assert user.confirmation_token is not None
-        await derp.auth.confirm_email(user.confirmation_token)
+        token = await get_confirmation_token(
+            kv_client, derp.auth._config.cache_prefix, str(user.id)
+        )
+        assert token is not None
+        await derp.auth.confirm_email(token)
 
         user, _ = await derp.auth.sign_in_with_password(
             email="TEST@EXAMPLE.COM", password="password123"
@@ -273,31 +281,27 @@ class TestMagicLink:
             magic_link_url="http://localhost:3000/auth/magic-link",
         )
 
-        # Verify email was sent (mock)
-        # In real test, would verify the magic link record was created
-
     async def test_verify_magic_link(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self,
+        derp: DerpClient[User],
+        kv_client: ValkeyClient,
+        mock_smtp: AsyncMock,
     ) -> None:
         """Test verifying a magic link."""
         # Create user
-        user, _ = await derp.auth.sign_up(
+        await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
+        # Store magic link token in KV
         token = generate_secure_token()
-        expires_at = datetime.now(UTC) + timedelta(hours=1)
-
-        await (
-            derp.db.insert(derp.auth._auth_magic_link_table)
-            .values(
-                email="test@example.com",
-                token=token,
-                expires_at=expires_at,
-            )
-            .execute()
+        prefix = derp.auth._config.cache_prefix
+        await kv_client.set(
+            f"{prefix}:magic_link:{token}".encode(),
+            b"test@example.com",
+            ttl=3600,
         )
 
         # Verify magic link
@@ -309,54 +313,46 @@ class TestMagicLink:
     async def test_verify_expired_magic_link(
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
-        """Test verifying an expired magic link."""
+        """Test verifying an expired magic link (not found in KV)."""
         await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
+        # Token doesn't exist in KV = expired/invalid
         token = generate_secure_token()
-        expires_at = datetime.now(UTC) - timedelta(hours=1)  # Already expired
-
-        await (
-            derp.db.insert(derp.auth._auth_magic_link_table)
-            .values(
-                email="test@example.com",
-                token=token,
-                expires_at=expires_at,
-            )
-            .execute()
-        )
 
         with pytest.raises(MagicLinkExpiredError):
             await derp.auth.verify_magic_link(token)
 
-    async def test_verify_used_magic_link(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+    async def test_verify_magic_link_single_use(
+        self,
+        derp: DerpClient[User],
+        kv_client: ValkeyClient,
+        mock_smtp: AsyncMock,
     ) -> None:
-        """Test verifying a used magic link."""
+        """Test that a magic link can only be used once."""
         await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
+        # Store magic link token in KV
         token = generate_secure_token()
-        expires_at = datetime.now(UTC) + timedelta(hours=1)
-
-        await (
-            derp.db.insert(derp.auth._auth_magic_link_table)
-            .values(
-                email="test@example.com",
-                token=token,
-                expires_at=expires_at,
-                used=True,  # Already used
-            )
-            .execute()
+        prefix = derp.auth._config.cache_prefix
+        await kv_client.set(
+            f"{prefix}:magic_link:{token}".encode(),
+            b"test@example.com",
+            ttl=3600,
         )
 
-        with pytest.raises(MagicLinkUsedError):
+        # First use succeeds
+        await derp.auth.verify_magic_link(token)
+
+        # Second use fails (deleted from KV)
+        with pytest.raises(MagicLinkExpiredError):
             await derp.auth.verify_magic_link(token)
 
 
@@ -389,7 +385,10 @@ class TestPasswordRecovery:
         )
 
     async def test_reset_password(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self,
+        derp: DerpClient[User],
+        kv_client: ValkeyClient,
+        mock_smtp: AsyncMock,
     ) -> None:
         """Test resetting password."""
         user, _ = await derp.auth.sign_up(
@@ -397,18 +396,19 @@ class TestPasswordRecovery:
             password="oldpassword123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
-        assert user.confirmation_token is not None
-        await derp.auth.confirm_email(user.confirmation_token)
+        conf_token = await get_confirmation_token(
+            kv_client, derp.auth._config.cache_prefix, str(user.id)
+        )
+        assert conf_token is not None
+        await derp.auth.confirm_email(conf_token)
 
+        # Store recovery token in KV
         token = generate_secure_token()
-        await (
-            derp.db.update(User)
-            .set(
-                recovery_token=token,
-                recovery_sent_at=datetime.now(UTC),
-            )
-            .where(User.c.id == user.id)
-            .execute()
+        prefix = derp.auth._config.cache_prefix
+        await kv_client.set(
+            f"{prefix}:recovery:{token}".encode(),
+            str(user.id).encode(),
+            ttl=3600,
         )
 
         # Reset password
@@ -430,25 +430,17 @@ class TestPasswordRecovery:
     async def test_reset_password_expired_token(
         self, derp: DerpClient[User], mock_smtp: AsyncMock
     ) -> None:
-        """Test reset with expired token."""
-        user, _ = await derp.auth.sign_up(
+        """Test reset with expired token (not found in KV)."""
+        await derp.auth.sign_up(
             email="test@example.com",
             password="oldpassword123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
+        # Token doesn't exist in KV = expired/invalid
         token = generate_secure_token()
-        await (
-            derp.db.update(User)
-            .set(
-                recovery_token=token,
-                recovery_sent_at=datetime.now(UTC) - timedelta(hours=2),  # Expired
-            )
-            .where(User.c.id == user.id)
-            .execute()
-        )
 
-        with pytest.raises(RecoveryTokenExpiredError):
+        with pytest.raises(RecoveryTokenInvalidError):
             await derp.auth.reset_password(token, "newpassword123")
 
 
@@ -473,7 +465,10 @@ class TestSessionManagement:
             await derp.auth.refresh_token(tokens.refresh_token)
 
     async def test_sign_out_all(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self,
+        derp: DerpClient[User],
+        kv_client: ValkeyClient,
+        mock_smtp: AsyncMock,
     ) -> None:
         """Test signing out all sessions."""
         user, tokens1 = await derp.auth.sign_up(
@@ -481,8 +476,11 @@ class TestSessionManagement:
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
-        assert user.confirmation_token is not None
-        await derp.auth.confirm_email(user.confirmation_token)
+        token = await get_confirmation_token(
+            kv_client, derp.auth._config.cache_prefix, str(user.id)
+        )
+        assert token is not None
+        await derp.auth.confirm_email(token)
 
         # Create another session
         _, tokens2 = await derp.auth.sign_in_with_password(
@@ -505,7 +503,10 @@ class TestUserManagement:
     """Tests for user management."""
 
     async def test_get_user_by_id(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self,
+        derp: DerpClient[User],
+        kv_client: ValkeyClient,
+        mock_smtp: AsyncMock,
     ) -> None:
         """Test getting user by ID."""
         user, _ = await derp.auth.sign_up(
@@ -513,8 +514,11 @@ class TestUserManagement:
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
-        assert user.confirmation_token is not None
-        await derp.auth.confirm_email(user.confirmation_token)
+        token = await get_confirmation_token(
+            kv_client, derp.auth._config.cache_prefix, str(user.id)
+        )
+        assert token is not None
+        await derp.auth.confirm_email(token)
 
         found = await derp.auth.get_user(user.id)
 

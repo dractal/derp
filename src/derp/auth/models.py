@@ -15,7 +15,6 @@ from derp.orm.fields import (
     Field,
     ForeignKey,
     ForeignKeyAction,
-    Serial,
     Text,
     Timestamp,
     Varchar,
@@ -41,16 +40,9 @@ class BaseUser(abc.ABC, Table):
     )
     encrypted_password: str | None = Field(Text(), nullable=True)
     provider: AuthProvider = Field(Enum(AuthProvider))
+    provider_id: str | None = Field(Varchar(255), nullable=True)
     is_active: bool = Field(Boolean(), default=True)
     is_superuser: bool = Field(Boolean(), default=False)
-    recovery_token: str | None = Field(Varchar(255), nullable=True)
-    recovery_sent_at: datetime | None = Field(
-        Timestamp(with_timezone=True), nullable=True
-    )
-    confirmation_token: str | None = Field(Varchar(255), nullable=True)
-    confirmation_sent_at: datetime | None = Field(
-        Timestamp(with_timezone=True), nullable=True
-    )
     created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
     updated_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
     last_sign_in_at: datetime | None = Field(
@@ -59,7 +51,14 @@ class BaseUser(abc.ABC, Table):
 
 
 class AuthSession(Table):
-    """Authentication session table."""
+    """Authentication session table with integrated refresh tokens.
+
+    Each row represents a refresh token. Rows sharing the same ``session_id``
+    belong to the same logical session (one login event). Token rotation
+    inserts a new row and revokes the old one.
+    """
+
+    __indexes__ = [("session_id", "revoked")]
 
     id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
     user_id: uuid.UUID = Field(
@@ -67,33 +66,10 @@ class AuthSession(Table):
         foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
         index=True,
     )
-    user_agent: str | None = Field(Text(), nullable=True)
-    ip_address: str | None = Field(Varchar(45), nullable=True)  # IPv6 compatible
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
-    not_after: datetime = Field(Timestamp(with_timezone=True))
-
-
-class AuthRefreshToken(Table):
-    """Refresh token table for token rotation."""
-
-    id: int = Field(Serial(), primary_key=True)
-    session_id: uuid.UUID = Field(
-        UUID(),
-        foreign_key=ForeignKey("auth_sessions.id", on_delete=ForeignKeyAction.CASCADE),
-        index=True,
-    )
+    session_id: uuid.UUID = Field(UUID(), index=True, default="gen_random_uuid()")
     token: str = Field(Varchar(255), unique=True, index=True)
     revoked: bool = Field(Boolean(), default=False)
-    parent: str | None = Field(Varchar(255), nullable=True)  # For rotation detection
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
-
-
-class AuthMagicLink(Table):
-    """Magic link table for passwordless authentication."""
-
-    id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-    email: str = Field(Varchar(255), index=True)
-    token: str = Field(Varchar(255), unique=True, index=True)
-    used: bool = Field(Boolean(), default=False)
-    expires_at: datetime = Field(Timestamp(with_timezone=True))
+    user_agent: str | None = Field(Text(), nullable=True)
+    ip_address: str | None = Field(Varchar(45), nullable=True)  # IPv6 compatible
+    not_after: datetime = Field(Timestamp(with_timezone=True))
     created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")

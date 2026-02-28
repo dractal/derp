@@ -2,8 +2,7 @@
 db_url = "$DATABASE_URL"
 schema_path = "app/*"
 
-[database.migrations]
-dir = "migrations"
+migrations_dir = "migrations"
 
 [storage]
 endpoint_url = "$STORAGE_ENDPOINT_URL"

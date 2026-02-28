@@ -47,7 +47,7 @@ def pull(
         raise typer.Exit(1)
 
     db_url = config.database.db_url
-    migrations_dir = Path(config.database.migrations.dir)
+    migrations_dir = Path(config.database.migrations_dir)
 
     async def _pull() -> dict:
         pool = await asyncpg.create_pool(db_url, min_size=1, max_size=2)
@@ -55,8 +55,8 @@ def pull(
         try:
             introspector = PostgresIntrospector(pool)
             snapshot = await introspector.introspect(
-                schemas=config.database.introspect.schemas,
-                exclude_tables=config.database.introspect.exclude_tables,
+                schemas=config.database.introspect_schemas,
+                exclude_tables=config.database.introspect_exclude_tables,
             )
 
             return snapshot.model_dump(mode="json", by_alias=True)

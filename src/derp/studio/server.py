@@ -243,11 +243,10 @@ def create_app(
     @app.get("/api/database/tables")
     async def list_tables(derp: DerpClient = Depends(get_derp)) -> dict:
         """List all database tables with column info and row counts."""
-        introspect_cfg = derp.config.database.introspect
         introspector = PostgresIntrospector(derp.db.pool)
         snapshot = await introspector.introspect(
-            schemas=introspect_cfg.schemas,
-            exclude_tables=introspect_cfg.exclude_tables,
+            schemas=derp.config.database.introspect_schemas,
+            exclude_tables=derp.config.database.introspect_exclude_tables,
         )
         tables = []
         for table in snapshot.tables.values():
@@ -364,11 +363,10 @@ def create_app(
             raise HTTPException(status_code=400, detail="No rows specified")
 
         # Resolve primary key columns from introspection
-        introspect_cfg = derp.config.database.introspect
         introspector = PostgresIntrospector(derp.db.pool)
         snapshot = await introspector.introspect(
-            schemas=introspect_cfg.schemas,
-            exclude_tables=introspect_cfg.exclude_tables,
+            schemas=derp.config.database.introspect_schemas,
+            exclude_tables=derp.config.database.introspect_exclude_tables,
         )
         table_key = f"{schema}.{table}" if schema != "public" else table
         table_snapshot = snapshot.tables.get(table_key)
@@ -423,11 +421,10 @@ def create_app(
         if not values:
             raise HTTPException(status_code=400, detail="No values specified")
 
-        introspect_cfg = derp.config.database.introspect
         introspector = PostgresIntrospector(derp.db.pool)
         snapshot = await introspector.introspect(
-            schemas=introspect_cfg.schemas,
-            exclude_tables=introspect_cfg.exclude_tables,
+            schemas=derp.config.database.introspect_schemas,
+            exclude_tables=derp.config.database.introspect_exclude_tables,
         )
         table_key = f"{schema}.{table}" if schema != "public" else table
         table_snapshot = snapshot.tables.get(table_key)
@@ -557,8 +554,10 @@ def create_app(
         table = derp.auth._auth_session_table.get_table_name()
         limit = min(max(limit, 1), 500)
         rows = await derp.db.execute(
-            f"SELECT id, user_id, user_agent, ip_address, created_at, not_after"
-            f' FROM "{table}" ORDER BY created_at DESC LIMIT $1',
+            f"SELECT DISTINCT ON (session_id)"
+            f" session_id, user_id, user_agent, ip_address, created_at, not_after"
+            f' FROM "{table}" WHERE revoked = FALSE'
+            f" ORDER BY session_id, created_at DESC LIMIT $1",
             [limit],
         )
         return {"sessions": rows}
