@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -14,7 +14,8 @@ import asyncpg
 
 from derp.kv.base import KVClient
 from derp.orm.fields import JSON, JSONB, FieldInfo
-from derp.orm.query.expressions import Expression
+from derp.orm.query.expressions import ColumnRef, Expression
+from derp.orm.router import ReplicaRouter
 from derp.orm.table import Table
 
 
@@ -53,7 +54,7 @@ class JoinClause:
 
     join_type: JoinType
     table: type[Table]
-    condition: Expression
+    condition: Expression | None
 
 
 @dataclass
@@ -64,7 +65,90 @@ class OrderByClause:
     direction: SortOrder = SortOrder.ASC
 
 
-class SelectQuery[T]:
+class _WhereShorthandMixin:
+    """Shorthand filter methods that accept string column names or FieldInfo."""
+
+    def where(self, cond: Expression) -> Self:
+        """Add WHERE clause. Implemented by subclasses."""
+        raise NotImplementedError
+
+    def _resolve_column(
+        self, column: FieldInfo[Any] | str
+    ) -> FieldInfo[Any] | ColumnRef:
+        """Resolve a column reference from a string or FieldInfo."""
+        if isinstance(column, FieldInfo):
+            return column
+        table_name: str | None = None
+        from_table = getattr(self, "_from_table", None)
+        table = getattr(self, "_table", None)
+        if from_table is not None:
+            table_name = from_table.get_table_name()
+        elif table is not None:
+            table_name = table.get_table_name()
+        if "." in column:
+            t, c = column.split(".", 1)
+            return ColumnRef(t, c)
+        if table_name:
+            return ColumnRef(table_name, column)
+        raise ValueError(
+            f"Cannot resolve column '{column}': no table context. "
+            "Use 'table.column' format or set a FROM table."
+        )
+
+    def eq(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+        """WHERE column = value."""
+        return self.where(self._resolve_column(column) == value)
+
+    def neq(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+        """WHERE column <> value."""
+        return self.where(self._resolve_column(column) != value)
+
+    def gt(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+        """WHERE column > value."""
+        return self.where(self._resolve_column(column) > value)
+
+    def gte(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+        """WHERE column >= value."""
+        return self.where(self._resolve_column(column) >= value)
+
+    def lt(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+        """WHERE column < value."""
+        return self.where(self._resolve_column(column) < value)
+
+    def lte(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+        """WHERE column <= value."""
+        return self.where(self._resolve_column(column) <= value)
+
+    def is_null(self, column: FieldInfo[Any] | str) -> Self:
+        """WHERE column IS NULL."""
+        return self.where(self._resolve_column(column).is_null())
+
+    def is_not_null(self, column: FieldInfo[Any] | str) -> Self:
+        """WHERE column IS NOT NULL."""
+        return self.where(self._resolve_column(column).is_not_null())
+
+    def in_(self, column: FieldInfo[Any] | str, values: Sequence[Any]) -> Self:
+        """WHERE column IN (values)."""
+        return self.where(self._resolve_column(column).in_(values))
+
+    def not_in(self, column: FieldInfo[Any] | str, values: Sequence[Any]) -> Self:
+        """WHERE column NOT IN (values)."""
+        return self.where(self._resolve_column(column).not_in(values))
+
+    def like(self, column: FieldInfo[Any] | str, pattern: str) -> Self:
+        """WHERE column LIKE pattern."""
+        return self.where(self._resolve_column(column).like(pattern))
+
+    def ilike(self, column: FieldInfo[Any] | str, pattern: str) -> Self:
+        """WHERE column ILIKE pattern."""
+        return self.where(self._resolve_column(column).ilike(pattern))
+
+    def between(self, column: FieldInfo[Any] | str, low: Any, high: Any) -> Self:
+        """WHERE column BETWEEN low AND high."""
+        return self.where(self._resolve_column(column).between(low, high))
+
+
+class SelectQuery[T](_WhereShorthandMixin):
     """SELECT query - T is the result element type (Table subclass or dict)."""
 
     def __init__(
@@ -73,6 +157,7 @@ class SelectQuery[T]:
         columns: tuple[type[Table] | FieldInfo[Any], ...],
         *,
         cache_store: KVClient | None = None,
+        router: ReplicaRouter | None = None,
     ):
         self._pool = pool
         self._columns = columns
@@ -85,6 +170,10 @@ class SelectQuery[T]:
         self._group_by: list[FieldInfo[Any] | str] = []
         self._cache_store: KVClient | None = cache_store
         self._cache_ttl: float | None = None
+        self._cache_lock_ttl: float | None = None
+        self._cache_retry_delay: float | None = None
+        self._router: ReplicaRouter | None = router
+        self._force_primary: bool = False
 
         # Infer from table if first column is a Table class
         if columns and isinstance(columns[0], type) and issubclass(columns[0], Table):
@@ -96,8 +185,11 @@ class SelectQuery[T]:
         return self
 
     def where(self, cond: Expression) -> Self:
-        """Add WHERE clause."""
-        self._where_clause = cond
+        """Add WHERE clause. Multiple calls combine with AND."""
+        if self._where_clause is not None:
+            self._where_clause = self._where_clause & cond
+        else:
+            self._where_clause = cond
         return self
 
     def inner_join(self, table: type[Table], condition: Expression) -> Self:
@@ -120,9 +212,9 @@ class SelectQuery[T]:
         self._joins.append(JoinClause(JoinType.FULL, table, condition))
         return self
 
-    def cross_join(self, table: type[Table], condition: Expression) -> Self:
+    def cross_join(self, table: type[Table]) -> Self:
         """Add CROSS JOIN."""
-        self._joins.append(JoinClause(JoinType.CROSS, table, condition))
+        self._joins.append(JoinClause(JoinType.CROSS, table, None))
         return self
 
     def order_by(self, column: FieldInfo[Any] | str, *, asc: bool = True) -> Self:
@@ -147,9 +239,22 @@ class SelectQuery[T]:
         self._group_by.extend(columns)
         return self
 
-    def cache(self, ttl: float) -> Self:
+    def cache(
+        self,
+        ttl: float,
+        *,
+        lock_ttl: float | None = None,
+        retry_delay: float | None = None,
+    ) -> Self:
         """Cache this query's results for ``ttl`` seconds."""
         self._cache_ttl = ttl
+        self._cache_lock_ttl = lock_ttl
+        self._cache_retry_delay = retry_delay
+        return self
+
+    def use_primary(self) -> Self:
+        """Force this query to run against the primary database."""
+        self._force_primary = True
         return self
 
     def build(self) -> tuple[str, list[Any]]:
@@ -181,8 +286,11 @@ class SelectQuery[T]:
         # JOIN clauses
         for join in self._joins:
             join_table = join.table.get_table_name()
-            condition_sql = join.condition.to_sql(params)
-            sql += f" {join.join_type} JOIN {join_table} ON {condition_sql}"
+            if join.join_type == JoinType.CROSS or join.condition is None:
+                sql += f" {join.join_type} JOIN {join_table}"
+            else:
+                condition_sql = join.condition.to_sql(params)
+                sql += f" {join.join_type} JOIN {join_table} ON {condition_sql}"
 
         # WHERE clause
         if self._where_clause:
@@ -238,8 +346,11 @@ class SelectQuery[T]:
 
         for join in self._joins:
             join_table = join.table.get_table_name()
-            condition_sql = join.condition.to_sql(params)
-            sql += f" {join.join_type} JOIN {join_table} ON {condition_sql}"
+            if join.join_type == JoinType.CROSS or join.condition is None:
+                sql += f" {join.join_type} JOIN {join_table}"
+            else:
+                condition_sql = join.condition.to_sql(params)
+                sql += f" {join.join_type} JOIN {join_table} ON {condition_sql}"
 
         if self._where_clause:
             where_sql = self._where_clause.to_sql(params)
@@ -253,35 +364,46 @@ class SelectQuery[T]:
         digest = hashlib.sha256(raw.encode()).hexdigest()
         return f"derp:query:{digest}"
 
+    def _effective_pool(self) -> asyncpg.Pool | asyncpg.Connection:
+        """Return the pool to use, considering the replica router."""
+        if self._pool is None:
+            raise RuntimeError("No database connection. Call db.connect() first.")
+        if (
+            self._router is not None
+            and not self._force_primary
+            and isinstance(self._pool, asyncpg.Pool)
+        ):
+            return self._router.get_read_pool()
+        return self._pool
+
     async def execute(self) -> list[T]:
         """Execute the query and return results."""
-        if not self._pool:
-            raise RuntimeError("No database connection. Call db.connect() first.")
-
+        pool = self._effective_pool()
         sql, params = self.build()
 
-        # Check cache
         if self._cache_store is not None and self._cache_ttl is not None:
             cache_key = self._cache_key(sql, params).encode()
-            cached = await self._cache_store.get(cache_key)
-            if cached is not None:
-                rows_data: list[dict[str, Any]] = json.loads(cached)
-                return self._hydrate(rows_data)
 
-        async with _acquire(self._pool) as conn:
+            async def _compute() -> bytes:
+                async with _acquire(pool) as conn:
+                    rows = await conn.fetch(sql, *params)
+                return json.dumps(self._rows_to_dicts(rows), default=str).encode()
+
+            guard_kwargs: dict[str, Any] = {}
+            if self._cache_lock_ttl is not None:
+                guard_kwargs["lock_ttl"] = self._cache_lock_ttl
+            if self._cache_retry_delay is not None:
+                guard_kwargs["retry_delay"] = self._cache_retry_delay
+            cached = await self._cache_store.guarded_get(
+                cache_key, compute=_compute, ttl=self._cache_ttl, **guard_kwargs
+            )
+            rows_data: list[dict[str, Any]] = json.loads(cached)
+            return self._hydrate(rows_data)
+
+        async with _acquire(pool) as conn:
             rows = await conn.fetch(sql, *params)
 
-        rows_data = self._rows_to_dicts(rows)
-
-        # Populate cache
-        if self._cache_store is not None and self._cache_ttl is not None:
-            await self._cache_store.set(
-                cache_key,
-                json.dumps(rows_data, default=str).encode(),
-                ttl=self._cache_ttl,
-            )
-
-        return self._hydrate(rows_data)
+        return self._hydrate(self._rows_to_dicts(rows))
 
     def _rows_to_dicts(self, rows: list[asyncpg.Record]) -> list[dict[str, Any]]:
         """Convert asyncpg Records to plain dicts with JSON deserialization."""
@@ -323,12 +445,10 @@ class SelectQuery[T]:
 
     async def count(self) -> int:
         """Execute a COUNT(*) query and return the count."""
-        if not self._pool:
-            raise RuntimeError("No database connection. Call db.connect() first.")
-
+        pool = self._effective_pool()
         sql, params = self.build_count()
 
-        async with _acquire(self._pool) as conn:
+        async with _acquire(pool) as conn:
             row = await conn.fetchrow(sql, *params)
 
         return row[0] if row else 0
@@ -342,11 +462,18 @@ class SelectQuery[T]:
 class _InsertQueryBase[T: Table]:
     """Base class for INSERT queries with shared implementation."""
 
-    def __init__(self, pool: asyncpg.Pool | asyncpg.Connection | None, table: type[T]):
+    def __init__(
+        self,
+        pool: asyncpg.Pool | asyncpg.Connection | None,
+        table: type[T],
+        *,
+        router: ReplicaRouter | None = None,
+    ):
         self._pool = pool
         self._table = table
         self._values: dict[str, Any] = {}
         self._returning: tuple[type[Table] | FieldInfo[Any], ...] | None = None
+        self._router: ReplicaRouter | None = router
 
     def _build(self) -> tuple[str, list[Any]]:
         """Build the SQL query and parameters."""
@@ -399,14 +526,14 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
             and issubclass(columns[0], Table)
         ):
             query: InsertQueryReturning[T] = InsertQueryReturning(
-                self._pool, self._table
+                self._pool, self._table, router=self._router
             )
             query._values = self._values
             query._returning = columns
             return query
         else:
             query_dict: InsertQueryReturningDict[T] = InsertQueryReturningDict(
-                self._pool, self._table
+                self._pool, self._table, router=self._router
             )
             query_dict._values = self._values
             query_dict._returning = columns
@@ -424,6 +551,8 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
         sql, params = self.build()
         async with _acquire(self._pool) as conn:
             await conn.execute(sql, *params)
+        if self._router is not None:
+            self._router.record_write()
 
 
 class InsertQueryReturning[T: Table](_InsertQueryBase[T]):
@@ -448,7 +577,10 @@ class InsertQueryReturning[T: Table](_InsertQueryBase[T]):
             row = await conn.fetchrow(sql, *params)
             if row is None:
                 raise RuntimeError("INSERT RETURNING returned no rows")
-            return self._table.model_validate(_deserialize_row(self._table, row))
+            result = self._table.model_validate(_deserialize_row(self._table, row))
+        if self._router is not None:
+            self._router.record_write()
+        return result
 
 
 class InsertQueryReturningDict[T: Table](_InsertQueryBase[T]):
@@ -473,7 +605,10 @@ class InsertQueryReturningDict[T: Table](_InsertQueryBase[T]):
             row = await conn.fetchrow(sql, *params)
             if row is None:
                 raise RuntimeError("INSERT RETURNING returned no rows")
-            return _deserialize_row(self._table, row)
+            result = _deserialize_row(self._table, row)
+        if self._router is not None:
+            self._router.record_write()
+        return result
 
 
 # =============================================================================
@@ -481,15 +616,22 @@ class InsertQueryReturningDict[T: Table](_InsertQueryBase[T]):
 # =============================================================================
 
 
-class _UpdateQueryBase[T: Table]:
+class _UpdateQueryBase[T: Table](_WhereShorthandMixin):
     """Base class for UPDATE queries with shared implementation."""
 
-    def __init__(self, pool: asyncpg.Pool | asyncpg.Connection | None, table: type[T]):
+    def __init__(
+        self,
+        pool: asyncpg.Pool | asyncpg.Connection | None,
+        table: type[T],
+        *,
+        router: ReplicaRouter | None = None,
+    ):
         self._pool = pool
         self._table = table
         self._set_values: dict[str, Any] = {}
         self._where_clause: Expression | None = None
         self._returning: tuple[type[Table] | FieldInfo[Any], ...] | None = None
+        self._router: ReplicaRouter | None = router
 
     def _build(self) -> tuple[str, list[Any]]:
         """Build the SQL query and parameters."""
@@ -528,8 +670,11 @@ class UpdateQuery[T: Table](_UpdateQueryBase[T]):
         return self
 
     def where(self, cond: Expression) -> UpdateQuery[T]:
-        """Add WHERE clause."""
-        self._where_clause = cond
+        """Add WHERE clause. Multiple calls combine with AND."""
+        if self._where_clause is not None:
+            self._where_clause = self._where_clause & cond
+        else:
+            self._where_clause = cond
         return self
 
     @overload
@@ -548,7 +693,7 @@ class UpdateQuery[T: Table](_UpdateQueryBase[T]):
             and issubclass(columns[0], Table)
         ):
             query: UpdateQueryReturning[T] = UpdateQueryReturning(
-                self._pool, self._table
+                self._pool, self._table, router=self._router
             )
             query._set_values = self._set_values
             query._where_clause = self._where_clause
@@ -556,7 +701,7 @@ class UpdateQuery[T: Table](_UpdateQueryBase[T]):
             return query
         else:
             query_dict: UpdateQueryReturningDict[T] = UpdateQueryReturningDict(
-                self._pool, self._table
+                self._pool, self._table, router=self._router
             )
             query_dict._set_values = self._set_values
             query_dict._where_clause = self._where_clause
@@ -575,6 +720,8 @@ class UpdateQuery[T: Table](_UpdateQueryBase[T]):
         sql, params = self.build()
         async with _acquire(self._pool) as conn:
             await conn.execute(sql, *params)
+        if self._router is not None:
+            self._router.record_write()
 
 
 class UpdateQueryReturning[T: Table](_UpdateQueryBase[T]):
@@ -586,8 +733,11 @@ class UpdateQueryReturning[T: Table](_UpdateQueryBase[T]):
         return self
 
     def where(self, cond: Expression) -> UpdateQueryReturning[T]:
-        """Add WHERE clause."""
-        self._where_clause = cond
+        """Add WHERE clause. Multiple calls combine with AND."""
+        if self._where_clause is not None:
+            self._where_clause = self._where_clause & cond
+        else:
+            self._where_clause = cond
         return self
 
     def build(self) -> tuple[str, list[Any]]:
@@ -602,10 +752,13 @@ class UpdateQueryReturning[T: Table](_UpdateQueryBase[T]):
         sql, params = self.build()
         async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
-            return [
+            result = [
                 self._table.model_validate(_deserialize_row(self._table, row))
                 for row in rows
             ]
+        if self._router is not None:
+            self._router.record_write()
+        return result
 
 
 class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
@@ -617,8 +770,11 @@ class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
         return self
 
     def where(self, cond: Expression) -> UpdateQueryReturningDict[T]:
-        """Add WHERE clause."""
-        self._where_clause = cond
+        """Add WHERE clause. Multiple calls combine with AND."""
+        if self._where_clause is not None:
+            self._where_clause = self._where_clause & cond
+        else:
+            self._where_clause = cond
         return self
 
     def build(self) -> tuple[str, list[Any]]:
@@ -633,7 +789,10 @@ class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
         sql, params = self.build()
         async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
-            return [_deserialize_row(self._table, row) for row in rows]
+            result = [_deserialize_row(self._table, row) for row in rows]
+        if self._router is not None:
+            self._router.record_write()
+        return result
 
 
 # =============================================================================
@@ -641,14 +800,21 @@ class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
 # =============================================================================
 
 
-class _DeleteQueryBase[T: Table]:
+class _DeleteQueryBase[T: Table](_WhereShorthandMixin):
     """Base class for DELETE queries with shared implementation."""
 
-    def __init__(self, pool: asyncpg.Pool | asyncpg.Connection | None, table: type[T]):
+    def __init__(
+        self,
+        pool: asyncpg.Pool | asyncpg.Connection | None,
+        table: type[T],
+        *,
+        router: ReplicaRouter | None = None,
+    ):
         self._pool = pool
         self._table = table
         self._where_clause: Expression | None = None
         self._returning: tuple[type[Table] | FieldInfo[Any], ...] | None = None
+        self._router: ReplicaRouter | None = router
 
     def _build(self) -> tuple[str, list[Any]]:
         """Build the SQL query and parameters."""
@@ -677,8 +843,11 @@ class DeleteQuery[T: Table](_DeleteQueryBase[T]):
     """DELETE query without RETURNING - execute() returns None."""
 
     def where(self, cond: Expression) -> DeleteQuery[T]:
-        """Add WHERE clause."""
-        self._where_clause = cond
+        """Add WHERE clause. Multiple calls combine with AND."""
+        if self._where_clause is not None:
+            self._where_clause = self._where_clause & cond
+        else:
+            self._where_clause = cond
         return self
 
     @overload
@@ -697,14 +866,14 @@ class DeleteQuery[T: Table](_DeleteQueryBase[T]):
             and issubclass(columns[0], Table)
         ):
             query: DeleteQueryReturning[T] = DeleteQueryReturning(
-                self._pool, self._table
+                self._pool, self._table, router=self._router
             )
             query._where_clause = self._where_clause
             query._returning = columns
             return query
         else:
             query_dict: DeleteQueryReturningDict[T] = DeleteQueryReturningDict(
-                self._pool, self._table
+                self._pool, self._table, router=self._router
             )
             query_dict._where_clause = self._where_clause
             query_dict._returning = columns
@@ -722,14 +891,19 @@ class DeleteQuery[T: Table](_DeleteQueryBase[T]):
         sql, params = self.build()
         async with _acquire(self._pool) as conn:
             await conn.execute(sql, *params)
+        if self._router is not None:
+            self._router.record_write()
 
 
 class DeleteQueryReturning[T: Table](_DeleteQueryBase[T]):
     """DELETE query with RETURNING table - execute() returns list[T]."""
 
     def where(self, cond: Expression) -> DeleteQueryReturning[T]:
-        """Add WHERE clause."""
-        self._where_clause = cond
+        """Add WHERE clause. Multiple calls combine with AND."""
+        if self._where_clause is not None:
+            self._where_clause = self._where_clause & cond
+        else:
+            self._where_clause = cond
         return self
 
     def build(self) -> tuple[str, list[Any]]:
@@ -744,18 +918,24 @@ class DeleteQueryReturning[T: Table](_DeleteQueryBase[T]):
         sql, params = self.build()
         async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
-            return [
+            result = [
                 self._table.model_validate(_deserialize_row(self._table, row))
                 for row in rows
             ]
+        if self._router is not None:
+            self._router.record_write()
+        return result
 
 
 class DeleteQueryReturningDict[T: Table](_DeleteQueryBase[T]):
     """DELETE query with RETURNING columns - execute() returns list[dict]."""
 
     def where(self, cond: Expression) -> DeleteQueryReturningDict[T]:
-        """Add WHERE clause."""
-        self._where_clause = cond
+        """Add WHERE clause. Multiple calls combine with AND."""
+        if self._where_clause is not None:
+            self._where_clause = self._where_clause & cond
+        else:
+            self._where_clause = cond
         return self
 
     def build(self) -> tuple[str, list[Any]]:
@@ -770,7 +950,10 @@ class DeleteQueryReturningDict[T: Table](_DeleteQueryBase[T]):
         sql, params = self.build()
         async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
-            return [_deserialize_row(self._table, row) for row in rows]
+            result = [_deserialize_row(self._table, row) for row in rows]
+        if self._router is not None:
+            self._router.record_write()
+        return result
 
 
 def _serialize_value(table: type[Table], column: str, value: Any) -> Any:

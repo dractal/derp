@@ -68,7 +68,6 @@ def test_properties_require_active_session(client_schema_path: str) -> None:
 
     for accessor in (
         lambda c: c.db,
-        lambda c: c.replica_db,
         lambda c: c.storage,
         lambda c: c.auth,
         lambda c: c.kv,
@@ -99,40 +98,6 @@ async def test_connect_enables_access_disconnect_disables_access(
 
     mock_db.connect.assert_awaited_once()
     mock_db.disconnect.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_replica_property_requires_replica_config(
-    client_schema_path: str,
-) -> None:
-    primary = MagicMock()
-    primary.connect = AsyncMock()
-    primary.disconnect = AsyncMock()
-
-    with patch("derp.derp_client.DatabaseEngine", return_value=primary):
-        without_replica = DerpClient[Any](
-            _config(db_url="postgresql://unused", schema_path=client_schema_path)
-        )
-        await without_replica.connect()
-        with pytest.raises(ValueError, match="Replica URL is not set"):
-            _ = without_replica.replica_db
-        await without_replica.disconnect()
-
-    replica = MagicMock()
-    replica.connect = AsyncMock()
-    replica.disconnect = AsyncMock()
-
-    with patch("derp.derp_client.DatabaseEngine", side_effect=[primary, replica]):
-        with_replica = DerpClient[Any](
-            _config(
-                db_url="postgresql://primary",
-                schema_path=client_schema_path,
-                replica_url="postgresql://replica",
-            )
-        )
-        await with_replica.connect()
-        assert with_replica.replica_db is replica
-        await with_replica.disconnect()
 
 
 @pytest.mark.asyncio
@@ -206,7 +171,7 @@ async def test_async_context_manager_scopes_access(client_schema_path: str) -> N
 
 
 @pytest.mark.asyncio
-async def test_db_and_replica_execute_queries(
+async def test_db_with_replica_executes_queries(
     clean_database: str, client_schema_path: str
 ) -> None:
     client = DerpClient[Any](
@@ -223,9 +188,7 @@ async def test_db_and_replica_execute_queries(
     await client.connect()
     try:
         db_rows = await client.db.execute("SELECT 1 AS n")
-        replica_rows = await client.replica_db.execute("SELECT 1 AS n")
         assert db_rows[0]["n"] == 1
-        assert replica_rows[0]["n"] == 1
     finally:
         await client.disconnect()
 
@@ -244,7 +207,7 @@ async def test_kv_service_available_in_session(
         _config(
             db_url=clean_database,
             schema_path=client_schema_path,
-            kv=KVConfig(valkey=ValkeyConfig(host=host, port=port)),
+            kv=KVConfig(valkey=ValkeyConfig(addresses=[(host, port)])),
         )
     )
 

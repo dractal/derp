@@ -85,7 +85,7 @@ async def kv_client(
     valkey_server: tuple[str, int],
 ) -> AsyncGenerator[ValkeyClient, None]:
     host, port = valkey_server
-    client = ValkeyClient(ValkeyConfig(host=host, port=port))
+    client = ValkeyClient(ValkeyConfig(addresses=[(host, port)]))
     await client.connect()
     yield client
     await client.disconnect()

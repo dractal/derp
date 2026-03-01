@@ -287,13 +287,11 @@ def test_full_join():
 
 def test_cross_join():
     """Test SELECT with CROSS JOIN."""
-    query = SelectQuery[User](None, (User,)).cross_join(
-        Post, User.c.id == Post.c.user_id
-    )
+    query = SelectQuery[User](None, (User,)).cross_join(Post)
     sql, params = query.build()
 
-    assert "CROSS JOIN posts ON" in sql
-    assert "(users.id = posts.user_id)" in sql
+    assert "CROSS JOIN posts" in sql
+    assert "ON" not in sql
 
 
 def test_multiple_joins():
@@ -865,3 +863,186 @@ def test_select_builds_with_connection():
     sql, params = query.build()
     assert sql == "SELECT users.* FROM users WHERE (users.id = $1)"
     assert params == [1]
+
+
+# =============================================================================
+# Shorthand filter method tests
+# =============================================================================
+
+
+def test_eq_with_string():
+    """Test .eq() with a string column name."""
+    query = SelectQuery[User](None, (User,)).eq("id", 1)
+    sql, params = query.build()
+    assert "(users.id = $1)" in sql
+    assert params == [1]
+
+
+def test_eq_with_field_info():
+    """Test .eq() with a FieldInfo column."""
+    query = SelectQuery[User](None, (User,)).eq(User.c.id, 1)
+    sql, params = query.build()
+    assert "(users.id = $1)" in sql
+    assert params == [1]
+
+
+def test_neq_with_string():
+    """Test .neq() with a string column name."""
+    query = SelectQuery[User](None, (User,)).neq("name", "Alice")
+    sql, params = query.build()
+    assert "(users.name <> $1)" in sql
+    assert params == ["Alice"]
+
+
+def test_gt_with_string():
+    """Test .gt() with a string column name."""
+    query = SelectQuery[User](None, (User,)).gt("age", 18)
+    sql, params = query.build()
+    assert "(users.age > $1)" in sql
+    assert params == [18]
+
+
+def test_gte_with_string():
+    """Test .gte() with a string column name."""
+    query = SelectQuery[User](None, (User,)).gte("age", 18)
+    sql, params = query.build()
+    assert "(users.age >= $1)" in sql
+    assert params == [18]
+
+
+def test_lt_with_string():
+    """Test .lt() with a string column name."""
+    query = SelectQuery[User](None, (User,)).lt("age", 65)
+    sql, params = query.build()
+    assert "(users.age < $1)" in sql
+    assert params == [65]
+
+
+def test_lte_with_string():
+    """Test .lte() with a string column name."""
+    query = SelectQuery[User](None, (User,)).lte("age", 65)
+    sql, params = query.build()
+    assert "(users.age <= $1)" in sql
+    assert params == [65]
+
+
+def test_is_null_with_string():
+    """Test .is_null() with a string column name."""
+    query = SelectQuery[User](None, (User,)).is_null("age")
+    sql, params = query.build()
+    assert "(users.age IS NULL)" in sql
+    assert params == []
+
+
+def test_is_not_null_with_string():
+    """Test .is_not_null() with a string column name."""
+    query = SelectQuery[User](None, (User,)).is_not_null("email")
+    sql, params = query.build()
+    assert "(users.email IS NOT NULL)" in sql
+    assert params == []
+
+
+def test_in_with_string():
+    """Test .in_() with a string column name."""
+    query = SelectQuery[User](None, (User,)).in_("id", [1, 2, 3])
+    sql, params = query.build()
+    assert "users.id" in sql
+    assert "IN ($1, $2, $3)" in sql
+    assert params == [1, 2, 3]
+
+
+def test_not_in_with_string():
+    """Test .not_in() with a string column name."""
+    query = SelectQuery[User](None, (User,)).not_in("id", [1, 2])
+    sql, params = query.build()
+    assert "NOT IN ($1, $2)" in sql
+    assert params == [1, 2]
+
+
+def test_like_with_string():
+    """Test .like() with a string column name."""
+    query = SelectQuery[User](None, (User,)).like("name", "%Alice%")
+    sql, params = query.build()
+    assert "users.name" in sql
+    assert "LIKE $1" in sql
+    assert params == ["%Alice%"]
+
+
+def test_ilike_with_string():
+    """Test .ilike() with a string column name."""
+    query = SelectQuery[User](None, (User,)).ilike("name", "%alice%")
+    sql, params = query.build()
+    assert "ILIKE $1" in sql
+    assert params == ["%alice%"]
+
+
+def test_between_with_string():
+    """Test .between() with a string column name."""
+    query = SelectQuery[User](None, (User,)).between("age", 18, 65)
+    sql, params = query.build()
+    assert "users.age" in sql
+    assert "BETWEEN $1 AND $2" in sql
+    assert params == [18, 65]
+
+
+def test_dot_notation_string():
+    """Test string column with explicit table.column format."""
+    query = SelectQuery[User](None, (User,)).eq("posts.user_id", 1)
+    sql, params = query.build()
+    assert "(posts.user_id = $1)" in sql
+    assert params == [1]
+
+
+def test_chained_shorthand_methods():
+    """Test chaining multiple shorthand methods combines with AND."""
+    query = (
+        SelectQuery[User](None, (User,))
+        .eq("name", "Alice")
+        .gt("age", 18)
+        .is_not_null("email")
+    )
+    sql, params = query.build()
+    assert "AND" in sql
+    assert "(users.name = $1)" in sql
+    assert "(users.age > $2)" in sql
+    assert "(users.email IS NOT NULL)" in sql
+    assert params == ["Alice", 18]
+
+
+def test_mixed_shorthand_and_where():
+    """Test mixing shorthand methods with where()."""
+    query = (
+        SelectQuery[User](None, (User,))
+        .eq("name", "Alice")
+        .where(User.c.age > 18)
+    )
+    sql, params = query.build()
+    assert "AND" in sql
+    assert "(users.name = $1)" in sql
+    assert "(users.age > $2)" in sql
+    assert params == ["Alice", 18]
+
+
+def test_update_shorthand():
+    """Test shorthand methods on UpdateQuery."""
+    query = UpdateQuery[User](None, User).set(name="Robert").eq("id", 1)
+    sql, params = query.build()
+    assert "UPDATE users SET name = $1" in sql
+    assert "WHERE (users.id = $2)" in sql
+    assert params == ["Robert", 1]
+
+
+def test_delete_shorthand():
+    """Test shorthand methods on DeleteQuery."""
+    query = DeleteQuery[User](None, User).eq("id", 1)
+    sql, params = query.build()
+    assert "DELETE FROM users" in sql
+    assert "WHERE (users.id = $1)" in sql
+    assert params == [1]
+
+
+def test_shorthand_no_table_context_raises():
+    """Test that bare string without table context raises ValueError."""
+    query = SelectQuery[User](None, ())
+    with pytest.raises(ValueError, match="no table context"):
+        query.eq("id", 1)

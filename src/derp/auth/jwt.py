@@ -70,6 +70,13 @@ def create_access_token(
         payload["aud"] = config.audience
 
     if extra_claims:
+        reserved = {"sub", "session_id", "iat", "exp", "iss", "aud"}
+        conflicts = reserved & extra_claims.keys()
+        if conflicts:
+            raise ValueError(
+                "extra_claims cannot override reserved JWT claims: "
+                f"{', '.join(sorted(conflicts))}"
+            )
         payload.update(extra_claims)
 
     return jwt.encode(

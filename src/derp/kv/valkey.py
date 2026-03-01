@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from collections.abc import AsyncIterator, Sequence
 
 from etils import epy
 
-from derp.config import ValkeyConfig
+from derp.config import ValkeyConfig, ValkeyMode
 from derp.kv.base import KVClient
 
 with epy.lazy_imports():
@@ -22,27 +23,43 @@ class ValkeyClient(KVClient):
     supports_batch = True
 
     def __init__(self, config: ValkeyConfig):
-        addresses: list[glide.NodeAddress] = [
-            glide.NodeAddress(host=config.host, port=config.port)
+        addresses = [
+            glide.NodeAddress(host=host, port=port) for host, port in config.addresses
         ]
-        credentials = (
+
+        credentials: glide.ServerCredentials | None = (
             glide.ServerCredentials(username=config.username, password=config.password)
-            if config.password is not None and config.username is not None
+            if config.password is not None
             else None
         )
-        glide_config = glide.GlideClientConfiguration(
-            addresses,
-            credentials=credentials,
-            use_tls=config.use_tls,
-        )
+
+        self._is_cluster = config.mode == ValkeyMode.CLUSTER
         self._config: ValkeyConfig = config
-        self._glide_config: glide.GlideClientConfiguration = glide_config
-        self._client: glide.GlideClient | None = None
+
+        if self._is_cluster:
+            self._glide_config: (
+                glide.GlideClientConfiguration | glide.GlideClusterClientConfiguration
+            ) = glide.GlideClusterClientConfiguration(
+                addresses,
+                credentials=credentials,
+                use_tls=config.use_tls,
+            )
+        else:
+            self._glide_config = glide.GlideClientConfiguration(
+                addresses,
+                credentials=credentials,
+                use_tls=config.use_tls,
+            )
+
+        self._client: glide.GlideClient | glide.GlideClusterClient | None = None
 
     async def connect(self) -> None:
         if self._client is not None:
             return
-        self._client = await glide.GlideClient.create(self._glide_config)
+        if self._is_cluster:
+            self._client = await glide.GlideClusterClient.create(self._glide_config)
+        else:
+            self._client = await glide.GlideClient.create(self._glide_config)
 
     async def disconnect(self) -> None:
         if self._client is not None:
@@ -50,7 +67,7 @@ class ValkeyClient(KVClient):
             self._client = None
 
     @property
-    def client(self) -> glide.GlideClient:
+    def client(self) -> glide.GlideClient | glide.GlideClusterClient:
         if self._client is None:
             raise RuntimeError("Valkey client not connected. Call connect() first.")
         return self._client
@@ -60,9 +77,27 @@ class ValkeyClient(KVClient):
 
     async def set(self, key: bytes, value: bytes, *, ttl: float | None = None) -> None:
         expiry = (
-            glide.ExpirySet(glide.ExpiryType.SEC, int(ttl)) if ttl is not None else None
+            glide.ExpirySet(glide.ExpiryType.SEC, math.ceil(ttl))
+            if ttl is not None
+            else None
         )
         await self.client.set(key, value, expiry=expiry)
+
+    async def set_nx(
+        self, key: bytes, value: bytes, *, ttl: float | None = None
+    ) -> bool:
+        expiry = (
+            glide.ExpirySet(glide.ExpiryType.SEC, math.ceil(ttl))
+            if ttl is not None
+            else None
+        )
+        result = await self.client.set(
+            key,
+            value,
+            conditional_set=glide.ConditionalChange.ONLY_IF_DOES_NOT_EXIST,
+            expiry=expiry,
+        )
+        return result is not None
 
     async def delete(self, key: bytes) -> bool:
         return (await self.client.delete([key])) > 0
@@ -83,7 +118,7 @@ class ValkeyClient(KVClient):
         mapping = {key: value for key, value in items}
         await self.client.mset(mapping)
         if ttl is not None:
-            ttl_seconds = int(ttl)
+            ttl_seconds = math.ceil(ttl)
             await asyncio.gather(
                 *(self.client.expire(key, ttl_seconds) for key, _ in items)
             )
@@ -100,23 +135,37 @@ class ValkeyClient(KVClient):
         return float(ttl)
 
     async def expire(self, key: bytes, ttl: float) -> bool:
-        return bool(await self.client.expire(key, int(ttl)))
+        return bool(await self.client.expire(key, math.ceil(ttl)))
 
     async def scan(
         self, *, prefix: bytes | None = None, limit: int | None = None
     ) -> AsyncIterator[bytes]:
-        cursor: bytes = b"0"
-        count = 0
         match = prefix + b"*" if prefix else None
-        while True:
-            result: tuple[bytes, list[bytes]] = await self.client.scan(  # type: ignore[assignment]
-                cursor, match=match
-            )
-            cursor, keys = result
-            for key in keys:
-                yield key
-                count += 1
-                if limit is not None and count >= limit:
-                    return
-            if cursor == b"0":
-                break
+        count = 0
+
+        if self._is_cluster:
+            cluster_client: glide.GlideClusterClient = self.client  # type: ignore[assignment]
+            cursor = glide.ClusterScanCursor()
+            while not cursor.is_finished():
+                result = await cluster_client.scan(cursor, match=match)
+                cursor = result[0]
+                keys: list[bytes] = result[1]  # type: ignore[assignment]
+                for key in keys:
+                    yield key
+                    count += 1
+                    if limit is not None and count >= limit:
+                        return
+        else:
+            standalone_client: glide.GlideClient = self.client  # type: ignore[assignment]
+            raw_cursor: bytes = b"0"
+            while True:
+                sa_result = await standalone_client.scan(raw_cursor, match=match)
+                raw_cursor = sa_result[0]  # type: ignore[assignment]
+                sa_keys: list[bytes] = sa_result[1]  # type: ignore[assignment]
+                for key in sa_keys:
+                    yield key
+                    count += 1
+                    if limit is not None and count >= limit:
+                        return
+                if raw_cursor == b"0":
+                    break

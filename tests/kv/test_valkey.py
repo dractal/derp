@@ -64,7 +64,7 @@ def valkey_server() -> Iterator[tuple[str, int]]:
 @pytest.mark.asyncio
 async def test_valkey_store_roundtrip(valkey_server: tuple[str, int]) -> None:
     host, port = valkey_server
-    config = valkey_mod.ValkeyConfig(host=host, port=port)
+    config = valkey_mod.ValkeyConfig(addresses=[(host, port)])
     store = valkey_mod.ValkeyClient(config)
     await store.connect()
 
@@ -83,4 +83,51 @@ async def test_valkey_store_roundtrip(valkey_server: tuple[str, int]) -> None:
     keys = [key async for key in store.scan(prefix=b"user:")]
     assert set(keys) == {b"user:1", b"user:2"}
 
+    await store.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_set_nx_success(valkey_server: tuple[str, int]) -> None:
+    host, port = valkey_server
+    config = valkey_mod.ValkeyConfig(addresses=[(host, port)])
+    store = valkey_mod.ValkeyClient(config)
+    await store.connect()
+
+    await store.delete(b"nx_key")
+    assert await store.set_nx(b"nx_key", b"first") is True
+    assert await store.get(b"nx_key") == b"first"
+
+    await store.delete(b"nx_key")
+    await store.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_set_nx_existing_key(valkey_server: tuple[str, int]) -> None:
+    host, port = valkey_server
+    config = valkey_mod.ValkeyConfig(addresses=[(host, port)])
+    store = valkey_mod.ValkeyClient(config)
+    await store.connect()
+
+    await store.set(b"nx_exists", b"original")
+    assert await store.set_nx(b"nx_exists", b"new_value") is False
+    assert await store.get(b"nx_exists") == b"original"
+
+    await store.delete(b"nx_exists")
+    await store.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_set_nx_with_ttl(valkey_server: tuple[str, int]) -> None:
+    host, port = valkey_server
+    config = valkey_mod.ValkeyConfig(addresses=[(host, port)])
+    store = valkey_mod.ValkeyClient(config)
+    await store.connect()
+
+    await store.delete(b"nx_ttl")
+    assert await store.set_nx(b"nx_ttl", b"temp", ttl=60) is True
+    assert await store.get(b"nx_ttl") == b"temp"
+    remaining = await store.ttl(b"nx_ttl")
+    assert remaining is not None and remaining > 0
+
+    await store.delete(b"nx_ttl")
     await store.disconnect()

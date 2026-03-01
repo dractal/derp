@@ -198,7 +198,8 @@ class Table(BaseModel, metaclass=TableMeta):
                 elif isinstance(info.default, int | float):
                     col_def += f" DEFAULT {info.default}"
                 else:
-                    col_def += f" DEFAULT '{info.default}'"
+                    escaped = str(info.default).replace("'", "''")
+                    col_def += f" DEFAULT '{escaped}'"
 
             column_defs.append(col_def)
 

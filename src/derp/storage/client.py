@@ -105,7 +105,15 @@ class StorageClient:
 
         Returns:
             URL for the file.
+
+        Raises:
+            ValueError: If endpoint_url is not configured.
         """
+        if self._config.endpoint_url is None:
+            raise ValueError(
+                "Cannot construct URL: `endpoint_url` is not "
+                "configured in StorageConfig."
+            )
         return f"{self._config.endpoint_url}/{bucket}/{key}"
 
     async def upload_file(

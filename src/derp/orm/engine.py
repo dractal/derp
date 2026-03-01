@@ -12,6 +12,7 @@ import asyncpg
 from derp.kv.base import KVClient
 from derp.orm.fields import FieldInfo
 from derp.orm.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
+from derp.orm.router import ReplicaRouter
 from derp.orm.table import Table
 
 
@@ -93,29 +94,44 @@ class DatabaseEngine:
         await db.disconnect()
     """
 
-    def __init__(self, dsn: str, *, min_size: int = 2, max_size: int = 10):
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        min_size: int = 2,
+        max_size: int = 10,
+        statement_cache_size: int | None = None,
+    ):
         """Initialize Derp engine.
 
         Args:
             dsn: PostgreSQL connection string
             min_size: Minimum connection pool size
             max_size: Maximum connection pool size
+            statement_cache_size: Size of the prepared statement cache per
+                connection. Set to 0 to disable, which is required when
+                connecting through PgBouncer in transaction mode. None
+                uses asyncpg's default.
         """
         self._dsn = dsn
         self._min_size = min_size
         self._max_size = max_size
+        self._statement_cache_size = statement_cache_size
         self._pool: asyncpg.Pool | None = None
         self._cache_store: KVClient | None = None
+        self._router: ReplicaRouter | None = None
 
     async def connect(self) -> None:
         """Establish connection pool."""
         if self._pool is not None:
             return
-        self._pool = await asyncpg.create_pool(
-            self._dsn,
-            min_size=self._min_size,
-            max_size=self._max_size,
-        )
+        kwargs: dict[str, Any] = {
+            "min_size": self._min_size,
+            "max_size": self._max_size,
+        }
+        if self._statement_cache_size is not None:
+            kwargs["statement_cache_size"] = self._statement_cache_size
+        self._pool = await asyncpg.create_pool(self._dsn, **kwargs)
 
     async def disconnect(self) -> None:
         """Close connection pool."""
@@ -138,6 +154,10 @@ class DatabaseEngine:
     def set_cache(self, store: KVClient | None) -> None:
         """Set the KV store for query result caching."""
         self._cache_store = store
+
+    def set_router(self, router: ReplicaRouter | None) -> None:
+        """Set the replica router for automatic read routing."""
+        self._router = router
 
     @property
     def pool(self) -> asyncpg.Pool:
@@ -181,7 +201,9 @@ class DatabaseEngine:
               .from_(Post)
               .inner_join(User, Post.c.author_id == User.c.id)
         """
-        return SelectQuery(self._pool, columns, cache_store=self._cache_store)
+        return SelectQuery(
+            self._pool, columns, cache_store=self._cache_store, router=self._router
+        )
 
     def insert[T: Table](self, table: type[T]) -> InsertQuery[T]:
         """Start an INSERT query.
@@ -200,7 +222,7 @@ class DatabaseEngine:
                 .execute()
             )
         """
-        return InsertQuery(self._pool, table)
+        return InsertQuery(self._pool, table, router=self._router)
 
     def update[T: Table](self, table: type[T]) -> UpdateQuery[T]:
         """Start an UPDATE query.
@@ -214,7 +236,7 @@ class DatabaseEngine:
         Example:
             await db.update(User).set(name="Robert").where(eq(User.id, 1)).execute()
         """
-        return UpdateQuery(self._pool, table)
+        return UpdateQuery(self._pool, table, router=self._router)
 
     def delete[T: Table](self, table: type[T]) -> DeleteQuery[T]:
         """Start a DELETE query.
@@ -228,7 +250,7 @@ class DatabaseEngine:
         Example:
             await db.delete(User).where(eq(User.id, 1)).execute()
         """
-        return DeleteQuery(self._pool, table)
+        return DeleteQuery(self._pool, table, router=self._router)
 
     async def execute(
         self, query: str, params: list[Any] | None = None

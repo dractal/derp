@@ -11,6 +11,7 @@ from derp.config import DerpConfig
 from derp.kv.base import KVClient
 from derp.kv.valkey import ValkeyClient
 from derp.orm import DatabaseEngine
+from derp.orm.router import ReplicaRouter
 from derp.payments import PaymentsClient
 from derp.storage import StorageClient
 
@@ -24,6 +25,7 @@ class DerpClient[UserT: BaseUser]:
             config.database.db_url,
             min_size=config.database.pool_min_size,
             max_size=config.database.pool_max_size,
+            statement_cache_size=config.database.statement_cache_size,
         )
         self._replica_db: DatabaseEngine | None = (
             DatabaseEngine(
@@ -36,6 +38,7 @@ class DerpClient[UserT: BaseUser]:
                     config.database.replica_pool_max_size
                     or config.database.pool_max_size
                 ),
+                statement_cache_size=config.database.replica_statement_cache_size,
             )
             if config.database.replica_url is not None
             else None
@@ -63,11 +66,12 @@ class DerpClient[UserT: BaseUser]:
             if self._config.payments is not None
             else None
         )
+        self._router: ReplicaRouter | None = None
         self._in_session = False
 
         if self._email is None and self._auth is not None:
             raise ValueError(
-                "The email client needs to be configured for authentication to work."
+                "The email client needs to be configured for authentication to work. "
                 "Please make sure to configure `EmailConfig` when `AuthConfig` is "
                 "configured via `derp.toml` or `DerpConfig`."
             )
@@ -90,8 +94,16 @@ class DerpClient[UserT: BaseUser]:
                 self._auth.set_kv(self._kv)
         if self._kv is not None:
             self._db.set_cache(self._kv)
-            if self._replica_db is not None:
-                self._replica_db.set_cache(self._kv)
+
+        # Set up replica router if replica is configured
+        if self._replica_db is not None:
+            self._router = ReplicaRouter(
+                self._db.pool,
+                self._replica_db.pool,
+                self._config.database,
+            )
+            await self._router.start()
+            self._db.set_router(self._router)
 
         self._in_session = True
 
@@ -99,24 +111,40 @@ class DerpClient[UserT: BaseUser]:
         self,
     ) -> None:
         """End a session."""
-        await self._db.disconnect()
-        if self._replica_db is not None:
-            await self._replica_db.disconnect()
-        if self._storage is not None:
-            await self._storage.disconnect()
-        if self._kv is not None:
-            await self._kv.disconnect()
-        if self._payments is not None:
-            await self._payments.disconnect()
+        errors: list[Exception] = []
+
+        # Stop router before closing pools
+        if self._router is not None:
+            try:
+                await self._router.stop()
+            except Exception as exc:
+                errors.append(exc)
+            self._db.set_router(None)
+            self._router = None
+
+        for client in [
+            self._db,
+            self._replica_db,
+            self._storage,
+            self._kv,
+            self._payments,
+        ]:
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception as exc:
+                    errors.append(exc)
+
         if self._auth is not None:
             self._auth.set_db(None)
             self._auth.set_email(None)
             self._auth.set_kv(None)
         self._db.set_cache(None)
-        if self._replica_db is not None:
-            self._replica_db.set_cache(None)
 
         self._in_session = False
+
+        if errors:
+            raise ExceptionGroup("errors during disconnect", errors)
 
     async def __aenter__(self) -> Self:
         await self.connect()
@@ -136,15 +164,6 @@ class DerpClient[UserT: BaseUser]:
         if not self._in_session:
             raise ValueError("Not in a session. Call `connect()` first.")
         return self._db
-
-    @property
-    def replica_db(self) -> DatabaseEngine:
-        """Get the replica database engine."""
-        if not self._in_session:
-            raise ValueError("Not in a session. Call `connect()` first.")
-        if self._replica_db is None:
-            raise ValueError("Replica URL is not set on `DatabaseConfig`.")
-        return self._replica_db
 
     @property
     def email(self) -> EmailClient:

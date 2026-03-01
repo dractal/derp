@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tomllib
 from collections.abc import Sequence
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -69,11 +70,19 @@ class DatabaseConfig(BaseModel):
     introspect_schemas: Sequence[str] = ("public",)
     introspect_exclude_tables: Sequence[str] = (MIGRATIONS_TABLE,)
 
-    pool_min_size: int = 10
-    pool_max_size: int = 20
+    pool_min_size: int = 2
+    pool_max_size: int = 5
+    # Default to 0, for PgBouncer compatibility
+    statement_cache_size: int = 0
 
     replica_pool_min_size: int | None = None
     replica_pool_max_size: int | None = None
+    # Default to asyncpg's default since replicas don't often use PgBouncer
+    replica_statement_cache_size: int | None = None
+
+    replica_max_lag_bytes: int = 1_048_576
+    replica_write_fence_seconds: float = 2.0
+    replica_lag_check_interval_seconds: float = 5.0
 
 
 class EmailConfig(BaseModel):
@@ -179,14 +188,21 @@ class PaymentsConfig(BaseModel):
     timeout_seconds: float = 30.0
 
 
+class ValkeyMode(StrEnum):
+    """Valkey deployment mode."""
+
+    STANDALONE = "standalone"
+    CLUSTER = "cluster"
+
+
 class ValkeyConfig(BaseModel):
     """Configuration for Valkey GLIDE connections."""
 
-    host: str = "localhost"
-    port: int = 6379
+    addresses: Sequence[tuple[str, int]] = (("localhost", 6379),)
     username: str | None = None
     password: str | None = None
     use_tls: bool = False
+    mode: ValkeyMode = ValkeyMode.STANDALONE
 
 
 class KVConfig(BaseModel):
@@ -275,8 +291,7 @@ migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # secret = "$JWT_SECRET"
 
 # [kv.valkey]
-# host = "localhost"
-# port = 6379
+# addresses = [["localhost", 6379]]
 # # username = "$VALKEY_USERNAME"
 # # password = "$VALKEY_PASSWORD"
 # # use_tls = false

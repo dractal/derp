@@ -140,12 +140,28 @@ class AuthClient[UserT: BaseUser]:
         if user_id is not None and email is not None:
             raise ValueError("Cannot get a user by both ID and email address.")
         elif user_id is not None:
-            # Try cache for ID lookups
-            cache_key = f"{self._config.cache_prefix}:user:{user_id}".encode()
-            if self._kv_client is not None:
-                cached = await self._kv_client.get(cache_key)
-                if cached is not None:
-                    return self._user_table.model_validate_json(cached)
+            if self._config.use_kv_cache and self._kv_client is not None:
+                cache_key = f"{self._config.cache_prefix}:user:{user_id}".encode()
+
+                async def _fetch_user() -> bytes:
+                    row = await (
+                        self._db()
+                        .select(self._user_table)
+                        .where(self._user_table.c.id == str(user_id))
+                        .first_or_none()
+                    )
+                    if row is None:
+                        return b""
+                    return row.model_dump_json().encode()
+
+                cached = await self._kv_client.guarded_get(
+                    cache_key,
+                    compute=_fetch_user,
+                    ttl=self._config.cache_user_ttl_seconds,
+                )
+                if cached == b"":
+                    return None
+                return self._user_table.model_validate_json(cached)
 
             result = await (
                 self._db()
@@ -153,13 +169,6 @@ class AuthClient[UserT: BaseUser]:
                 .where(self._user_table.c.id == str(user_id))
                 .first_or_none()
             )
-
-            if self._config.use_kv_cache and result and self._kv_client is not None:
-                await self._kv_client.set(
-                    cache_key,
-                    result.model_dump_json().encode(),
-                    ttl=self._config.cache_user_ttl_seconds,
-                )
         elif email is not None:
             result = await (
                 self._db()
@@ -375,8 +384,11 @@ class AuthClient[UserT: BaseUser]:
         Creates user if they don't exist (if signup enabled).
 
         Raises:
-            SignupDisabledError: If user doesn't exist and signup is disabled
+            ValueError: If magic link authentication is not enabled
         """
+        if not self._config.enable_magic_link:
+            raise ValueError("Magic link authentication is not enabled.")
+
         user = await self.get_user(email=email.lower())
 
         if not user:
@@ -715,16 +727,33 @@ class AuthClient[UserT: BaseUser]:
         session_id = str(payload.session_id)
         cache_key = f"{self._config.cache_prefix}:session:{session_id}".encode()
 
-        # Try cache first
-        if self._kv_client is not None:
-            cached = await self._kv_client.get(cache_key)
-            if cached is not None:
-                session = self._auth_session_table.model_validate_json(cached)
-                if session.not_after < datetime.now(UTC):
-                    return None
-                return session
+        if self._kv_client is not None and self._config.use_kv_cache:
 
-        # Cache miss — find latest non-revoked token for this session
+            async def _fetch_session() -> bytes:
+                row = await (
+                    self._db()
+                    .select(self._auth_session_table)
+                    .where(
+                        (self._auth_session_table.c.session_id == session_id)
+                        & ~self._auth_session_table.c.revoked
+                    )
+                    .first_or_none()
+                )
+                if row is None:
+                    return b""
+                return row.model_dump_json().encode()
+
+            remaining = self._config.cache_session_ttl_seconds
+            cached = await self._kv_client.guarded_get(
+                cache_key, compute=_fetch_session, ttl=remaining
+            )
+            if cached == b"":
+                return None
+            session = self._auth_session_table.model_validate_json(cached)
+            if session.revoked or session.not_after < datetime.now(UTC):
+                return None
+            return session
+
         result = await (
             self._db()
             .select(self._auth_session_table)
@@ -735,20 +764,8 @@ class AuthClient[UserT: BaseUser]:
             .first_or_none()
         )
 
-        if not result:
+        if not result or result.not_after < datetime.now(UTC):
             return None
-
-        if result.not_after < datetime.now(UTC):
-            return None
-
-        # Populate cache with TTL capped at session expiry
-        if self._kv_client is not None and self._config.use_kv_cache:
-            remaining = (result.not_after - datetime.now(UTC)).total_seconds()
-            ttl = min(self._config.cache_session_ttl_seconds, remaining)
-            if ttl > 0:
-                await self._kv_client.set(
-                    cache_key, result.model_dump_json().encode(), ttl=ttl
-                )
 
         return result
 

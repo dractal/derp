@@ -130,7 +130,7 @@ class Expression(abc.ABC):
         return Between(self, low, high)
 
 
-@dataclasses.dataclass
+@dataclasses.dataclass(eq=False)
 class ColumnRef(Expression):
     """Reference to a table column."""
 
@@ -201,6 +201,8 @@ class InList(Expression):
     negated: bool = False
 
     def to_sql(self, params: list[Any]) -> str:
+        if not self.values:
+            return "FALSE" if not self.negated else "TRUE"
         col_sql = _expr_to_sql(self.column, params)
         placeholders = []
         for v in self.values:
