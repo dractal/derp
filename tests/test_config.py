@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from derp.config import ConfigError, DerpConfig
+from pydantic import ValidationError
+
+from derp.config import CeleryConfig, ConfigError, DerpConfig, QueueConfig, VercelQueueConfig
 
 
 def _write_config(path: Path, content: str) -> None:
@@ -114,3 +116,21 @@ timeout_seconds = 45.5
     assert config.payments.webhook_secret == "whsec_123"
     assert config.payments.max_network_retries == 3
     assert config.payments.timeout_seconds == 45.5
+
+
+def test_queue_config_rejects_both_backends() -> None:
+    with pytest.raises(ValidationError, match="Only one queue backend"):
+        QueueConfig(
+            celery=CeleryConfig(broker_url="redis://localhost:6379/0"),
+            vercel=VercelQueueConfig(api_token="tok_test"),
+        )
+
+
+def test_queue_config_accepts_single_backend() -> None:
+    config = QueueConfig(celery=CeleryConfig(broker_url="redis://localhost:6379/0"))
+    assert config.celery is not None
+    assert config.vercel is None
+
+    config = QueueConfig(vercel=VercelQueueConfig(api_token="tok_test"))
+    assert config.vercel is not None
+    assert config.celery is None

@@ -13,6 +13,9 @@ from derp.kv.valkey import ValkeyClient
 from derp.orm import DatabaseEngine
 from derp.orm.router import ReplicaRouter
 from derp.payments import PaymentsClient
+from derp.queue.base import QueueClient
+from derp.queue.celery import CeleryQueueClient
+from derp.queue.vercel import VercelQueueClient
 from derp.storage import StorageClient
 
 
@@ -66,6 +69,12 @@ class DerpClient[UserT: BaseUser]:
             if self._config.payments is not None
             else None
         )
+        self._queue: QueueClient | None = None
+        if self._config.queue is not None:
+            if self._config.queue.celery is not None:
+                self._queue = CeleryQueueClient(self._config.queue.celery)
+            elif self._config.queue.vercel is not None:
+                self._queue = VercelQueueClient(self._config.queue.vercel)
         self._router: ReplicaRouter | None = None
         self._in_session = False
 
@@ -87,6 +96,8 @@ class DerpClient[UserT: BaseUser]:
             await self._kv.connect()
         if self._payments is not None:
             await self._payments.connect()
+        if self._queue is not None:
+            await self._queue.connect()
         if self._auth is not None:
             self._auth.set_db(self._db)
             self._auth.set_email(self._email)
@@ -128,6 +139,7 @@ class DerpClient[UserT: BaseUser]:
             self._storage,
             self._kv,
             self._payments,
+            self._queue,
         ]:
             if client is not None:
                 try:
@@ -209,6 +221,15 @@ class DerpClient[UserT: BaseUser]:
         if self._payments is None:
             raise ValueError("`PaymentsConfig` was not passed to `DerpConfig`.")
         return self._payments
+
+    @property
+    def queue(self) -> QueueClient:
+        """Get the queue client."""
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        if self._queue is None:
+            raise ValueError("`QueueConfig` was not passed to `DerpConfig`.")
+        return self._queue
 
     @property
     def config(self) -> DerpConfig:

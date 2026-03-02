@@ -9,7 +9,6 @@ from typing import Any
 
 import jwt
 
-from derp.auth.exceptions import InvalidTokenError, TokenExpiredError
 from derp.config import JWTConfig
 
 
@@ -86,18 +85,15 @@ def create_access_token(
     )
 
 
-def decode_token(config: JWTConfig, token: str) -> TokenPayload:
+def decode_token(config: JWTConfig, token: str) -> TokenPayload | None:
     """Decode and validate a JWT token.
 
     Args:
         token: The JWT token string
 
     Returns:
-        TokenPayload with decoded data
-
-    Raises:
-        TokenExpiredError: If the token has expired
-        InvalidTokenError: If the token is invalid
+        TokenPayload with decoded data, or None if the token is
+        expired or invalid.
     """
     try:
         payload = jwt.decode(
@@ -108,29 +104,27 @@ def decode_token(config: JWTConfig, token: str) -> TokenPayload:
             issuer=config.issuer,
             options={"require": ["aud"]} if config.audience else None,
         )
+    except jwt.InvalidTokenError:
+        return None
 
-        # Extract known fields
-        sub = payload.get("sub")
-        session_id = payload.get("session_id")
-        exp = payload.get("exp")
-        iat = payload.get("iat")
+    # Extract known fields
+    sub = payload.get("sub")
+    session_id = payload.get("session_id")
+    exp = payload.get("exp")
+    iat = payload.get("iat")
 
-        if not sub or not session_id:
-            raise InvalidTokenError("Token missing required claims")
+    if not sub or not session_id:
+        return None
 
-        # Convert timestamps
-        exp_dt = datetime.fromtimestamp(exp, tz=UTC) if exp else datetime.now(UTC)
-        iat_dt = datetime.fromtimestamp(iat, tz=UTC) if iat else datetime.now(UTC)
+    # Convert timestamps
+    exp_dt = datetime.fromtimestamp(exp, tz=UTC) if exp else datetime.now(UTC)
+    iat_dt = datetime.fromtimestamp(iat, tz=UTC) if iat else datetime.now(UTC)
 
-        # Extract extra claims
-        known_keys = {"sub", "session_id", "exp", "iat", "iss", "aud"}
-        extra = {k: v for k, v in payload.items() if k not in known_keys}
-        iss = payload.get("iss")
-        aud = payload.get("aud")
-    except jwt.ExpiredSignatureError as e:
-        raise TokenExpiredError() from e
-    except jwt.InvalidTokenError as e:
-        raise InvalidTokenError(str(e)) from e
+    # Extract extra claims
+    known_keys = {"sub", "session_id", "exp", "iat", "iss", "aud"}
+    extra = {k: v for k, v in payload.items() if k not in known_keys}
+    iss = payload.get("iss")
+    aud = payload.get("aud")
 
     return TokenPayload(
         sub=sub,

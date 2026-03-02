@@ -456,6 +456,7 @@ class TestSessionManagement:
         )
 
         payload = decode_token(derp.auth._config.jwt, tokens.access_token)
+        assert payload is not None
 
         # Sign out
         await derp.auth.sign_out(payload.session_id)

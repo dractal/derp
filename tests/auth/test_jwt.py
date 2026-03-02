@@ -6,9 +6,6 @@ import os
 import uuid
 from datetime import UTC, datetime
 
-import pytest
-
-from derp.auth.exceptions import InvalidTokenError, TokenExpiredError
 from derp.auth.jwt import (
     TokenPair,
     create_access_token,
@@ -63,7 +60,7 @@ class TestJWT:
         assert payload.extra["permissions"] == ["read", "write"]
 
     def test_decode_expired_token(self, jwt_config: JWTConfig) -> None:
-        """Test decoding an expired token."""
+        """Test decoding an expired token returns None."""
         config = JWTConfig(
             secret=jwt_config.secret,
             access_token_expire_minutes=-1,  # Already expired
@@ -73,16 +70,14 @@ class TestJWT:
 
         token = create_access_token(config, user_id, session_id)
 
-        with pytest.raises(TokenExpiredError):
-            decode_token(config, token)
+        assert decode_token(config, token) is None
 
     def test_decode_invalid_token(self, jwt_config: JWTConfig) -> None:
-        """Test decoding an invalid token."""
-        with pytest.raises(InvalidTokenError):
-            decode_token(jwt_config, "invalid.token.here")
+        """Test decoding an invalid token returns None."""
+        assert decode_token(jwt_config, "invalid.token.here") is None
 
     def test_decode_tampered_token(self, jwt_config: JWTConfig) -> None:
-        """Test decoding a tampered token."""
+        """Test decoding a tampered token returns None."""
         user_id = uuid.uuid4()
         session_id = uuid.uuid4()
 
@@ -92,19 +87,17 @@ class TestJWT:
         parts[1] = parts[1][:-5] + "XXXXX"  # Modify payload
         tampered = ".".join(parts)
 
-        with pytest.raises(InvalidTokenError):
-            decode_token(jwt_config, tampered)
+        assert decode_token(jwt_config, tampered) is None
 
     def test_decode_wrong_secret(self, jwt_config: JWTConfig) -> None:
-        """Test decoding with wrong secret."""
+        """Test decoding with wrong secret returns None."""
         user_id = uuid.uuid4()
         session_id = uuid.uuid4()
 
         token = create_access_token(jwt_config, user_id, session_id)
 
         config2 = JWTConfig(secret="different-secret-padded-to-16-bytes")
-        with pytest.raises(InvalidTokenError):
-            decode_token(config2, token)
+        assert decode_token(config2, token) is None
 
     def test_create_token_pair(self, jwt_config: JWTConfig) -> None:
         """Test creating a token pair."""

@@ -2,11 +2,12 @@
 
 Derp is an async backend toolkit for Python web apps. It includes:
 
-- A strongly typed PostgreSQL ORM inspired by [Drizzle ORM](https://orm.drizzle.team/).
+- A typed PostgreSQL ORM inspired by [Drizzle ORM](https://orm.drizzle.team/).
 - Built-in authentication (JWT + email/OAuth).
 - S3-compatible object storage client.
 - In memory KV storage support (Valkey backend).
 - Integrated stripe payments client.
+- Studio for visualizing tables, auth, storage.
 
 ## Features
 

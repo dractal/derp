@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 CONFIG_FILE = "derp.toml"
 MIGRATIONS_TABLE = "derp_migrations"
@@ -211,6 +211,41 @@ class KVConfig(BaseModel):
     valkey: ValkeyConfig | None = None
 
 
+class CeleryConfig(BaseModel):
+    """Configuration for Celery task queue."""
+
+    broker_url: str
+    result_backend: str | None = None
+    task_serializer: str = "json"
+    result_serializer: str = "json"
+    task_default_queue: str = "default"
+
+
+class VercelQueueConfig(BaseModel):
+    """Configuration for Vercel queue (REST-based)."""
+
+    api_token: str
+    team_id: str | None = None
+    project_id: str | None = None
+    default_queue: str = "default"
+
+
+class QueueConfig(BaseModel):
+    """Queue configuration."""
+
+    celery: CeleryConfig | None = None
+    vercel: VercelQueueConfig | None = None
+
+    @model_validator(mode="after")
+    def _check_single_backend(self) -> QueueConfig:
+        if self.celery is not None and self.vercel is not None:
+            raise ValueError(
+                "Only one queue backend can be configured at a time. "
+                "Set either [queue.celery] or [queue.vercel], not both."
+            )
+        return self
+
+
 class DerpConfig(BaseModel):
     """Derp configuration."""
 
@@ -220,6 +255,7 @@ class DerpConfig(BaseModel):
     auth: AuthConfig | None = None
     kv: KVConfig | None = None
     payments: PaymentsConfig | None = None
+    queue: QueueConfig | None = None
 
     _env_vars: dict[tuple[str, ...], str] = {}
 
@@ -301,4 +337,15 @@ migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # webhook_secret = "$STRIPE_WEBHOOK_SECRET"
 # max_network_retries = 2
 # timeout_seconds = 30.0
+
+# [queue.celery]
+# broker_url = "$CELERY_BROKER_URL"
+# result_backend = "$CELERY_RESULT_BACKEND"
+# task_default_queue = "default"
+
+# [queue.vercel]
+# api_token = "$VERCEL_QUEUE_TOKEN"
+# team_id = "team_xxx"
+# project_id = "prj_xxx"
+# default_queue = "default"
 """

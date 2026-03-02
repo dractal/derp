@@ -12,6 +12,7 @@ import asyncpg
 from derp.kv.base import KVClient
 from derp.orm.fields import FieldInfo
 from derp.orm.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
+from derp.orm.query.table_ref import TableRef
 from derp.orm.router import ReplicaRouter
 from derp.orm.table import Table
 
@@ -78,6 +79,10 @@ class Transaction:
         """Start a DELETE query bound to this transaction's connection."""
         return DeleteQuery(self._connection, table)
 
+    def table(self, table: str) -> TableRef:
+        """Start a non ORM query from a string table name."""
+        return TableRef(table, self._connection)
+
 
 class DatabaseEngine:
     """Main async database engine for Derp ORM.
@@ -86,7 +91,7 @@ class DatabaseEngine:
         db = DatabaseEngine("postgresql://user:pass@localhost:5432/mydb")
 
         async with db:
-            users = await db.select(User).where(eq(User.name, "Alice")).execute()
+            users = await db.select(User).where(User.name == "Alice").execute()
 
         # Or manual lifecycle
         await db.connect()
@@ -200,6 +205,9 @@ class DatabaseEngine:
             db.select(Post, User.c.name)
               .from_(Post)
               .inner_join(User, Post.c.author_id == User.c.id)
+
+            # Non ORM queries
+            db.table("users").select("*").eq("id", 1).execute()
         """
         return SelectQuery(
             self._pool, columns, cache_store=self._cache_store, router=self._router
@@ -234,7 +242,7 @@ class DatabaseEngine:
             UpdateQuery builder
 
         Example:
-            await db.update(User).set(name="Robert").where(eq(User.id, 1)).execute()
+            await db.update(User).set(name="Robert").where(User.id == 1).execute()
         """
         return UpdateQuery(self._pool, table, router=self._router)
 
@@ -248,9 +256,28 @@ class DatabaseEngine:
             DeleteQuery builder
 
         Example:
-            await db.delete(User).where(eq(User.id, 1)).execute()
+            await db.delete(User).where(User.id == 1).execute()
         """
         return DeleteQuery(self._pool, table, router=self._router)
+
+    def table(self, table: Table | str) -> TableRef:
+        """Start a non ORM query from a string table name.
+
+        Args:
+            table: SQL table name
+
+        Returns:
+            TableRef with select/insert/update/delete methods
+
+        Example:
+            await db.table("users").select("*").eq("id", 1).execute()
+        """
+        return TableRef(
+            table if isinstance(table, str) else table.get_table_name(),
+            self._pool,
+            cache_store=self._cache_store,
+            router=self._router,
+        )
 
     async def execute(
         self, query: str, params: list[Any] | None = None

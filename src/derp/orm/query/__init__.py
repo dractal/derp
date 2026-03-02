@@ -9,6 +9,7 @@ from derp.orm.query.builder import (
     UpdateQuery,
 )
 from derp.orm.query.expressions import ComparisonOperator, Expression, LogicalOperator
+from derp.orm.query.table_ref import TableRef
 from derp.orm.query.types import Row, T
 
 __all__ = [
@@ -18,6 +19,8 @@ __all__ = [
     "InsertQuery",
     "UpdateQuery",
     "DeleteQuery",
+    # Non ORM queries
+    "TableRef",
     # Enums
     "JoinType",
     "SortOrder",

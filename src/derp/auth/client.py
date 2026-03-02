@@ -724,6 +724,8 @@ class AuthClient[UserT: BaseUser]:
     async def validate_session(self, token: str) -> AuthSession | None:
         """Validate a session is active and not expired."""
         payload = decode_token(self._config.jwt, token)
+        if payload is None:
+            return None
         session_id = str(payload.session_id)
         cache_key = f"{self._config.cache_prefix}:session:{session_id}".encode()
 

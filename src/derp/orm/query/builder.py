@@ -82,9 +82,13 @@ class _WhereShorthandMixin:
         from_table = getattr(self, "_from_table", None)
         table = getattr(self, "_table", None)
         if from_table is not None:
-            table_name = from_table.get_table_name()
+            table_name = (
+                from_table
+                if isinstance(from_table, str)
+                else from_table.get_table_name()
+            )
         elif table is not None:
-            table_name = table.get_table_name()
+            table_name = table if isinstance(table, str) else table.get_table_name()
         if "." in column:
             t, c = column.split(".", 1)
             return ColumnRef(t, c)
@@ -161,7 +165,7 @@ class SelectQuery[T](_WhereShorthandMixin):
     ):
         self._pool = pool
         self._columns = columns
-        self._from_table: type[Table] | None = None
+        self._from_table: type[Table] | str | None = None
         self._joins: list[JoinClause] = []
         self._where_clause: Expression | None = None
         self._order_by: list[OrderByClause] = []
@@ -179,7 +183,7 @@ class SelectQuery[T](_WhereShorthandMixin):
         if columns and isinstance(columns[0], type) and issubclass(columns[0], Table):
             self._from_table = columns[0]
 
-    def from_(self, table: type[Table]) -> Self:
+    def from_(self, table: type[Table] | str) -> Self:
         """Set the FROM table."""
         self._from_table = table
         return self
@@ -281,7 +285,12 @@ class SelectQuery[T](_WhereShorthandMixin):
 
         # FROM clause
         if self._from_table:
-            sql += f" FROM {self._from_table.get_table_name()}"
+            from_name = (
+                self._from_table
+                if isinstance(self._from_table, str)
+                else self._from_table.get_table_name()
+            )
+            sql += f" FROM {from_name}"
 
         # JOIN clauses
         for join in self._joins:
@@ -342,7 +351,12 @@ class SelectQuery[T](_WhereShorthandMixin):
         sql = "SELECT COUNT(*)"
 
         if self._from_table:
-            sql += f" FROM {self._from_table.get_table_name()}"
+            from_name = (
+                self._from_table
+                if isinstance(self._from_table, str)
+                else self._from_table.get_table_name()
+            )
+            sql += f" FROM {from_name}"
 
         for join in self._joins:
             join_table = join.table.get_table_name()
@@ -407,7 +421,7 @@ class SelectQuery[T](_WhereShorthandMixin):
 
     def _rows_to_dicts(self, rows: list[asyncpg.Record]) -> list[dict[str, Any]]:
         """Convert asyncpg Records to plain dicts with JSON deserialization."""
-        if self._from_table:
+        if self._from_table and not isinstance(self._from_table, str):
             return [_deserialize_row(self._from_table, dict(row)) for row in rows]
         if (
             len(self._columns) == 1
