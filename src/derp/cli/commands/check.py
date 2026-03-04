@@ -7,7 +7,7 @@ from pathlib import Path
 import typer
 
 from derp.config import ConfigError, DerpConfig
-from derp.orm.loader import load_tables
+from derp.orm.loader import discover_tables
 from derp.orm.migrations.journal import load_journal, load_latest_snapshot
 from derp.orm.migrations.snapshot.differ import SnapshotDiffer
 from derp.orm.migrations.snapshot.models import SchemaSnapshot
@@ -64,7 +64,7 @@ def check() -> None:
 
     # Load tables from schema module
     try:
-        tables = load_tables(schema_path)
+        tables = discover_tables(schema_path, include_auth=config.auth is not None)
     except FileNotFoundError:
         typer.echo(f"Error: Schema file not found: {schema_path}", err=True)
         raise typer.Exit(1)

@@ -14,10 +14,23 @@ from derp.payments.exceptions import (
     WebhookSignatureError,
 )
 from derp.payments.models import (
+    Account,
+    AccountLink,
+    AccountLinkType,
+    AccountType,
+    Balance,
+    CancellationReason,
+    CaptureMethod,
     CheckoutSession,
     CheckoutSessionMode,
     Customer,
+    PaymentIntent,
+    Payout,
+    PayoutMethod,
+    Refund,
+    RefundReason,
     StripeListResult,
+    Transfer,
     WebhookEvent,
 )
 
@@ -70,11 +83,6 @@ class PaymentsClient:
     def _to_raw(payload: Any) -> dict[str, Any]:
         if payload is None:
             return {}
-        to_dict_recursive = getattr(payload, "to_dict_recursive", None)
-        if callable(to_dict_recursive):
-            maybe_dict = to_dict_recursive()
-            if isinstance(maybe_dict, dict):
-                return dict(maybe_dict)
         if isinstance(payload, dict):
             return dict(payload)
         values = getattr(payload, "__dict__", None)
@@ -152,6 +160,113 @@ class PaymentsClient:
         )
 
     @staticmethod
+    def _connect_options(stripe_account: str | None) -> dict[str, Any] | None:
+        if stripe_account is None:
+            return None
+        return {"stripe_account": stripe_account}
+
+    @staticmethod
+    def _normalize_account(raw: dict[str, Any]) -> Account:
+        return Account(
+            id=str(raw.get("id", "")),
+            type=cast(str | None, raw.get("type")),
+            email=cast(str | None, raw.get("email")),
+            country=cast(str | None, raw.get("country")),
+            charges_enabled=bool(raw.get("charges_enabled", False)),
+            payouts_enabled=bool(raw.get("payouts_enabled", False)),
+            details_submitted=bool(raw.get("details_submitted", False)),
+            business_type=cast(str | None, raw.get("business_type")),
+            metadata=PaymentsClient._to_metadata(raw.get("metadata")),
+            created=cast(int | None, raw.get("created")),
+            raw=raw,
+        )
+
+    @staticmethod
+    def _normalize_account_link(raw: dict[str, Any]) -> AccountLink:
+        return AccountLink(
+            url=str(raw.get("url", "")),
+            created=cast(int | None, raw.get("created")),
+            expires_at=cast(int | None, raw.get("expires_at")),
+            raw=raw,
+        )
+
+    @staticmethod
+    def _normalize_transfer(raw: dict[str, Any]) -> Transfer:
+        return Transfer(
+            id=str(raw.get("id", "")),
+            amount=int(raw.get("amount", 0)),
+            currency=str(raw.get("currency", "")),
+            destination=cast(str | None, raw.get("destination")),
+            description=cast(str | None, raw.get("description")),
+            transfer_group=cast(str | None, raw.get("transfer_group")),
+            metadata=PaymentsClient._to_metadata(raw.get("metadata")),
+            created=cast(int | None, raw.get("created")),
+            raw=raw,
+        )
+
+    @staticmethod
+    def _normalize_payment_intent(raw: dict[str, Any]) -> PaymentIntent:
+        return PaymentIntent(
+            id=str(raw.get("id", "")),
+            amount=int(raw.get("amount", 0)),
+            currency=str(raw.get("currency", "")),
+            status=cast(str | None, raw.get("status")),
+            customer_id=PaymentsClient._customer_id(raw.get("customer")),
+            description=cast(str | None, raw.get("description")),
+            capture_method=cast(str | None, raw.get("capture_method")),
+            cancellation_reason=cast(str | None, raw.get("cancellation_reason")),
+            payment_method=cast(str | None, raw.get("payment_method")),
+            metadata=PaymentsClient._to_metadata(raw.get("metadata")),
+            created=cast(int | None, raw.get("created")),
+            raw=raw,
+        )
+
+    @staticmethod
+    def _normalize_refund(raw: dict[str, Any]) -> Refund:
+        return Refund(
+            id=str(raw.get("id", "")),
+            amount=int(raw.get("amount", 0)),
+            currency=str(raw.get("currency", "")),
+            status=cast(str | None, raw.get("status")),
+            payment_intent_id=cast(str | None, raw.get("payment_intent")),
+            charge_id=cast(str | None, raw.get("charge")),
+            reason=cast(str | None, raw.get("reason")),
+            metadata=PaymentsClient._to_metadata(raw.get("metadata")),
+            created=cast(int | None, raw.get("created")),
+            raw=raw,
+        )
+
+    @staticmethod
+    def _normalize_payout(raw: dict[str, Any]) -> Payout:
+        return Payout(
+            id=str(raw.get("id", "")),
+            amount=int(raw.get("amount", 0)),
+            currency=str(raw.get("currency", "")),
+            status=cast(str | None, raw.get("status")),
+            method=cast(str | None, raw.get("method")),
+            description=cast(str | None, raw.get("description")),
+            destination=cast(str | None, raw.get("destination")),
+            metadata=PaymentsClient._to_metadata(raw.get("metadata")),
+            arrival_date=cast(int | None, raw.get("arrival_date")),
+            created=cast(int | None, raw.get("created")),
+            raw=raw,
+        )
+
+    @staticmethod
+    def _normalize_balance(raw: dict[str, Any]) -> Balance:
+        available = raw.get("available")
+        pending = raw.get("pending")
+        connect_reserved = raw.get("connect_reserved")
+        return Balance(
+            available=list(available) if isinstance(available, list) else [],
+            pending=list(pending) if isinstance(pending, list) else [],
+            connect_reserved=(
+                list(connect_reserved) if isinstance(connect_reserved, list) else None
+            ),
+            raw=raw,
+        )
+
+    @staticmethod
     def _normalize_line_items(
         line_items: list[dict[str, str | int]],
     ) -> list[dict[str, str | int]]:
@@ -212,7 +327,7 @@ class PaymentsClient:
             params["metadata"] = metadata
 
         response = await self._provider_call(
-            self._stripe_client.v1.customers.create_async, **params
+            self._stripe_client.v1.customers.create_async, params
         )
         return self._normalize_customer(self._to_raw(response))
 
@@ -230,7 +345,7 @@ class PaymentsClient:
         response = await self._provider_call(
             self._stripe_client.v1.customers.retrieve_async,
             customer_id,
-            **params,
+            params,
         )
         return self._normalize_customer(self._to_raw(response))
 
@@ -260,7 +375,7 @@ class PaymentsClient:
         response = await self._provider_call(
             self._stripe_client.v1.customers.update_async,
             customer_id,
-            **params,
+            params,
         )
         return self._normalize_customer(self._to_raw(response))
 
@@ -311,15 +426,20 @@ class PaymentsClient:
         if allow_promotion_codes is not None:
             params["allow_promotion_codes"] = allow_promotion_codes
 
+        options: dict[str, Any] | None = None
         if idempotency_key is not None:
             if not isinstance(idempotency_key, str) or not idempotency_key.strip():
                 raise ValueError(
                     "idempotency_key must be a non-empty str when provided."
                 )
-            params["options"] = {"idempotency_key": idempotency_key}
+            options = {"idempotency_key": idempotency_key}
+
+        args: list[Any] = [params]
+        if options is not None:
+            args.append(options)
 
         response = await self._provider_call(
-            self._stripe_client.v1.checkout.sessions.create_async, **params
+            self._stripe_client.v1.checkout.sessions.create_async, *args
         )
         return self._normalize_checkout_session(self._to_raw(response))
 
@@ -337,7 +457,7 @@ class PaymentsClient:
         response = await self._provider_call(
             self._stripe_client.v1.checkout.sessions.retrieve_async,
             session_id,
-            **params,
+            params,
         )
         return self._normalize_checkout_session(self._to_raw(response))
 
@@ -360,6 +480,7 @@ class PaymentsClient:
         starting_after: str | None = None,
         expand: list[str] | None = None,
         extra_params: dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
     ) -> StripeListResult:
         """List Stripe resources with cursor pagination."""
         if self._stripe_client is None:
@@ -374,7 +495,10 @@ class PaymentsClient:
         if extra_params is not None:
             params.update(extra_params)
 
-        result = await self._provider_call(list_method, params)
+        if options is not None:
+            result = await self._provider_call(list_method, params, options)
+        else:
+            result = await self._provider_call(list_method, params)
         data = [self._to_raw(item) for item in result.data]
         return StripeListResult(data=data, has_more=result.has_more)
 
@@ -454,6 +578,559 @@ class PaymentsClient:
             limit=limit,
             starting_after=starting_after,
         )
+
+    # ------------------------------------------------------------------
+    # Connected Accounts
+    # ------------------------------------------------------------------
+
+    async def create_account(
+        self,
+        *,
+        type: AccountType | str | None = None,
+        country: str | None = None,
+        email: str | None = None,
+        metadata: dict[str, str] | None = None,
+        capabilities: dict[str, dict[str, bool]] | None = None,
+        business_type: str | None = None,
+        business_profile: dict[str, Any] | None = None,
+    ) -> Account:
+        """Create a Stripe Connect account."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        if type is not None and type not in AccountType:
+            raise ValueError(
+                f"Invalid account type: {type}. Must be one of {list(AccountType)}."
+            )
+
+        params: dict[str, Any] = {}
+        if type is not None:
+            params["type"] = type
+        if country is not None:
+            params["country"] = country
+        if email is not None:
+            params["email"] = email
+        if metadata is not None:
+            params["metadata"] = metadata
+        if capabilities is not None:
+            params["capabilities"] = capabilities
+        if business_type is not None:
+            params["business_type"] = business_type
+        if business_profile is not None:
+            params["business_profile"] = business_profile
+
+        response = await self._provider_call(
+            self._stripe_client.v1.accounts.create_async, params
+        )
+        return self._normalize_account(self._to_raw(response))
+
+    async def retrieve_account(self, account_id: str) -> Account:
+        """Retrieve a Stripe Connect account."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        response = await self._provider_call(
+            self._stripe_client.v1.accounts.retrieve_async, account_id
+        )
+        return self._normalize_account(self._to_raw(response))
+
+    async def update_account(
+        self,
+        account_id: str,
+        *,
+        metadata: dict[str, str] | None = None,
+        business_profile: dict[str, Any] | None = None,
+    ) -> Account:
+        """Update a Stripe Connect account."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        params: dict[str, Any] = {}
+        if metadata is not None:
+            params["metadata"] = metadata
+        if business_profile is not None:
+            params["business_profile"] = business_profile
+
+        response = await self._provider_call(
+            self._stripe_client.v1.accounts.update_async, account_id, params
+        )
+        return self._normalize_account(self._to_raw(response))
+
+    async def delete_account(self, account_id: str) -> Account:
+        """Delete a Stripe Connect account."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        response = await self._provider_call(
+            self._stripe_client.v1.accounts.delete_async, account_id
+        )
+        return self._normalize_account(self._to_raw(response))
+
+    async def create_account_link(
+        self,
+        *,
+        account_id: str,
+        refresh_url: str,
+        return_url: str,
+        type: AccountLinkType | str,
+    ) -> AccountLink:
+        """Create a Stripe account onboarding or update link."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        if type not in AccountLinkType:
+            raise ValueError(
+                f"Invalid account link type: {type}. "
+                f"Must be one of {list(AccountLinkType)}."
+            )
+
+        response = await self._provider_call(
+            self._stripe_client.v1.account_links.create_async,
+            {
+                "account": account_id,
+                "refresh_url": refresh_url,
+                "return_url": return_url,
+                "type": type,
+            },
+        )
+        return self._normalize_account_link(self._to_raw(response))
+
+    async def list_accounts(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe Connect accounts."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        return await self._list_resource(
+            self._stripe_client.v1.accounts.list_async,
+            limit=limit,
+            starting_after=starting_after,
+        )
+
+    # ------------------------------------------------------------------
+    # Transfers
+    # ------------------------------------------------------------------
+
+    async def create_transfer(
+        self,
+        *,
+        amount: int,
+        currency: str,
+        destination: str,
+        description: str | None = None,
+        metadata: dict[str, str] | None = None,
+        transfer_group: str | None = None,
+    ) -> Transfer:
+        """Create a Stripe transfer to a connected account."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+            raise ValueError("amount must be a positive integer.")
+
+        params: dict[str, Any] = {
+            "amount": amount,
+            "currency": currency,
+            "destination": destination,
+        }
+        if description is not None:
+            params["description"] = description
+        if metadata is not None:
+            params["metadata"] = metadata
+        if transfer_group is not None:
+            params["transfer_group"] = transfer_group
+
+        response = await self._provider_call(
+            self._stripe_client.v1.transfers.create_async, params
+        )
+        return self._normalize_transfer(self._to_raw(response))
+
+    async def retrieve_transfer(self, transfer_id: str) -> Transfer:
+        """Retrieve a Stripe transfer."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        response = await self._provider_call(
+            self._stripe_client.v1.transfers.retrieve_async, transfer_id
+        )
+        return self._normalize_transfer(self._to_raw(response))
+
+    async def list_transfers(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+        destination: str | None = None,
+        transfer_group: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe transfers."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        extra: dict[str, Any] = {}
+        if destination is not None:
+            extra["destination"] = destination
+        if transfer_group is not None:
+            extra["transfer_group"] = transfer_group
+
+        return await self._list_resource(
+            self._stripe_client.v1.transfers.list_async,
+            limit=limit,
+            starting_after=starting_after,
+            extra_params=extra or None,
+        )
+
+    # ------------------------------------------------------------------
+    # Payment Intents
+    # ------------------------------------------------------------------
+
+    async def create_payment_intent(
+        self,
+        *,
+        amount: int,
+        currency: str,
+        customer_id: str | None = None,
+        metadata: dict[str, str] | None = None,
+        description: str | None = None,
+        payment_method_types: list[str] | None = None,
+        capture_method: CaptureMethod | str | None = None,
+        transfer_data: dict[str, Any] | None = None,
+        application_fee_amount: int | None = None,
+        on_behalf_of: str | None = None,
+    ) -> PaymentIntent:
+        """Create a Stripe payment intent."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+            raise ValueError("amount must be a positive integer.")
+        if capture_method is not None and capture_method not in CaptureMethod:
+            raise ValueError(
+                f"Invalid capture_method: {capture_method}. "
+                f"Must be one of {list(CaptureMethod)}."
+            )
+
+        params: dict[str, Any] = {"amount": amount, "currency": currency}
+        if customer_id is not None:
+            params["customer"] = customer_id
+        if metadata is not None:
+            params["metadata"] = metadata
+        if description is not None:
+            params["description"] = description
+        if payment_method_types is not None:
+            params["payment_method_types"] = payment_method_types
+        if capture_method is not None:
+            params["capture_method"] = capture_method
+        if transfer_data is not None:
+            params["transfer_data"] = transfer_data
+        if application_fee_amount is not None:
+            params["application_fee_amount"] = application_fee_amount
+        if on_behalf_of is not None:
+            params["on_behalf_of"] = on_behalf_of
+
+        response = await self._provider_call(
+            self._stripe_client.v1.payment_intents.create_async, params
+        )
+        return self._normalize_payment_intent(self._to_raw(response))
+
+    async def retrieve_payment_intent(
+        self, payment_intent_id: str, *, expand: list[str] | None = None
+    ) -> PaymentIntent:
+        """Retrieve a Stripe payment intent."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        params: dict[str, Any] = {}
+        if expand is not None:
+            params["expand"] = expand
+
+        response = await self._provider_call(
+            self._stripe_client.v1.payment_intents.retrieve_async,
+            payment_intent_id,
+            params,
+        )
+        return self._normalize_payment_intent(self._to_raw(response))
+
+    async def confirm_payment_intent(
+        self, payment_intent_id: str, *, payment_method: str | None = None
+    ) -> PaymentIntent:
+        """Confirm a Stripe payment intent."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        params: dict[str, Any] = {}
+        if payment_method is not None:
+            params["payment_method"] = payment_method
+
+        response = await self._provider_call(
+            self._stripe_client.v1.payment_intents.confirm_async,
+            payment_intent_id,
+            params,
+        )
+        return self._normalize_payment_intent(self._to_raw(response))
+
+    async def capture_payment_intent(
+        self, payment_intent_id: str, *, amount_to_capture: int | None = None
+    ) -> PaymentIntent:
+        """Capture an authorized Stripe payment intent."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        params: dict[str, Any] = {}
+        if amount_to_capture is not None:
+            params["amount_to_capture"] = amount_to_capture
+
+        response = await self._provider_call(
+            self._stripe_client.v1.payment_intents.capture_async,
+            payment_intent_id,
+            params,
+        )
+        return self._normalize_payment_intent(self._to_raw(response))
+
+    async def cancel_payment_intent(
+        self,
+        payment_intent_id: str,
+        *,
+        cancellation_reason: CancellationReason | str | None = None,
+    ) -> PaymentIntent:
+        """Cancel a Stripe payment intent."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        if (
+            cancellation_reason is not None
+            and cancellation_reason not in CancellationReason
+        ):
+            raise ValueError(
+                f"Invalid cancellation_reason: {cancellation_reason}. "
+                f"Must be one of {list(CancellationReason)}."
+            )
+
+        params: dict[str, Any] = {}
+        if cancellation_reason is not None:
+            params["cancellation_reason"] = cancellation_reason
+
+        response = await self._provider_call(
+            self._stripe_client.v1.payment_intents.cancel_async,
+            payment_intent_id,
+            params,
+        )
+        return self._normalize_payment_intent(self._to_raw(response))
+
+    async def list_payment_intents(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+        customer_id: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe payment intents."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        extra: dict[str, Any] = {}
+        if customer_id is not None:
+            extra["customer"] = customer_id
+
+        return await self._list_resource(
+            self._stripe_client.v1.payment_intents.list_async,
+            limit=limit,
+            starting_after=starting_after,
+            extra_params=extra or None,
+        )
+
+    # ------------------------------------------------------------------
+    # Refunds
+    # ------------------------------------------------------------------
+
+    async def create_refund(
+        self,
+        *,
+        payment_intent_id: str | None = None,
+        charge_id: str | None = None,
+        amount: int | None = None,
+        reason: RefundReason | str | None = None,
+        metadata: dict[str, str] | None = None,
+        reverse_transfer: bool | None = None,
+        refund_application_fee: bool | None = None,
+    ) -> Refund:
+        """Create a Stripe refund."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        if payment_intent_id is None and charge_id is None:
+            raise ValueError(
+                "At least one of `payment_intent_id` or `charge_id` must be provided."
+            )
+        if reason is not None and reason not in RefundReason:
+            raise ValueError(
+                f"Invalid refund reason: {reason}. Must be one of {list(RefundReason)}."
+            )
+
+        params: dict[str, Any] = {}
+        if payment_intent_id is not None:
+            params["payment_intent"] = payment_intent_id
+        if charge_id is not None:
+            params["charge"] = charge_id
+        if amount is not None:
+            params["amount"] = amount
+        if reason is not None:
+            params["reason"] = reason
+        if metadata is not None:
+            params["metadata"] = metadata
+        if reverse_transfer is not None:
+            params["reverse_transfer"] = reverse_transfer
+        if refund_application_fee is not None:
+            params["refund_application_fee"] = refund_application_fee
+
+        response = await self._provider_call(
+            self._stripe_client.v1.refunds.create_async, params
+        )
+        return self._normalize_refund(self._to_raw(response))
+
+    async def retrieve_refund(self, refund_id: str) -> Refund:
+        """Retrieve a Stripe refund."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        response = await self._provider_call(
+            self._stripe_client.v1.refunds.retrieve_async, refund_id
+        )
+        return self._normalize_refund(self._to_raw(response))
+
+    async def list_refunds(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+        payment_intent_id: str | None = None,
+        charge_id: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe refunds."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        extra: dict[str, Any] = {}
+        if payment_intent_id is not None:
+            extra["payment_intent"] = payment_intent_id
+        if charge_id is not None:
+            extra["charge"] = charge_id
+
+        return await self._list_resource(
+            self._stripe_client.v1.refunds.list_async,
+            limit=limit,
+            starting_after=starting_after,
+            extra_params=extra or None,
+        )
+
+    # ------------------------------------------------------------------
+    # Payouts
+    # ------------------------------------------------------------------
+
+    async def create_payout(
+        self,
+        *,
+        amount: int,
+        currency: str,
+        description: str | None = None,
+        metadata: dict[str, str] | None = None,
+        destination: str | None = None,
+        method: PayoutMethod | str | None = None,
+        stripe_account: str | None = None,
+    ) -> Payout:
+        """Create a Stripe payout."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        if not isinstance(amount, int) or isinstance(amount, bool) or amount <= 0:
+            raise ValueError("amount must be a positive integer.")
+        if method is not None and method not in PayoutMethod:
+            raise ValueError(
+                f"Invalid payout method: {method}. Must be one of {list(PayoutMethod)}."
+            )
+
+        params: dict[str, Any] = {"amount": amount, "currency": currency}
+        if description is not None:
+            params["description"] = description
+        if metadata is not None:
+            params["metadata"] = metadata
+        if destination is not None:
+            params["destination"] = destination
+        if method is not None:
+            params["method"] = method
+
+        options = self._connect_options(stripe_account)
+        args: list[Any] = [params]
+        if options is not None:
+            args.append(options)
+
+        response = await self._provider_call(
+            self._stripe_client.v1.payouts.create_async, *args
+        )
+        return self._normalize_payout(self._to_raw(response))
+
+    async def retrieve_payout(
+        self, payout_id: str, *, stripe_account: str | None = None
+    ) -> Payout:
+        """Retrieve a Stripe payout."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        options = self._connect_options(stripe_account)
+        response = await self._provider_call(
+            self._stripe_client.v1.payouts.retrieve_async,
+            payout_id,
+            None,
+            options,
+        )
+        return self._normalize_payout(self._to_raw(response))
+
+    async def cancel_payout(
+        self, payout_id: str, *, stripe_account: str | None = None
+    ) -> Payout:
+        """Cancel a pending Stripe payout."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        options = self._connect_options(stripe_account)
+        response = await self._provider_call(
+            self._stripe_client.v1.payouts.cancel_async,
+            payout_id,
+            None,
+            options,
+        )
+        return self._normalize_payout(self._to_raw(response))
+
+    async def list_payouts(
+        self,
+        *,
+        limit: int = 25,
+        starting_after: str | None = None,
+        stripe_account: str | None = None,
+    ) -> StripeListResult:
+        """List Stripe payouts."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+        return await self._list_resource(
+            self._stripe_client.v1.payouts.list_async,
+            limit=limit,
+            starting_after=starting_after,
+            options=self._connect_options(stripe_account),
+        )
+
+    # ------------------------------------------------------------------
+    # Balance
+    # ------------------------------------------------------------------
+
+    async def retrieve_balance(self, *, stripe_account: str | None = None) -> Balance:
+        """Retrieve Stripe account balance."""
+        if self._stripe_client is None:
+            raise PaymentsNotConnectedError()
+
+        options = self._connect_options(stripe_account)
+        response = await self._provider_call(
+            self._stripe_client.v1.balance.retrieve_async,
+            None,
+            options,
+        )
+        return self._normalize_balance(self._to_raw(response))
+
+    # ------------------------------------------------------------------
+    # Webhooks
+    # ------------------------------------------------------------------
 
     async def verify_webhook_event(
         self,

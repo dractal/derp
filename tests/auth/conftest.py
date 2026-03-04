@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from derp.auth import AuthConfig, EmailConfig, JWTConfig
-from derp.auth.models import AuthSession, BaseUser
+from derp.auth.models import AuthUser
 from derp.config import DerpConfig, ValkeyConfig
 from derp.derp_client import DerpClient
 from derp.kv.valkey import ValkeyClient
@@ -22,12 +22,8 @@ from derp.orm import DatabaseConfig, DatabaseEngine
 from derp.orm.fields import JSONB, Field
 
 
-class User(BaseUser, table="users"):
+class User(AuthUser, table="users"):
     user_metadata: dict[str, Any] | None = Field(JSONB(), nullable=True)
-
-
-class AuthSession(AuthSession, table="auth_sessions"):
-    pass
 
 
 def _pick_free_port() -> int:
@@ -163,6 +159,7 @@ async def _create_auth_tables(db: DatabaseEngine) -> None:
             provider_id VARCHAR(255),
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
             is_superuser BOOLEAN NOT NULL DEFAULT FALSE,
+            role VARCHAR(50) NOT NULL DEFAULT 'default',
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
             updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
             last_sign_in_at TIMESTAMP WITH TIME ZONE,
@@ -176,6 +173,7 @@ async def _create_auth_tables(db: DatabaseEngine) -> None:
             user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             session_id UUID NOT NULL DEFAULT gen_random_uuid(),
             token VARCHAR(255) UNIQUE NOT NULL,
+            role VARCHAR(50) NOT NULL DEFAULT 'default',
             revoked BOOLEAN NOT NULL DEFAULT FALSE,
             user_agent TEXT,
             ip_address VARCHAR(45),

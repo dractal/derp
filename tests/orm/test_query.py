@@ -1011,11 +1011,7 @@ def test_chained_shorthand_methods():
 
 def test_mixed_shorthand_and_where():
     """Test mixing shorthand methods with where()."""
-    query = (
-        SelectQuery[User](None, (User,))
-        .eq("name", "Alice")
-        .where(User.c.age > 18)
-    )
+    query = SelectQuery[User](None, (User,)).eq("name", "Alice").where(User.c.age > 18)
     sql, params = query.build()
     assert "AND" in sql
     assert "(users.name = $1)" in sql

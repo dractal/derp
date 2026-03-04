@@ -23,11 +23,11 @@ from derp.auth.exceptions import (
     UserNotActiveError,
     UserNotFoundError,
 )
-from derp.auth.jwt import TokenPair, create_token_pair, decode_token
+from derp.auth.jwt import TokenPair, TokenPayload, create_token_pair, decode_token
 from derp.auth.models import (
     AuthProvider,
     AuthSession,
-    BaseUser,
+    AuthUser,
 )
 from derp.auth.password import (
     Argon2Hasher,
@@ -40,35 +40,31 @@ from derp.auth.providers.github import GitHubProvider
 from derp.auth.providers.google import GoogleProvider
 from derp.config import AuthConfig
 from derp.kv.base import KVClient
-from derp.orm import DatabaseEngine, Table
-from derp.orm.loader import find_table_by_name, load_tables
+from derp.orm import DatabaseEngine
+from derp.orm.loader import discover_tables
 
 
-class AuthClient[UserT: BaseUser]:
+class AuthClient[UserT: AuthUser]:
     """Core authentication client handling all auth operations."""
 
     def __init__(self, config: AuthConfig, schema_path: str):
-        all_tables = load_tables(schema_path)
-        tables: list[type[Table]] = []
-        for base_class, name in [(BaseUser, "users"), (AuthSession, "auth_sessions")]:
-            table = find_table_by_name(
-                schema_path, name, tables=all_tables, base_class=base_class
-            )
-            if table is None:
-                raise ValueError(
-                    f"Expected table '{name}' in schema but it was not found under"
-                    f" the specified schema path '{schema_path}'."
-                )
-            if not issubclass(table, base_class):
-                raise ValueError(
-                    f"Table '{name}' must be a subclass of '{base_class.__name__}'"
-                    f" but got instance of '{table}'. Make sure that you import"
-                    " and implement `BaseUser` and `AuthSession`"
-                    " tables and include them in one of the schema modules."
-                )
-            tables.append(table)
+        all_tables = discover_tables(schema_path, include_auth=True)
 
-        user_table, auth_session_table = tables
+        user_table = next((t for t in all_tables if issubclass(t, AuthUser)), None)
+        if user_table is None:
+            raise ValueError(
+                "No AuthUser table found. Make sure your schema includes "
+                "AuthUser or a subclass of it."
+            )
+
+        auth_session_table = next(
+            (t for t in all_tables if issubclass(t, AuthSession)), None
+        )
+        if auth_session_table is None:
+            raise ValueError(
+                "No AuthSession table found. Make sure your schema includes "
+                "AuthSession or a subclass of it."
+            )
 
         self._config: AuthConfig = config
         self._user_table: type[UserT] = user_table
@@ -309,6 +305,7 @@ class AuthClient[UserT: BaseUser]:
         # Create session and tokens
         token_pair = await self._create_session(
             user.id,
+            role=user.role,
             user_agent=user_agent,
             ip_address=ip_address,
         )
@@ -368,6 +365,7 @@ class AuthClient[UserT: BaseUser]:
 
         token_pair = await self._create_session(
             user.id,
+            role=user.role,
             user_agent=user_agent,
             ip_address=ip_address,
         )
@@ -484,6 +482,7 @@ class AuthClient[UserT: BaseUser]:
 
         token_pair = await self._create_session(
             user.id,
+            role=user.role,
             user_agent=user_agent,
             ip_address=ip_address,
         )
@@ -599,6 +598,7 @@ class AuthClient[UserT: BaseUser]:
 
         token_pair = await self._create_session(
             user.id,
+            role=user.role,
             user_agent=user_agent,
             ip_address=ip_address,
         )
@@ -613,6 +613,7 @@ class AuthClient[UserT: BaseUser]:
         self,
         user_id: uuid.UUID,
         *,
+        role: str = "default",
         user_agent: str | None = None,
         ip_address: str | None = None,
     ) -> TokenPair:
@@ -627,6 +628,7 @@ class AuthClient[UserT: BaseUser]:
             .values(
                 user_id=user_id,
                 token=refresh_token,
+                role=role,
                 user_agent=user_agent,
                 ip_address=ip_address,
                 not_after=not_after,
@@ -637,13 +639,19 @@ class AuthClient[UserT: BaseUser]:
         )
 
         return create_token_pair(
-            self._config.jwt, user_id, session.session_id, refresh_token
+            self._config.jwt,
+            user_id,
+            session.session_id,
+            refresh_token,
+            extra_claims={"role": role},
         )
 
     async def refresh_token(self, refresh_token: str) -> TokenPair:
         """Refresh an access token using a refresh token.
 
-        Implements token rotation for security.
+        Implements token rotation for security. Happy path is 2 DB calls:
+        one UPDATE…RETURNING to atomically revoke the old token, one INSERT
+        for the new token.
 
         Returns:
             New TokenPair
@@ -653,60 +661,64 @@ class AuthClient[UserT: BaseUser]:
             RefreshTokenReusedError: If token reuse detected (potential theft)
             SessionExpiredError: If session has expired
         """
-        token_record = await (
+        # Atomically revoke and return the token in one query.
+        # If the token doesn't exist or is already revoked, this returns [].
+        revoked_rows = await (
             self._db()
-            .select(self._auth_session_table)
-            .where(self._auth_session_table.c.token == refresh_token)
-            .first_or_none()
+            .update(self._auth_session_table)
+            .set(revoked=True)
+            .eq(self._auth_session_table.c.token, refresh_token)
+            .not_(self._auth_session_table.c.revoked)
+            .returning(self._auth_session_table)
+            .execute()
         )
 
-        if token_record is None:
+        if not revoked_rows:
+            # Token not found or already revoked — check which case.
+            existing = await (
+                self._db()
+                .select(self._auth_session_table)
+                .eq(self._auth_session_table.c.revoked, False)
+                .first_or_none()
+            )
+            if existing is not None and existing.revoked:
+                # Reuse detected — revoke all tokens for this session.
+                await (
+                    self._db()
+                    .update(self._auth_session_table)
+                    .set(revoked=True)
+                    .eq(self._auth_session_table.c.session_id, existing.session_id)
+                    .execute()
+                )
+                if self._kv_client is not None:
+                    await self._kv_client.delete(
+                        f"{self._config.cache_prefix}:session:{existing.session_id}".encode()
+                    )
+                raise RefreshTokenReusedError()
             raise RefreshTokenRevokedError("Invalid refresh token")
 
-        if token_record.revoked:
-            # Token reuse detected — potential theft, revoke all for session.
-            await (
-                self._db()
-                .update(self._auth_session_table)
-                .set(revoked=True)
-                .where(self._auth_session_table.c.session_id == token_record.session_id)
-                .execute()
-            )
-
-            # Invalidate session cache so revoked sessions aren't served from cache
-            if self._kv_client is not None:
-                await self._kv_client.delete(
-                    f"{self._config.cache_prefix}:session:{token_record.session_id}".encode()
-                )
-
-            raise RefreshTokenReusedError()
+        [token_record] = revoked_rows
 
         if token_record.not_after < datetime.now(UTC):
             raise SessionExpiredError()
 
-        # Rotate: revoke old + insert new atomically
-        async with self._db().transaction() as txn:
-            await (
-                txn.update(self._auth_session_table)
-                .set(revoked=True)
-                .where(self._auth_session_table.c.id == token_record.id)
-                .execute()
+        # Insert rotated token
+        new_refresh_token = generate_secure_token()
+        await (
+            self._db()
+            .insert(self._auth_session_table)
+            .values(
+                user_id=token_record.user_id,
+                session_id=token_record.session_id,
+                token=new_refresh_token,
+                role=token_record.role,
+                user_agent=token_record.user_agent,
+                ip_address=token_record.ip_address,
+                not_after=token_record.not_after,
+                created_at=datetime.now(UTC),
             )
-
-            new_refresh_token = generate_secure_token()
-            await (
-                txn.insert(self._auth_session_table)
-                .values(
-                    user_id=token_record.user_id,
-                    session_id=token_record.session_id,
-                    token=new_refresh_token,
-                    user_agent=token_record.user_agent,
-                    ip_address=token_record.ip_address,
-                    not_after=token_record.not_after,
-                    created_at=datetime.now(UTC),
-                )
-                .execute()
-            )
+            .execute()
+        )
 
         # Invalidate stale session cache so next validate_session re-fetches
         if self._kv_client is not None:
@@ -719,6 +731,7 @@ class AuthClient[UserT: BaseUser]:
             token_record.user_id,
             token_record.session_id,
             new_refresh_token,
+            extra_claims={"role": token_record.role},
         )
 
     async def validate_session(self, token: str) -> AuthSession | None:
@@ -980,3 +993,24 @@ class AuthClient[UserT: BaseUser]:
             confirmation_url=f"{confirmation_url}?token={token}",
             **kwargs,
         )
+
+    # =========================================================================
+    # Role-Based Access Control
+    # =========================================================================
+
+    def is_authorized(self, payload: TokenPayload, *roles: str) -> bool:
+        """Check if the token's role is in the allowed set.
+
+        Reads the ``role`` claim embedded in the JWT at session creation.
+        No database hit required.
+
+        Args:
+            payload: Decoded JWT token payload.
+            roles: One or more role strings that are permitted.
+
+        Returns:
+            True if the token's role matches one of the allowed roles,
+            False otherwise.
+        """
+        role = (payload.extra or {}).get("role")
+        return role in roles

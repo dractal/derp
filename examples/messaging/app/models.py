@@ -5,28 +5,17 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from derp.auth.models import AuthSession, BaseUser
+from derp.auth.models import AuthUser
 from derp.orm import Field, Table
-from derp.orm.fields import (
-    UUID,
-    ForeignKey,
-    ForeignKeyAction,
-    Text,
-    Timestamp,
-    Varchar,
-)
+from derp.orm.fields import UUID, ForeignKey, ForeignKeyAction, Text, Timestamp, Varchar
 
 
-class User(BaseUser, table="users"):
+class User(AuthUser, table="users"):
     """User model with messaging profile fields."""
 
     username: str | None = Field(Varchar(100), nullable=True)
     avatar_url: str | None = Field(Varchar(512), nullable=True)
     bio: str | None = Field(Text(), nullable=True)
-
-
-class AuthSession(AuthSession, table="auth_sessions"):
-    """Authentication session table."""
 
 
 class Conversation(Table, table="conversations"):

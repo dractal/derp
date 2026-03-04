@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Self
 
-from derp.auth import AuthClient, BaseUser
+from derp.auth import AuthClient, AuthUser
 from derp.auth.email import EmailClient
 from derp.config import DerpConfig
 from derp.kv.base import KVClient
@@ -19,7 +19,7 @@ from derp.queue.vercel import VercelQueueClient
 from derp.storage import StorageClient
 
 
-class DerpClient[UserT: BaseUser]:
+class DerpClient[UserT: AuthUser]:
     """Derp client for interacting with database, file storage, and more."""
 
     def __init__(self, config: DerpConfig):

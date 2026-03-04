@@ -5,10 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
 from pydantic import ValidationError
 
-from derp.config import CeleryConfig, ConfigError, DerpConfig, QueueConfig, VercelQueueConfig
+from derp.config import (
+    CeleryConfig,
+    ConfigError,
+    DerpConfig,
+    QueueConfig,
+    VercelQueueConfig,
+)
 
 
 def _write_config(path: Path, content: str) -> None:

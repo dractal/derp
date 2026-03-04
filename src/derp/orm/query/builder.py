@@ -99,6 +99,10 @@ class _WhereShorthandMixin:
             "Use 'table.column' format or set a FROM table."
         )
 
+    def not_(self, column: FieldInfo[Any] | str) -> Self:
+        """WHERE column == FALSE."""
+        return self.where(~self._resolve_column(column))
+
     def eq(self, column: FieldInfo[Any] | str, value: Any) -> Self:
         """WHERE column = value."""
         return self.where(self._resolve_column(column) == value)

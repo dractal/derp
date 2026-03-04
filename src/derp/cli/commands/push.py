@@ -10,7 +10,7 @@ import typer
 
 from derp.cli.commands.generate import create_rename_resolver, make_rename_callback
 from derp.config import ConfigError, DerpConfig
-from derp.orm.loader import load_tables
+from derp.orm.loader import discover_tables
 
 # Import all convertors to register them
 from derp.orm.migrations.convertors import (  # noqa: F401
@@ -68,7 +68,7 @@ def push(
 
     # Load tables from schema module
     try:
-        tables = load_tables(schema_path)
+        tables = discover_tables(schema_path, include_auth=config.auth is not None)
     except FileNotFoundError:
         typer.echo(f"Error: Schema file not found: {schema_path}", err=True)
         raise typer.Exit(1)

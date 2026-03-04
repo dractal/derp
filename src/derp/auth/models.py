@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import abc
 import enum
 import uuid
 from datetime import datetime
@@ -30,7 +29,7 @@ class AuthProvider(enum.StrEnum):
     GITHUB = "github"
 
 
-class BaseUser(abc.ABC, Table):
+class AuthUser(Table, table="users"):
     """User authentication table."""
 
     id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
@@ -43,6 +42,7 @@ class BaseUser(abc.ABC, Table):
     provider_id: str | None = Field(Varchar(255), nullable=True)
     is_active: bool = Field(Boolean(), default=True)
     is_superuser: bool = Field(Boolean(), default=False)
+    role: str = Field(Varchar(50), default="default")
     created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
     updated_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
     last_sign_in_at: datetime | None = Field(
@@ -50,7 +50,7 @@ class BaseUser(abc.ABC, Table):
     )
 
 
-class AuthSession(Table):
+class AuthSession(Table, table="auth_sessions"):
     """Authentication session table with integrated refresh tokens.
 
     Each row represents a refresh token. Rows sharing the same ``session_id``
@@ -68,6 +68,7 @@ class AuthSession(Table):
     )
     session_id: uuid.UUID = Field(UUID(), index=True, default="gen_random_uuid()")
     token: str = Field(Varchar(255), unique=True, index=True)
+    role: str = Field(Varchar(50), default="default")
     revoked: bool = Field(Boolean(), default=False)
     user_agent: str | None = Field(Text(), nullable=True)
     ip_address: str | None = Field(Varchar(45), nullable=True)  # IPv6 compatible

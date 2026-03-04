@@ -31,7 +31,7 @@ from derp.auth.jwt import TokenPair, TokenPayload
 from derp.auth.models import (
     AuthProvider,
     AuthSession,
-    BaseUser,
+    AuthUser,
 )
 from derp.auth.password import (
     Argon2Hasher,
@@ -91,7 +91,7 @@ __all__ = [
     # Models
     "AuthProvider",
     "AuthSession",
-    "BaseUser",
+    "AuthUser",
     # Password
     "Argon2Hasher",
     "BcryptHasher",

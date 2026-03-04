@@ -111,9 +111,7 @@ async def test_cluster_addresses_built_from_config() -> None:
 
     with (
         patch("glide.GlideClusterClient"),
-        patch(
-            "glide.GlideClusterClientConfiguration", side_effect=capture_config
-        ),
+        patch("glide.GlideClusterClientConfiguration", side_effect=capture_config),
         patch("glide.NodeAddress", side_effect=lambda host, port: (host, port)),
         patch("glide.ServerCredentials"),
     ):

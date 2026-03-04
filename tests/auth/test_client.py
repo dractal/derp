@@ -570,3 +570,171 @@ class TestUserManagement:
         """Test updating non-existent user."""
         with pytest.raises(UserNotFoundError):
             await derp.auth.update_user(user_id=uuid.uuid4())
+
+
+class TestRBAC:
+    """Tests for role-based access control."""
+
+    async def test_default_role_on_signup(
+        self, derp: DerpClient[User], mock_smtp: AsyncMock
+    ) -> None:
+        """Test that new users get the default role."""
+        user, _ = await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
+
+        assert user.role == "default"
+
+    async def test_role_embedded_in_jwt(
+        self, derp: DerpClient[User], mock_smtp: AsyncMock
+    ) -> None:
+        """Test that role is embedded in the access token."""
+        _, tokens = await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
+
+        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
+        assert payload is not None
+        assert payload.extra is not None
+        assert payload.extra["role"] == "default"
+
+    async def test_custom_role_in_jwt(
+        self,
+        derp: DerpClient[User],
+        kv_client: ValkeyClient,
+        mock_smtp: AsyncMock,
+    ) -> None:
+        """Test that updated role appears in JWT after re-login."""
+        user, _ = await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
+        token = await get_confirmation_token(
+            kv_client, derp.auth._config.cache_prefix, str(user.id)
+        )
+        assert token is not None
+        await derp.auth.confirm_email(token)
+
+        # Promote to admin
+        await derp.auth.update_user(user_id=user.id, role="admin")
+
+        # Re-login to get new JWT with updated role
+        _, tokens = await derp.auth.sign_in_with_password(
+            email="test@example.com", password="password123"
+        )
+
+        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
+        assert payload is not None
+        assert payload.extra is not None
+        assert payload.extra["role"] == "admin"
+
+    async def test_is_authorized_matching_role(
+        self, derp: DerpClient[User], mock_smtp: AsyncMock
+    ) -> None:
+        """Test is_authorized returns True for matching role."""
+        _, tokens = await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
+
+        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
+        assert payload is not None
+        assert derp.auth.is_authorized(payload, "default") is True
+
+    async def test_is_authorized_multiple_roles(
+        self, derp: DerpClient[User], mock_smtp: AsyncMock
+    ) -> None:
+        """Test is_authorized with multiple allowed roles."""
+        _, tokens = await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
+
+        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
+        assert payload is not None
+        assert derp.auth.is_authorized(payload, "admin", "default") is True
+
+    async def test_is_authorized_wrong_role(
+        self, derp: DerpClient[User], mock_smtp: AsyncMock
+    ) -> None:
+        """Test is_authorized returns False for non-matching role."""
+        _, tokens = await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
+
+        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
+        assert payload is not None
+        assert derp.auth.is_authorized(payload, "admin") is False
+
+    async def test_role_survives_token_refresh(
+        self,
+        derp: DerpClient[User],
+        kv_client: ValkeyClient,
+        mock_smtp: AsyncMock,
+    ) -> None:
+        """Test that refresh carries forward the session role (no DB hit)."""
+        user, tokens = await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
+        token = await get_confirmation_token(
+            kv_client, derp.auth._config.cache_prefix, str(user.id)
+        )
+        assert token is not None
+        await derp.auth.confirm_email(token)
+
+        # Refresh token — role carried from session row, no user fetch
+        new_tokens = await derp.auth.refresh_token(tokens.refresh_token)
+
+        payload = decode_token(derp.auth._config.jwt, new_tokens.access_token)
+        assert payload is not None
+        assert payload.extra is not None
+        assert payload.extra["role"] == "default"
+
+    async def test_role_change_takes_effect_on_new_sign_in(
+        self,
+        derp: DerpClient[User],
+        kv_client: ValkeyClient,
+        mock_smtp: AsyncMock,
+    ) -> None:
+        """Test that a role change is picked up on next sign-in, not refresh."""
+        user, tokens = await derp.auth.sign_up(
+            email="test@example.com",
+            password="password123",
+            confirmation_url="http://localhost:3000/auth/confirm",
+        )
+        token = await get_confirmation_token(
+            kv_client, derp.auth._config.cache_prefix, str(user.id)
+        )
+        assert token is not None
+        await derp.auth.confirm_email(token)
+
+        # Promote to admin
+        await derp.auth.update_user(user_id=user.id, role="admin")
+
+        # Refresh still carries old session role
+        refreshed = await derp.auth.refresh_token(tokens.refresh_token)
+        payload = decode_token(derp.auth._config.jwt, refreshed.access_token)
+        assert payload is not None
+        assert payload.extra is not None
+        assert payload.extra["role"] == "default"
+
+        # New sign-in picks up the updated role
+        _, new_tokens = await derp.auth.sign_in_with_password(
+            email="test@example.com",
+            password="password123",
+        )
+        payload = decode_token(derp.auth._config.jwt, new_tokens.access_token)
+        assert payload is not None
+        assert payload.extra is not None
+        assert payload.extra["role"] == "admin"

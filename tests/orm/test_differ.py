@@ -1148,9 +1148,7 @@ class TestSnapshotDifferColumnRename:
                 "users": TableSnapshot(
                     name="users",
                     columns={
-                        "old_col": ColumnSnapshot(
-                            name="old_col", type="varchar(255)"
-                        ),
+                        "old_col": ColumnSnapshot(name="old_col", type="varchar(255)"),
                     },
                 ),
             },
@@ -1162,7 +1160,8 @@ class TestSnapshotDifferColumnRename:
                     name="users",
                     columns={
                         "new_col": ColumnSnapshot(
-                            name="new_col", type="integer"  # Different type!
+                            name="new_col",
+                            type="integer",  # Different type!
                         ),
                     },
                 ),

@@ -530,8 +530,7 @@ class TestCheckConstraintConvertors:
 
         assert (
             'ALTER TABLE "products" ADD CONSTRAINT "products_price_positive" '
-            'CHECK (price > 0)'
-            in sql
+            "CHECK (price > 0)" in sql
         )
 
     def test_drop_check_constraint(self):

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from derp.auth.models import AuthSession, BaseUser
+from derp.auth.models import AuthSession, AuthUser
 from derp.orm import Table
 from derp.orm.fields import (
     UUID,
@@ -29,12 +29,8 @@ from derp.orm.fields import (
 )
 
 
-class User(BaseUser, table="users"):
+class User(AuthUser, table="users"):
     display_name: str | None = Field(Varchar(255), nullable=True)
-
-
-class AuthSession(AuthSession, table="auth_sessions"):
-    pass
 
 
 class UserAssetAccessLog(Table, table="user_asset_access_logs"):

@@ -44,6 +44,21 @@ class TableMeta(type(BaseModel)):
         if table is not None:
             namespace["__table_name__"] = table
             namespace["__explicit_table__"] = True
+
+            # Enforce: if parent has __explicit_table__, child must use same table name
+            for base in bases:
+                parent_table = getattr(base, "__table_name__", None)
+                parent_explicit = getattr(base, "__explicit_table__", False)
+                if (
+                    parent_explicit
+                    and parent_table is not None
+                    and table != parent_table
+                ):
+                    raise TypeError(
+                        f"Table '{name}' uses table name '{table}' but its parent "
+                        f"'{base.__name__}' uses '{parent_table}'. Inherited tables "
+                        f"must use the same table name as their parent."
+                    )
         elif "__table_name__" not in namespace:
             # Default to lowercase class name
             namespace["__table_name__"] = name.lower()

@@ -121,30 +121,75 @@ def load_tables(module_path: str) -> list[type[Table]]:
     return tables
 
 
-def find_table_by_name(
+def _deduplicate_tables(tables: list[type[Table]]) -> list[type[Table]]:
+    """Keep only the youngest table in each inheritance chain.
+
+    If a table has a descendant in the list, drop it (the descendant
+    inherits all its columns). If two tables share a common explicit-table
+    ancestor but neither descends from the other, raise ValueError.
+    """
+    # Find tables that are ancestors of another table in the list
+    to_remove: set[type[Table]] = set()
+    for t in tables:
+        for other in tables:
+            if other is t:
+                continue
+            # If t is a proper ancestor of other, t is redundant
+            if issubclass(other, t) and t is not Table:
+                to_remove.add(t)
+
+    result = [t for t in tables if t not in to_remove]
+
+    # Check for branches: two result tables sharing a common explicit-table
+    # ancestor (whether or not that ancestor was in the input list)
+    for i, a in enumerate(result):
+        for b in result[i + 1 :]:
+            # Walk a's MRO looking for a shared explicit-table ancestor
+            for base in type.mro(a):
+                if (
+                    base is a
+                    or base is b
+                    or base is Table
+                    or not isinstance(base, type)
+                ):
+                    continue
+                if (
+                    getattr(base, "__explicit_table__", False)
+                    and issubclass(a, base)
+                    and issubclass(b, base)
+                ):
+                    raise ValueError(
+                        f"Ambiguous table inheritance: {a.__name__} and "
+                        f"{b.__name__} both extend {base.__name__}. "
+                        f"Only one subclass per table hierarchy is allowed."
+                    )
+
+    return result
+
+
+def discover_tables(
     schema_path: str,
-    name: str,
     *,
-    tables: list[type[Table]] | None = None,
-    base_class: type[Table] | None = None,
-    exclude_base: bool = True,
-) -> type[Table] | None:
-    """Find a Table subclass by its SQL table name."""
-    if tables is None:
-        tables = load_tables(schema_path)
-    matches: list[type[Table]] = [
-        table for table in tables if table.get_table_name() == name
-    ]
-    if base_class is not None:
-        matches = [
-            table
-            for table in matches
-            if issubclass(table, base_class)
-            and (table is not base_class or not exclude_base)
-        ]
-    if not matches:
-        return None
-    if len(matches) > 1:
-        match_names = ", ".join(f"{t.__module__}.{t.__name__}" for t in matches)
-        raise ValueError(f"Multiple tables found for name '{name}': {match_names}")
-    return matches[0]
+    include_auth: bool = False,
+) -> list[type[Table]]:
+    """Load user tables and optionally inject framework tables, then dedup.
+
+    Args:
+        schema_path: Path/glob/directory for user schema files.
+        include_auth: If True, inject AuthUser and AuthSession when no
+            subclass is already present in the loaded tables.
+
+    Returns:
+        Deduplicated list of Table subclasses.
+    """
+    tables = load_tables(schema_path)
+
+    if include_auth:
+        from derp.auth.models import AuthSession, AuthUser
+
+        if not any(issubclass(t, AuthUser) for t in tables):
+            tables.append(AuthUser)
+        if not any(issubclass(t, AuthSession) for t in tables):
+            tables.append(AuthSession)
+
+    return _deduplicate_tables(tables)

@@ -87,7 +87,9 @@ def test_primary_property() -> None:
 async def test_check_lag_marks_replica_unavailable_on_error() -> None:
     router, primary, _ = _make_router()
 
-    primary.acquire.return_value.__aenter__ = AsyncMock(side_effect=Exception("conn failed"))
+    primary.acquire.return_value.__aenter__ = AsyncMock(
+        side_effect=Exception("conn failed")
+    )
     primary.acquire.return_value.__aexit__ = AsyncMock()
 
     await router._check_lag()
@@ -100,10 +102,12 @@ async def test_check_lag_computes_byte_difference() -> None:
 
     # Mock primary connection
     primary_conn = AsyncMock()
-    primary_conn.fetchrow = AsyncMock(side_effect=[
-        MagicMock(__getitem__=lambda self, i: "0/1000"),  # pg_current_wal_lsn
-        MagicMock(__getitem__=lambda self, i: 500),  # pg_wal_lsn_diff
-    ])
+    primary_conn.fetchrow = AsyncMock(
+        side_effect=[
+            MagicMock(__getitem__=lambda self, i: "0/1000"),  # pg_current_wal_lsn
+            MagicMock(__getitem__=lambda self, i: 500),  # pg_wal_lsn_diff
+        ]
+    )
     primary.acquire.return_value.__aenter__ = AsyncMock(return_value=primary_conn)
     primary.acquire.return_value.__aexit__ = AsyncMock()
 

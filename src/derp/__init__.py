@@ -1,6 +1,6 @@
 """Derp - A backend framework for building scalable and efficient applications."""
 
-from derp.auth import AuthClient, AuthConfig, BaseUser, EmailConfig, JWTConfig
+from derp.auth import AuthClient, AuthConfig, AuthUser, EmailConfig, JWTConfig
 from derp.auth.email import EmailClient
 from derp.config import (
     CeleryConfig,
@@ -25,7 +25,7 @@ __all__ = [
     "DerpConfig",
     "AuthClient",
     "AuthConfig",
-    "BaseUser",
+    "AuthUser",
     "DatabaseConfig",
     "DatabaseEngine",
     "StorageClient",

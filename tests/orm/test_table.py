@@ -116,8 +116,8 @@ def test_column_accessor():
         pass
 
 
-class BaseEntity(Table, table="base_entity"):
-    """Base table with common fields."""
+class BaseEntity(Table):
+    """Abstract base table with common fields (no explicit table name)."""
 
     id: int = Field(Serial(), primary_key=True)
     created_at: datetime = Field(Timestamp(), default="now()")
@@ -130,8 +130,8 @@ class Employee(BaseEntity, table="employees"):
     department: str = Field(Varchar(100))
 
 
-class Manager(Employee, table="managers"):
-    """Manager table inheriting from Employee."""
+class Manager(Employee, table="employees"):
+    """Manager table inheriting from Employee, same SQL table."""
 
     level: int = Field(Integer())
 
@@ -182,13 +182,13 @@ def test_inheritance_multi_level():
     # Should have its own columns
     assert "level" in manager_columns
 
-    # Table name should be correct
-    assert Manager.get_table_name() == "managers"
+    # Table name should match parent
+    assert Manager.get_table_name() == "employees"
 
-    # All columns should reference managers table
-    assert Manager.c.id._table_name == "managers"
-    assert Manager.c.name._table_name == "managers"
-    assert Manager.c.level._table_name == "managers"
+    # All columns should reference employees table
+    assert Manager.c.id._table_name == "employees"
+    assert Manager.c.name._table_name == "employees"
+    assert Manager.c.level._table_name == "employees"
 
 
 def test_inheritance_ddl():
@@ -200,3 +200,30 @@ def test_inheritance_ddl():
     assert "created_at TIMESTAMP" in ddl
     assert "name VARCHAR(255) NOT NULL" in ddl
     assert "department VARCHAR(100) NOT NULL" in ddl
+
+
+def test_inheritance_table_name_mismatch():
+    """Test that mismatched table names in inheritance raise TypeError."""
+    import pytest
+
+    class Parent(Table, table="things"):
+        id: int = Field(Serial(), primary_key=True)
+
+    with pytest.raises(TypeError, match="must use the same table name"):
+
+        class BadChild(Parent, table="other_things"):
+            extra: str = Field(Varchar(100))
+
+
+def test_inheritance_table_name_match():
+    """Test that matching table names in inheritance are allowed."""
+
+    class Parent2(Table, table="items"):
+        id: int = Field(Serial(), primary_key=True)
+
+    class GoodChild(Parent2, table="items"):
+        extra: str = Field(Varchar(100))
+
+    assert GoodChild.get_table_name() == "items"
+    assert "id" in GoodChild.get_columns()
+    assert "extra" in GoodChild.get_columns()

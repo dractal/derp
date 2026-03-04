@@ -482,27 +482,6 @@ refresh_token_expire_days = 7
 
 **Important**: Auth requires email to be configured. The framework will raise an error if `[auth]` is set without `[email]`.
 
-### Define user and auth tables
-
-```python
-from derp.auth.models import AuthSession, BaseUser
-from derp.orm import Field, Table
-from derp.orm.fields import Varchar, Text
-
-
-class User(BaseUser, table="users"):
-    # BaseUser provides: id, email, encrypted_password, provider,
-    # provider_id, is_active, is_superuser, email_confirmed_at,
-    # created_at, updated_at, last_sign_in_at
-    username: str | None = Field(Varchar(100), nullable=True)
-    bio: str | None = Field(Text(), nullable=True)
-
-
-# Required for auth to function
-class AuthSession(AuthSession, table="auth_sessions"):
-    pass
-```
-
 ### Use auth in routes
 
 ```python
@@ -535,7 +514,8 @@ async def signup(email: str, password: str, derp: DerpClient[User] = Depends(get
 @router.post("/signin")
 async def signin(email: str, password: str, derp: DerpClient[User] = Depends(get_derp)):
     user, tokens = await derp.auth.sign_in_with_password(
-        email=email, password=password,
+        email=email,
+        password=password,
         user_agent=request.headers.get("User-Agent"),
         ip_address=request.client.host,
     )

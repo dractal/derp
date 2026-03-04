@@ -30,8 +30,6 @@ uv run ty check src/
 - Python 3.12+ required (use `class Foo[T]:` syntax for generics).
 - Use `from __future__ import annotations` wherever possible.
 - Prefer dataclasses for simple data containers.
-- Keep query builder methods chainable (return `self`).
-- Fields default to NOT NULL (`nullable=False`).
 
 ## Configuration
 
@@ -39,6 +37,6 @@ CLI uses `derp.toml` with typed config in `src/derp/config.py`:
 
 ## Code style
 
+- The final API exposed to the user should be simple, minimal, and non-duplicative.
 - Write comprehensive tests before you add specific functionality.
 - Avoid using magic strings, use `enum.StrEnum` instead where possible.
-- The final API exposed to the user should be simple and minimal.

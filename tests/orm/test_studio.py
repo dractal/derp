@@ -332,9 +332,7 @@ def _make_mock_derp() -> MagicMock:
     return mock
 
 
-def _create_app_with_mock_derp(
-    temp_dir: Path, mock_derp: MagicMock
-) -> TestClient:
+def _create_app_with_mock_derp(temp_dir: Path, mock_derp: MagicMock) -> TestClient:
     static_dir = temp_dir / "static"
     static_dir.mkdir(exist_ok=True)
     _write_index(static_dir / "index.html")
@@ -373,18 +371,14 @@ def test_database_tables_endpoint(temp_dir: Path) -> None:
                 "id": ColumnSnapshot(
                     name="id", type="serial", primary_key=True, not_null=True
                 ),
-                "name": ColumnSnapshot(
-                    name="name", type="varchar(255)", not_null=True
-                ),
+                "name": ColumnSnapshot(name="name", type="varchar(255)", not_null=True),
             },
         )
     }
 
     mock_derp.db.execute = AsyncMock(return_value=[{"cnt": 42}])
 
-    with patch(
-        "derp.studio.server.PostgresIntrospector"
-    ) as mock_introspector_cls:
+    with patch("derp.studio.server.PostgresIntrospector") as mock_introspector_cls:
         mock_introspector = MagicMock()
         mock_introspector.introspect = AsyncMock(return_value=snapshot)
         mock_introspector_cls.return_value = mock_introspector
