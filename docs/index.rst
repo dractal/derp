@@ -5,6 +5,10 @@ An async Python backend toolkit. One client, one config file.
 
 **ORM** · **Auth** · **Payments** · **Storage** · **KV** · **Queues** · **CLI** · **Studio**
 
+.. warning::
+
+   Derp is in alpha. The API is unstable and may change without notice before 1.0.
+
 .. code-block:: bash
 
    uv add derp-py

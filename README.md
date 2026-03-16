@@ -4,11 +4,13 @@
 [![Python](https://img.shields.io/pypi/pyversions/derp-py)](https://pypi.org/project/derp-py/)
 [![License](https://img.shields.io/github/license/dractal/derp)](LICENSE)
 [![Tests](https://img.shields.io/github/actions/workflow/status/dractal/derp/test.yml?label=tests)](https://github.com/dractal/derp/actions)
-[![Docs](https://img.shields.io/readthedocs/derp-py)](https://derp-py.readthedocs.io/)
+[![Docs](https://img.shields.io/readthedocs/derp)](https://derp.readthedocs.io/)
 
 An async Python backend toolkit. One client, one config file.
 
 **ORM** · **Auth** · **Payments** · **Storage** · **KV** · **Queues** · **CLI** · **Studio**
+
+> **Warning:** Derp is in alpha. The API is unstable and may change without notice before 1.0.
 
 ## Install
 
@@ -218,7 +220,7 @@ derp version       Show version
 
 ## Documentation
 
-Full docs at [derp-py.readthedocs.io](https://derp-py.readthedocs.io/).
+Full docs at [derp.readthedocs.io](https://derp.readthedocs.io/).
 
 ## Development
 
