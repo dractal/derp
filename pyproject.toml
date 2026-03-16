@@ -42,6 +42,9 @@ docs = [
     "furo>=2024.8",
     "sphinx-copybutton>=0.5",
     "sphinx-design>=0.6",
+    "valkey-glide",
+    "celery>=5.6.2",
+    "clerk-backend-api>=5.0.2",
 ]
 
 [dependency-groups]

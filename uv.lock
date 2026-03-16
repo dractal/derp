@@ -666,10 +666,13 @@ dependencies = [
 
 [package.optional-dependencies]
 docs = [
+    { name = "celery" },
+    { name = "clerk-backend-api" },
     { name = "furo" },
     { name = "sphinx" },
     { name = "sphinx-copybutton" },
     { name = "sphinx-design" },
+    { name = "valkey-glide" },
 ]
 
 [package.dev-dependencies]
@@ -702,6 +705,8 @@ requires-dist = [
     { name = "argon2-cffi", specifier = ">=23.1.0" },
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "boto3", specifier = ">=1.34.0" },
+    { name = "celery", marker = "extra == 'docs'", specifier = ">=5.6.2" },
+    { name = "clerk-backend-api", marker = "extra == 'docs'", specifier = ">=5.0.2" },
     { name = "etils", specifier = ">=1.13.0" },
     { name = "fastapi", specifier = ">=0.128.0" },
     { name = "furo", marker = "extra == 'docs'", specifier = ">=2024.8" },
@@ -715,6 +720,7 @@ requires-dist = [
     { name = "stripe", extras = ["async"], specifier = ">=13.0.1" },
     { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", specifier = ">=0.40.0" },
+    { name = "valkey-glide", marker = "extra == 'docs'" },
 ]
 provides-extras = ["docs"]
 

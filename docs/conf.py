@@ -48,12 +48,7 @@ autodoc_default_options = {
 autodoc_typehints = "description"
 autodoc_class_signature = "separated"
 
-autodoc_mock_imports = [
-    "clerk_backend_api",
-    "valkey",
-    "glide",
-    "celery",
-]
+autodoc_mock_imports = []
 
 # -- Autosummary -----------------------------------------------------------
 
@@ -70,7 +65,7 @@ intersphinx_mapping = {
 
 html_theme = "furo"
 html_title = "Derp"
-html_static_path = ["_static"]
+html_static_path = []
 
 html_theme_options = {
     "navigation_with_keys": True,
