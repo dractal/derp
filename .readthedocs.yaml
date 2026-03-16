@@ -15,6 +15,3 @@ python:
       extra_requirements:
         - docs
 
-addons:
-  flyout:
-    enabled: false
