@@ -1,323 +1,224 @@
 # Derp
 
-Derp is an async backend toolkit for Python web apps. It includes:
+[![PyPI](https://img.shields.io/pypi/v/derp-py?color=blue)](https://pypi.org/project/derp-py/)
+[![Python](https://img.shields.io/pypi/pyversions/derp-py)](https://pypi.org/project/derp-py/)
+[![License](https://img.shields.io/github/license/dractal/derp)](LICENSE)
+[![Tests](https://img.shields.io/github/actions/workflow/status/dractal/derp/test.yml?label=tests)](https://github.com/dractal/derp/actions)
+[![Docs](https://img.shields.io/readthedocs/derp-py)](https://derp-py.readthedocs.io/)
 
-- A typed PostgreSQL ORM inspired by [Drizzle ORM](https://orm.drizzle.team/).
-- Built-in authentication (JWT + email/OAuth).
-- S3-compatible object storage client.
-- In memory KV storage support (Valkey backend).
-- Integrated stripe payments client.
-- Studio for visualizing tables, auth, storage.
+An async Python backend toolkit. One client, one config file.
 
-## Features
+**ORM** · **Auth** · **Payments** · **Storage** · **KV** · **Queues** · **CLI** · **Studio**
 
-- Async-first clients and query execution.
-- Typed models/configs with Pydantic.
-- Unified lifecycle via one `DerpClient` session.
-- Pure SQL migration workflow with Typer CLI.
-- Optional modules through one config (`storage`, `auth`, `kv`, `payments`).
-
-## Installation
+## Install
 
 ```bash
 uv add derp-py
 ```
 
+Requires Python 3.12+.
+
 ## Quick Start
 
-### Define Tables
+Define a table:
 
 ```python
+import uuid
 from datetime import datetime
 
-from derp.orm import Table
-from derp.orm.fields import Field, ForeignKey, Integer, Serial, Timestamp, Varchar
+from derp.orm import Table, Field, UUID, Varchar, Integer, Boolean, Timestamp
 
-
-class User(Table, table="users"):
-    id: int = Field(Serial(), primary_key=True)
+class Product(Table, table="products"):
+    id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
     name: str = Field(Varchar(255))
-    email: str = Field(Varchar(255), unique=True)
-    created_at: datetime = Field(Timestamp(), default="now()")
-
-
-class Post(Table, table="posts"):
-    id: int = Field(Serial(), primary_key=True)
-    title: str = Field(Varchar(255))
-    author_id: int = Field(Integer(), foreign_key=ForeignKey(User))
+    price_cents: int = Field(Integer())
+    is_active: bool = Field(Boolean(), default="true")
+    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
 ```
 
-### Query Data
+Generate and apply a migration:
+
+```bash
+derp generate --name initial
+derp migrate
+```
+
+Query data:
 
 ```python
-from derp import DatabaseConfig, DerpClient, DerpConfig
+from derp import DerpClient, DerpConfig
+from app.models import Product
 
-
-config = DerpConfig(
-    database=DatabaseConfig(
-        db_url="postgresql://user:pass@localhost:5432/mydb",
-        schema_path="src/schema.py",
-    )
-)
+config = DerpConfig.load("derp.toml")
 derp = DerpClient(config)
+await derp.connect()
 
-async with derp:
-    users = await derp.db.select(User).where(User.c.name == "Alice").execute()
-
-    await (
-        derp.db.insert(User)
-        .values(name="Charlie", email="charlie@example.com")
-        .execute()
-    )
-```
-
-## One Client, Many Services
-
-`DerpClient` manages the lifecycle for database and optional modules in one async
-session.
-
-```python
-from derp import (
-    AuthConfig,
-    DatabaseConfig,
-    DerpClient,
-    DerpConfig,
-    EmailConfig,
-    JWTConfig,
-    KVConfig,
-    PaymentsConfig,
-    StorageConfig,
+# Select
+products = await (
+    derp.db.select(Product)
+    .where(Product.c.is_active == True)
+    .order_by(Product.c.created_at, asc=False)
+    .limit(10)
+    .execute()
 )
 
-
-config = DerpConfig(
-    database=DatabaseConfig(
-        db_url="postgresql://localhost:5432/mydb",
-        schema_path="src/schema.py",
-    ),
-    storage=StorageConfig(
-        endpoint_url="http://localhost:9000",
-        access_key_id="minioadmin",
-        secret_access_key="minioadmin",
-        use_ssl=False,
-        region="us-east-1",
-    ),
-    auth=AuthConfig(
-        user_table_name="users",
-        email=EmailConfig(
-            site_name="My App",
-            site_url="http://localhost:3000",
-            from_email="no-reply@example.com",
-            smtp_host="smtp.example.com",
-            smtp_port=587,
-            smtp_user="smtp-user",
-            smtp_password="smtp-password",
-        ),
-        jwt=JWTConfig(secret="my-secret"),
-    ),
-    kv=KVConfig(
-        valkey={"host": "localhost", "port": 6379},
-    ),
-    payments=PaymentsConfig(
-        api_key="sk_test_...",
-        webhook_secret="whsec_...",
-    ),
+# Insert
+product = await (
+    derp.db.insert(Product)
+    .values(name="Headphones", price_cents=4999)
+    .returning(Product)
+    .execute()
 )
 
-derp = DerpClient(config)
+# Update
+await (
+    derp.db.update(Product)
+    .set(price_cents=3999)
+    .where(Product.c.id == product.id)
+    .execute()
+)
 ```
 
-## Payments (Stripe)
-
-Payments are exposed via `derp.payments` when `payments` is configured.
-
-### Create Customer + Checkout Session
+## Use with FastAPI
 
 ```python
-from derp.payments import CheckoutSessionMode
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+from fastapi import FastAPI, Request, Depends
+from derp import DerpClient, DerpConfig
 
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    config = DerpConfig.load("derp.toml")
+    derp = DerpClient(config)
+    await derp.connect()
+    app.state.derp = derp
+    yield
+    await derp.disconnect()
 
-async with derp:
-    customer = await derp.payments.create_customer(
-        email="customer@example.com",
-        name="Customer Name",
-        metadata={"tenant_id": "tenant_123"},
-    )
+app = FastAPI(lifespan=lifespan)
 
-    session = await derp.payments.create_checkout_session(
-        mode=CheckoutSessionMode.SUBSCRIPTION,
-        success_url="https://app.example.com/billing/success",
-        cancel_url="https://app.example.com/billing/cancel",
-        line_items=[{"price_id": "price_123", "quantity": 1}],
-        customer_id=customer.id,
-        client_reference_id="org_42",
-        allow_promotion_codes=True,
-        idempotency_key="checkout-org-42-001",
-    )
+def get_derp(request: Request) -> DerpClient:
+    return request.app.state.derp
 
-    checkout_url = session.url
+@app.get("/products")
+async def list_products(derp: DerpClient = Depends(get_derp)):
+    return await derp.db.select(Product).where(Product.c.is_active == True).execute()
 ```
 
-### Verify Webhook Event
+## Configuration
 
-```python
-payload = await request.body()
-signature = request.headers["stripe-signature"]
-
-async with derp:
-    event = await derp.payments.verify_webhook_event(
-        payload=payload,
-        signature=signature,
-    )
-
-if event.type == "checkout.session.completed":
-    # handle event.data_object
-    ...
-```
-
-### Payments API Surface
-
-- `create_customer(...)`
-- `retrieve_customer(customer_id, *, expand=None)`
-- `update_customer(customer_id, ...)`
-- `create_checkout_session(...)`
-- `retrieve_checkout_session(session_id, *, expand=None)`
-- `expire_checkout_session(session_id)`
-- `verify_webhook_event(...)`
-
-All write APIs use function arguments (no input model objects).
-
-## Authentication, Storage, and KV
-
-```python
-async with derp:
-    user, _ = await derp.auth.sign_up(
-        email="user@example.com",
-        password="password123",
-    )
-
-    await derp.storage.upload_file(
-        bucket="avatars",
-        key=f"{user.id}.png",
-        data=b"...",
-        content_type="image/png",
-    )
-
-    await derp.kv.store.set(b"user:last_seen", b"2026-01-01T00:00:00Z")
-```
-
-## Configuration (`derp.toml`)
+Everything lives in `derp.toml`. Only `[database]` is required — add modules as you need them:
 
 ```toml
 [database]
 db_url = "$DATABASE_URL"
-schema_path = "src/schema.py"
-# replica_url = "$REPLICA_DATABASE_URL"
-migrations_dir = "./migrations"
+schema_path = "app/models.py"
 
-# [storage]
-# endpoint_url = "http://localhost:9000"
-# access_key_id = "$AWS_ACCESS_KEY_ID"
-# secret_access_key = "$AWS_SECRET_ACCESS_KEY"
-# region = "us-east-1"
+[auth.native]
+enable_signup = true
+[auth.native.jwt]
+secret = "$JWT_SECRET"
 
-# [auth]
-# user_table_name = "users"
+[storage]
+endpoint_url = "$S3_ENDPOINT"
+access_key_id = "$S3_KEY"
+secret_access_key = "$S3_SECRET"
 
-# [auth.email]
-# site_name = "My App"
-# site_url = "https://example.com"
-# from_email = "no-reply@example.com"
-# smtp_host = "smtp.example.com"
-# smtp_port = 587
-# smtp_user = "$SMTP_USER"
-# smtp_password = "$SMTP_PASSWORD"
+[kv.valkey]
+addresses = [["localhost", 6379]]
 
-# [auth.jwt]
-# secret = "$JWT_SECRET"
+[payments]
+api_key = "$STRIPE_SECRET_KEY"
 
-# [kv.valkey]
-# host = "localhost"
-# port = 6379
+[queue.celery]
+broker_url = "$CELERY_BROKER_URL"
+```
 
-# [payments]
-# api_key = "$STRIPE_SECRET_KEY"
-# webhook_secret = "$STRIPE_WEBHOOK_SECRET"
-# max_network_retries = 2
-# timeout_seconds = 30.0
+Environment variables starting with `$` are resolved at load time.
+
+## Modules
+
+### Auth
+
+Email/password, magic links, Google/GitHub OAuth, JWTs, organizations. Native or Clerk backend.
+
+```python
+user, tokens = await derp.auth.sign_up(email="alice@example.com", password="s3cure!")
+session = await derp.auth.authenticate(request)  # from Bearer token
+org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=user.id)
+```
+
+### Payments (Stripe)
+
+```python
+customer = await derp.payments.create_customer(email="buyer@example.com")
+session = await derp.payments.create_checkout_session(
+    mode="payment",
+    line_items=[{"price_id": "price_xxx", "quantity": 1}],
+    success_url="https://example.com/success",
+    cancel_url="https://example.com/cancel",
+)
+event = await derp.payments.verify_webhook_event(payload=body, signature=sig)
+```
+
+### Storage (S3)
+
+```python
+await derp.storage.upload_file(bucket="assets", key="avatar.jpg", data=img, content_type="image/jpeg")
+data = await derp.storage.fetch_file(bucket="assets", key="avatar.jpg")
+```
+
+### KV (Valkey)
+
+```python
+await derp.kv.set(b"user:123", b'{"name":"Alice"}', ttl=3600)
+data = await derp.kv.get(b"user:123")
+
+# Idempotent endpoints
+body, status, is_replay = await derp.kv.idempotent_execute(
+    key=idem_key, compute=lambda: create_order(data), status_code=201,
+)
+
+# Webhook dedup
+if await derp.kv.already_processed(event_id=event["id"]):
+    return {"status": "duplicate"}
+```
+
+### Queue (Celery / Vercel)
+
+```python
+task_id = await derp.queue.enqueue("send_email", payload={"user_id": str(user.id)})
+status = await derp.queue.get_status(task_id)
+```
+
+Schedules in config:
+
+```toml
+[[queue.schedules]]
+name = "cleanup"
+task = "cleanup_sessions"
+cron = "0 */6 * * *"
 ```
 
 ## CLI
 
-```bash
-derp init
-derp generate --name add_users_table
-derp migrate
-derp push
-derp pull
-derp status
-derp check
-derp drop
-derp studio
-derp studio-dev
-derp version
+```
+derp init          Create derp.toml
+derp generate      Generate migration from schema diff
+derp migrate       Apply pending migrations
+derp push          Push schema directly (dev only)
+derp pull          Introspect database into snapshot
+derp status        Show migration status
+derp check         Verify schema matches snapshot (CI)
+derp drop          Remove migration files
+derp studio        Launch database browser UI
+derp version       Show version
 ```
 
-## Studio SPA Development
+## Documentation
 
-Run Studio in one command:
-
-```bash
-uv run derp studio-dev
-```
-
-In dev mode, the backend app URL redirects to the Vite server so browser refreshes use HMR.
-
-Customize host/ports:
-
-```bash
-uv run derp studio-dev --host 0.0.0.0 --backend-port 4983 --frontend-port 5173
-```
-
-Manual two-terminal workflow:
-
-```bash
-# Terminal 1 (backend)
-uv run derp studio --host 127.0.0.1 --port 4983
-
-# Terminal 2 (frontend)
-cd src/derp/studio/ui
-bun run dev
-```
-
-Build the Studio frontend assets from a source checkout:
-
-```bash
-cd src/derp/studio/ui
-bun install --frozen-lockfile
-bun run build
-```
-
-Build a release artifact (frontend + Python package):
-
-```bash
-./scripts/build_package.sh
-```
-
-## Project Structure
-
-```text
-src/derp/
-├── __init__.py
-├── config.py
-├── derp_client.py
-├── orm/
-├── auth/
-├── storage/
-├── kv/
-├── payments/
-└── cli/
-```
+Full docs at [derp-py.readthedocs.io](https://derp-py.readthedocs.io/).
 
 ## Development
 
@@ -326,7 +227,6 @@ uv sync
 uv run pytest
 uv run ruff check src/
 uv run ruff format src/
-uv run ty check src/
 ```
 
 ## License

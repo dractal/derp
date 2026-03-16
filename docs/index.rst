@@ -1,7 +1,13 @@
 Derp
 ====
 
-An async Python backend toolkit for building web apps. PostgreSQL ORM, auth, payments, storage, queues — one client, one config file.
+An async Python backend toolkit. One client, one config file.
+
+**ORM** · **Auth** · **Payments** · **Storage** · **KV** · **Queues** · **CLI** · **Studio**
+
+.. code-block:: bash
+
+   uv add derp-py
 
 .. code-block:: python
 

@@ -75,6 +75,9 @@ html_static_path = ["_static"]
 html_theme_options = {
     "navigation_with_keys": True,
     "footer_icons": [],
+    "source_repository": "https://github.com/dractal/derp",
+    "source_branch": "main",
+    "source_directory": "docs/",
 }
 
 html_show_sphinx = False
