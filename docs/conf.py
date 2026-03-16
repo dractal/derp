@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath("../src"))
 project = "Derp"
 copyright = "2026, Aahil Mehta"
 author = "Aahil Mehta"
-release = "0.1.0"
+release = "0.1.1"
 
 # -- General configuration -------------------------------------------------
 
