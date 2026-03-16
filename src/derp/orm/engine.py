@@ -12,6 +12,7 @@ import asyncpg
 from derp.kv.base import KVClient
 from derp.orm.fields import FieldInfo
 from derp.orm.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
+from derp.orm.query.expressions import Expression
 from derp.orm.query.table_ref import TableRef
 from derp.orm.router import ReplicaRouter
 from derp.orm.table import Table
@@ -60,10 +61,12 @@ class Transaction:
     # Fallback for column selections and mixed cases - returns dicts
     @overload
     def select(
-        self, *columns: type[Table] | FieldInfo[Any]
+        self, *columns: type[Table] | FieldInfo[Any] | Expression
     ) -> SelectQuery[dict[str, Any]]: ...
 
-    def select(self, *columns: type[Table] | FieldInfo[Any]) -> SelectQuery[Any]:
+    def select(
+        self, *columns: type[Table] | FieldInfo[Any] | Expression
+    ) -> SelectQuery[Any]:
         """Start a SELECT query bound to this transaction's connection."""
         return SelectQuery(self._connection, columns)
 
@@ -180,14 +183,16 @@ class DatabaseEngine:
     # Fallback for column selections and mixed cases - returns dicts
     @overload
     def select(
-        self, *columns: type[Table] | FieldInfo[Any]
+        self, *columns: type[Table] | FieldInfo[Any] | Expression
     ) -> SelectQuery[dict[str, Any]]: ...
 
-    def select(self, *columns: type[Table] | FieldInfo[Any]) -> SelectQuery[Any]:
+    def select(
+        self, *columns: type[Table] | FieldInfo[Any] | Expression
+    ) -> SelectQuery[Any]:
         """Start a SELECT query.
 
         Args:
-            *columns: Table classes or FieldInfo columns to select
+            *columns: Table classes, FieldInfo columns, or Expressions to select
 
         Returns:
             Typed SelectQuery builder:
@@ -222,7 +227,8 @@ class DatabaseEngine:
         Returns:
             InsertQuery builder
 
-        Example:
+        Example::
+
             await (
                 db.insert(User)
                 .values(name="Bob", email="bob@example.com")

@@ -1,7 +1,7 @@
 """Queue client and typed models."""
 
-from derp.config import CeleryConfig, QueueConfig, VercelQueueConfig
-from derp.queue.base import QueueClient, TaskState, TaskStatus
+from derp.config import CeleryConfig, QueueConfig, ScheduleConfig, VercelQueueConfig
+from derp.queue.base import QueueClient, Schedule, ScheduleType, TaskState, TaskStatus
 from derp.queue.celery import CeleryQueueClient
 from derp.queue.exceptions import (
     QueueError,
@@ -18,6 +18,9 @@ __all__ = [
     "QueueError",
     "QueueNotConnectedError",
     "QueueProviderError",
+    "Schedule",
+    "ScheduleConfig",
+    "ScheduleType",
     "TaskState",
     "TaskStatus",
     "VercelQueueClient",

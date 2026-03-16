@@ -14,7 +14,14 @@ import asyncpg
 
 from derp.kv.base import KVClient
 from derp.orm.fields import JSON, JSONB, FieldInfo
-from derp.orm.query.expressions import ColumnRef, Expression
+from derp.orm.query.expressions import (
+    ColumnRef,
+    ExistsExpr,
+    Expression,
+    RawSQL,
+    SubqueryExpr,
+    _renumber_params,
+)
 from derp.orm.router import ReplicaRouter
 from derp.orm.table import Table
 
@@ -63,6 +70,33 @@ class OrderByClause:
 
     column: FieldInfo[Any] | str
     direction: SortOrder = SortOrder.ASC
+
+
+class LockMode(StrEnum):
+    """SQL row-level locking modes."""
+
+    UPDATE = "FOR UPDATE"
+    NO_KEY_UPDATE = "FOR NO KEY UPDATE"
+    SHARE = "FOR SHARE"
+    KEY_SHARE = "FOR KEY SHARE"
+
+
+@dataclass
+class LockClause:
+    """Represents a row-level lock clause."""
+
+    mode: LockMode
+    nowait: bool = False
+    skip_locked: bool = False
+
+
+@dataclass
+class OnConflictClause:
+    """Represents an ON CONFLICT clause for upsert."""
+
+    target: tuple[str, ...]
+    action: str  # "nothing" or "update"
+    set_values: dict[str, Any] | None = None
 
 
 class _WhereShorthandMixin:
@@ -156,26 +190,36 @@ class _WhereShorthandMixin:
         return self.where(self._resolve_column(column).between(low, high))
 
 
+# =============================================================================
+# SELECT Query
+# =============================================================================
+
+
 class SelectQuery[T](_WhereShorthandMixin):
     """SELECT query - T is the result element type (Table subclass or dict)."""
 
     def __init__(
         self,
         pool: asyncpg.Pool | asyncpg.Connection | None,
-        columns: tuple[type[Table] | FieldInfo[Any], ...],
+        columns: tuple[type[Table] | FieldInfo[Any] | Expression, ...],
         *,
         cache_store: KVClient | None = None,
         router: ReplicaRouter | None = None,
     ):
         self._pool = pool
         self._columns = columns
-        self._from_table: type[Table] | str | None = None
+        self._from_table: type[Table] | str | SubqueryExpr | None = None
+        self._ctes: list[tuple[str, SelectQuery[Any]]] = []
         self._joins: list[JoinClause] = []
         self._where_clause: Expression | None = None
         self._order_by: list[OrderByClause] = []
         self._limit_value: int | None = None
         self._offset_value: int | None = None
         self._group_by: list[FieldInfo[Any] | str] = []
+        self._having_clause: Expression | None = None
+        self._distinct: bool = False
+        self._distinct_on: list[FieldInfo[Any]] = []
+        self._lock: LockClause | None = None
         self._cache_store: KVClient | None = cache_store
         self._cache_ttl: float | None = None
         self._cache_lock_ttl: float | None = None
@@ -187,8 +231,8 @@ class SelectQuery[T](_WhereShorthandMixin):
         if columns and isinstance(columns[0], type) and issubclass(columns[0], Table):
             self._from_table = columns[0]
 
-    def from_(self, table: type[Table] | str) -> Self:
-        """Set the FROM table."""
+    def from_(self, table: type[Table] | str | SubqueryExpr) -> Self:
+        """Set the FROM table. Accepts a Table class, string, or subquery."""
         self._from_table = table
         return self
 
@@ -247,6 +291,14 @@ class SelectQuery[T](_WhereShorthandMixin):
         self._group_by.extend(columns)
         return self
 
+    def having(self, cond: Expression) -> Self:
+        """Add HAVING clause. Multiple calls combine with AND."""
+        if self._having_clause is not None:
+            self._having_clause = self._having_clause & cond
+        else:
+            self._having_clause = cond
+        return self
+
     def cache(
         self,
         ttl: float,
@@ -265,36 +317,110 @@ class SelectQuery[T](_WhereShorthandMixin):
         self._force_primary = True
         return self
 
+    def distinct(self) -> Self:
+        """Add DISTINCT to SELECT."""
+        self._distinct = True
+        return self
+
+    def distinct_on(self, *columns: FieldInfo[Any]) -> Self:
+        """Add DISTINCT ON to SELECT (PostgreSQL-specific)."""
+        self._distinct_on.extend(columns)
+        return self
+
+    def for_update(self, *, nowait: bool = False, skip_locked: bool = False) -> Self:
+        """Add FOR UPDATE row lock."""
+        self._lock = LockClause(LockMode.UPDATE, nowait=nowait, skip_locked=skip_locked)
+        return self
+
+    def for_share(self, *, nowait: bool = False, skip_locked: bool = False) -> Self:
+        """Add FOR SHARE row lock."""
+        self._lock = LockClause(LockMode.SHARE, nowait=nowait, skip_locked=skip_locked)
+        return self
+
+    def as_(self, alias: str) -> SubqueryExpr:
+        """Wrap this query as a subquery expression with an alias."""
+        return SubqueryExpr(self, _alias=alias)
+
+    def exists(self) -> ExistsExpr:
+        """Wrap this query as an EXISTS expression."""
+        return ExistsExpr(SubqueryExpr(self))
+
+    def with_cte(self, name: str, query: SelectQuery[Any]) -> Self:
+        """Add a Common Table Expression (WITH clause)."""
+        self._ctes.append((name, query))
+        return self
+
+    def union(self, other: SelectQuery[Any]) -> SetOperationQuery[T]:
+        """Combine with another query using UNION."""
+        return SetOperationQuery(self, "UNION", other)
+
+    def union_all(self, other: SelectQuery[Any]) -> SetOperationQuery[T]:
+        """Combine with another query using UNION ALL."""
+        return SetOperationQuery(self, "UNION ALL", other)
+
+    def intersect(self, other: SelectQuery[Any]) -> SetOperationQuery[T]:
+        """Combine with another query using INTERSECT."""
+        return SetOperationQuery(self, "INTERSECT", other)
+
+    def except_(self, other: SelectQuery[Any]) -> SetOperationQuery[T]:
+        """Combine with another query using EXCEPT."""
+        return SetOperationQuery(self, "EXCEPT", other)
+
     def build(self) -> tuple[str, list[Any]]:
         """Build the SQL query and parameters."""
         params: list[Any] = []
+
+        # CTE (WITH) clause
+        cte_prefix = ""
+        if self._ctes:
+            cte_parts = []
+            for cte_name, cte_query in self._ctes:
+                cte_sql, cte_params = cte_query.build()
+                offset = len(params)
+                params.extend(cte_params)
+                renumbered = _renumber_params(cte_sql, offset)
+                cte_parts.append(f"{cte_name} AS ({renumbered})")
+            cte_prefix = f"WITH {', '.join(cte_parts)} "
 
         # SELECT clause
         select_parts: list[str] = []
         for col in self._columns:
             if isinstance(col, type) and issubclass(col, Table):
-                # Select all columns from table
                 table_name = col.get_table_name()
                 select_parts.append(f"{table_name}.*")
+            elif isinstance(col, Expression):
+                select_parts.append(col.to_sql(params))
             elif isinstance(col, FieldInfo):
                 if col._table_name and col._field_name:
                     select_parts.append(f"{col._table_name}.{col._field_name}")
                 elif col._field_name:
                     select_parts.append(col._field_name)
             else:
-                # Raw string column name
                 select_parts.append(str(col))
 
-        sql = f"SELECT {', '.join(select_parts)}"
+        # DISTINCT / DISTINCT ON
+        distinct_prefix = ""
+        if self._distinct_on:
+            on_parts = []
+            for dc in self._distinct_on:
+                if dc._table_name and dc._field_name:
+                    on_parts.append(f"{dc._table_name}.{dc._field_name}")
+                elif dc._field_name:
+                    on_parts.append(dc._field_name)
+            distinct_prefix = f"DISTINCT ON ({', '.join(on_parts)}) "
+        elif self._distinct:
+            distinct_prefix = "DISTINCT "
+
+        sql = f"{cte_prefix}SELECT {distinct_prefix}{', '.join(select_parts)}"
 
         # FROM clause
-        if self._from_table:
-            from_name = (
-                self._from_table
-                if isinstance(self._from_table, str)
-                else self._from_table.get_table_name()
-            )
-            sql += f" FROM {from_name}"
+        if self._from_table is not None:
+            if isinstance(self._from_table, SubqueryExpr):
+                sql += f" FROM {self._from_table.to_sql(params)}"
+            elif isinstance(self._from_table, str):
+                sql += f" FROM {self._from_table}"
+            else:
+                sql += f" FROM {self._from_table.get_table_name()}"
 
         # JOIN clauses
         for join in self._joins:
@@ -322,6 +448,11 @@ class SelectQuery[T](_WhereShorthandMixin):
                     group_parts.append(str(col))
             sql += f" GROUP BY {', '.join(group_parts)}"
 
+        # HAVING clause
+        if self._having_clause is not None:
+            having_sql = self._having_clause.to_sql(params)
+            sql += f" HAVING {having_sql}"
+
         # ORDER BY clause
         if self._order_by:
             order_parts = []
@@ -347,6 +478,14 @@ class SelectQuery[T](_WhereShorthandMixin):
         if self._offset_value is not None:
             sql += f" OFFSET {self._offset_value}"
 
+        # Row locking
+        if self._lock is not None:
+            sql += f" {self._lock.mode}"
+            if self._lock.nowait:
+                sql += " NOWAIT"
+            elif self._lock.skip_locked:
+                sql += " SKIP LOCKED"
+
         return sql, params
 
     def build_count(self) -> tuple[str, list[Any]]:
@@ -354,13 +493,13 @@ class SelectQuery[T](_WhereShorthandMixin):
         params: list[Any] = []
         sql = "SELECT COUNT(*)"
 
-        if self._from_table:
-            from_name = (
-                self._from_table
-                if isinstance(self._from_table, str)
-                else self._from_table.get_table_name()
-            )
-            sql += f" FROM {from_name}"
+        if self._from_table is not None:
+            if isinstance(self._from_table, SubqueryExpr):
+                sql += f" FROM {self._from_table.to_sql(params)}"
+            elif isinstance(self._from_table, str):
+                sql += f" FROM {self._from_table}"
+            else:
+                sql += f" FROM {self._from_table.get_table_name()}"
 
         for join in self._joins:
             join_table = join.table.get_table_name()
@@ -425,7 +564,9 @@ class SelectQuery[T](_WhereShorthandMixin):
 
     def _rows_to_dicts(self, rows: list[asyncpg.Record]) -> list[dict[str, Any]]:
         """Convert asyncpg Records to plain dicts with JSON deserialization."""
-        if self._from_table and not isinstance(self._from_table, str):
+        if self._from_table is not None and not isinstance(
+            self._from_table, str | SubqueryExpr
+        ):
             return [_deserialize_row(self._from_table, dict(row)) for row in rows]
         if (
             len(self._columns) == 1
@@ -473,6 +614,82 @@ class SelectQuery[T](_WhereShorthandMixin):
 
 
 # =============================================================================
+# Set Operation Query (UNION, INTERSECT, EXCEPT)
+# =============================================================================
+
+
+class SetOperationQuery[T]:
+    """Combined query from UNION, INTERSECT, or EXCEPT."""
+
+    def __init__(
+        self,
+        left: SelectQuery[T],
+        op: str,
+        right: SelectQuery[Any],
+    ):
+        self._left = left
+        self._op = op
+        self._right = right
+        self._order_by: list[OrderByClause] = []
+        self._limit_value: int | None = None
+        self._offset_value: int | None = None
+
+    def order_by(self, column: FieldInfo[Any] | str, *, asc: bool = True) -> Self:
+        """Add ORDER BY to the combined result."""
+        self._order_by.append(
+            OrderByClause(column, SortOrder.ASC if asc else SortOrder.DESC)
+        )
+        return self
+
+    def limit(self, n: int) -> Self:
+        """Add LIMIT to the combined result."""
+        self._limit_value = n
+        return self
+
+    def offset(self, n: int) -> Self:
+        """Add OFFSET to the combined result."""
+        self._offset_value = n
+        return self
+
+    def build(self) -> tuple[str, list[Any]]:
+        """Build the combined SQL query."""
+        left_sql, left_params = self._left.build()
+        right_sql, right_params = self._right.build()
+
+        params = list(left_params)
+        offset = len(params)
+        params.extend(right_params)
+        renumbered_right = _renumber_params(right_sql, offset)
+
+        sql = f"{left_sql} {self._op} {renumbered_right}"
+
+        if self._order_by:
+            order_parts = []
+            for ob in self._order_by:
+                if (
+                    isinstance(ob.column, FieldInfo)
+                    and ob.column._table_name
+                    and ob.column._field_name
+                ):
+                    order_parts.append(
+                        f"{ob.column._table_name}.{ob.column._field_name} "
+                        f"{ob.direction}"
+                    )
+                elif isinstance(ob.column, FieldInfo) and ob.column._field_name:
+                    order_parts.append(f"{ob.column._field_name} {ob.direction}")
+                else:
+                    order_parts.append(f"{ob.column} {ob.direction}")
+            sql += f" ORDER BY {', '.join(order_parts)}"
+
+        if self._limit_value is not None:
+            sql += f" LIMIT {self._limit_value}"
+        if self._offset_value is not None:
+            sql += f" OFFSET {self._offset_value}"
+
+        return sql, params
+
+
+# =============================================================================
 # INSERT Query with typed returning()
 # =============================================================================
 
@@ -490,23 +707,75 @@ class _InsertQueryBase[T: Table]:
         self._pool = pool
         self._table = table
         self._values: dict[str, Any] = {}
+        self._values_list: list[dict[str, Any]] | None = None
+        self._on_conflict: OnConflictClause | None = None
+        self._insert_columns: list[str] | None = None
+        self._from_select: SelectQuery[Any] | None = None
         self._returning: tuple[type[Table] | FieldInfo[Any], ...] | None = None
         self._router: ReplicaRouter | None = router
 
     def _build(self) -> tuple[str, list[Any]]:
         """Build the SQL query and parameters."""
         table_name = self._table.get_table_name()
-        columns = list(self._values.keys())
-        params = [
-            _serialize_value(self._table, col, val) for col, val in self._values.items()
-        ]
+        params: list[Any] = []
 
-        placeholders = [f"${i + 1}" for i in range(len(params))]
+        # INSERT ... SELECT
+        if self._from_select is not None:
+            cols = ", ".join(self._insert_columns or [])
+            sub_sql, sub_params = self._from_select.build()
+            params.extend(sub_params)
+            sql = f"INSERT INTO {table_name} ({cols}) {sub_sql}"
 
-        sql = (
-            f"INSERT INTO {table_name} ({', '.join(columns)}) "
-            f"VALUES ({', '.join(placeholders)})"
-        )
+            if self._returning:
+                return_parts = []
+                for col in self._returning:
+                    if isinstance(col, type) and issubclass(col, Table):
+                        return_parts.append("*")
+                    elif isinstance(col, FieldInfo) and col._field_name:
+                        return_parts.append(col._field_name)
+                sql += f" RETURNING {', '.join(return_parts)}"
+
+            return sql, params
+
+        if self._values_list is not None:
+            # Multi-row insert
+            if not self._values_list:
+                raise ValueError("values_list() requires at least one row.")
+            columns = list(self._values_list[0].keys())
+            all_placeholders = []
+            for row in self._values_list:
+                row_ph = []
+                for col in columns:
+                    params.append(_serialize_value(self._table, col, row[col]))
+                    row_ph.append(f"${len(params)}")
+                all_placeholders.append(f"({', '.join(row_ph)})")
+            sql = (
+                f"INSERT INTO {table_name} ({', '.join(columns)}) "
+                f"VALUES {', '.join(all_placeholders)}"
+            )
+        else:
+            # Single-row insert
+            columns = list(self._values.keys())
+            for col, val in self._values.items():
+                params.append(_serialize_value(self._table, col, val))
+            placeholders = [f"${i + 1}" for i in range(len(params))]
+            sql = (
+                f"INSERT INTO {table_name} ({', '.join(columns)}) "
+                f"VALUES ({', '.join(placeholders)})"
+            )
+
+        # ON CONFLICT
+        if self._on_conflict is not None:
+            target_cols = ", ".join(self._on_conflict.target)
+            sql += f" ON CONFLICT ({target_cols})"
+            if self._on_conflict.action == "nothing":
+                sql += " DO NOTHING"
+            else:
+                set_parts = []
+                for col, val in (self._on_conflict.set_values or {}).items():
+                    params.append(_serialize_value(self._table, col, val))
+                    set_parts.append(f"{col} = ${len(params)}")
+                sql += f" DO UPDATE SET {', '.join(set_parts)}"
 
         if self._returning:
             return_parts = []
@@ -528,6 +797,67 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
         self._values = kwargs
         return self
 
+    def values_list(self, rows: list[dict[str, Any]]) -> InsertQuery[T]:
+        """Set multiple rows to insert."""
+        self._values_list = rows
+        return self
+
+    def columns(self, *cols: FieldInfo[Any] | str) -> InsertQuery[T]:
+        """Set column names for INSERT ... SELECT."""
+        resolved: list[str] = []
+        for c in cols:
+            if isinstance(c, FieldInfo) and c._field_name:
+                resolved.append(c._field_name)
+            else:
+                resolved.append(str(c))
+        self._insert_columns = resolved
+        return self
+
+    def from_select(self, query: SelectQuery[Any]) -> InsertQuery[T]:
+        """Set the SELECT query for INSERT ... SELECT."""
+        self._from_select = query
+        return self
+
+    def _resolve_target(
+        self,
+        target: FieldInfo[Any] | tuple[FieldInfo[Any], ...],
+    ) -> tuple[str, ...]:
+        """Resolve conflict target to column name strings."""
+        if isinstance(target, FieldInfo):
+            return (target._field_name or "",)
+        return tuple(f._field_name or "" for f in target)
+
+    def ignore_conflicts(
+        self,
+        *,
+        target: FieldInfo[Any] | tuple[FieldInfo[Any], ...],
+    ) -> InsertQuery[T]:
+        """Add ON CONFLICT DO NOTHING."""
+        self._on_conflict = OnConflictClause(
+            target=self._resolve_target(target),
+            action="nothing",
+        )
+        return self
+
+    def upsert(
+        self,
+        *,
+        target: FieldInfo[Any] | tuple[FieldInfo[Any], ...],
+        **kwargs: Any,
+    ) -> InsertQuery[T]:
+        """Add ON CONFLICT DO UPDATE SET (upsert).
+
+        Pass the columns to update as keyword arguments::
+
+            .upsert(target=User.c.email, name="Updated")
+        """
+        self._on_conflict = OnConflictClause(
+            target=self._resolve_target(target),
+            action="update",
+            set_values=kwargs,
+        )
+        return self
+
     @overload
     def returning(self, table: type[T], /) -> InsertQueryReturning[T]: ...
 
@@ -547,6 +877,10 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
                 self._pool, self._table, router=self._router
             )
             query._values = self._values
+            query._values_list = self._values_list
+            query._on_conflict = self._on_conflict
+            query._insert_columns = self._insert_columns
+            query._from_select = self._from_select
             query._returning = columns
             return query
         else:
@@ -554,6 +888,10 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
                 self._pool, self._table, router=self._router
             )
             query_dict._values = self._values
+            query_dict._values_list = self._values_list
+            query_dict._on_conflict = self._on_conflict
+            query_dict._insert_columns = self._insert_columns
+            query_dict._from_select = self._from_select
             query_dict._returning = columns
             return query_dict
 
@@ -658,8 +996,11 @@ class _UpdateQueryBase[T: Table](_WhereShorthandMixin):
 
         set_parts = []
         for col, val in self._set_values.items():
-            params.append(_serialize_value(self._table, col, val))
-            set_parts.append(f"{col} = ${len(params)}")
+            if isinstance(val, RawSQL):
+                set_parts.append(f"{col} = {val.to_sql(params)}")
+            else:
+                params.append(_serialize_value(self._table, col, val))
+                set_parts.append(f"{col} = ${len(params)}")
 
         sql = f"UPDATE {table_name} SET {', '.join(set_parts)}"
 
@@ -972,6 +1313,11 @@ class DeleteQueryReturningDict[T: Table](_DeleteQueryBase[T]):
         if self._router is not None:
             self._router.record_write()
         return result
+
+
+# =============================================================================
+# Helpers
+# =============================================================================
 
 
 def _serialize_value(table: type[Table], column: str, value: Any) -> Any:

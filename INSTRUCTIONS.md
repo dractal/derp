@@ -492,7 +492,7 @@ from derp.auth.exceptions import (
 )
 
 @router.post("/signup")
-async def signup(email: str, password: str, derp: DerpClient[User] = Depends(get_derp)):
+async def signup(email: str, password: str, derp: DerpClient = Depends(get_derp)):
     try:
         user, tokens = await derp.auth.sign_up(
             email=email,
@@ -512,7 +512,7 @@ async def signup(email: str, password: str, derp: DerpClient[User] = Depends(get
     }
 
 @router.post("/signin")
-async def signin(email: str, password: str, derp: DerpClient[User] = Depends(get_derp)):
+async def signin(email: str, password: str, derp: DerpClient = Depends(get_derp)):
     user, tokens = await derp.auth.sign_in_with_password(
         email=email,
         password=password,
@@ -529,8 +529,8 @@ from derp.auth.jwt import decode_token
 from derp.auth.exceptions import InvalidTokenError, TokenExpiredError, SessionExpiredError
 
 async def get_current_user(
-    request: Request, derp: DerpClient[User] = Depends(get_derp)
-) -> User:
+    request: Request, derp: DerpClient = Depends(get_derp)
+) -> UserInfo:
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing token")
@@ -539,7 +539,7 @@ async def get_current_user(
 
     try:
         payload = decode_token(derp.auth._config.jwt, token)
-        await derp.auth.validate_session(token)
+        await derp.auth.authenticate(token)
         user = await derp.auth.get_user(payload.sub)
         if not user:
             raise HTTPException(status_code=401, detail="User not found")

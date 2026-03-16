@@ -8,22 +8,15 @@ import subprocess
 import time
 from collections.abc import AsyncGenerator, Generator, Iterator
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from derp.auth import AuthConfig, EmailConfig, JWTConfig
-from derp.auth.models import AuthUser
+from derp.auth import AuthConfig, EmailConfig, JWTConfig, NativeAuthConfig
 from derp.config import DerpConfig, ValkeyConfig
 from derp.derp_client import DerpClient
 from derp.kv.valkey import ValkeyClient
 from derp.orm import DatabaseConfig, DatabaseEngine
-from derp.orm.fields import JSONB, Field
-
-
-class User(AuthUser, table="users"):
-    user_metadata: dict[str, Any] | None = Field(JSONB(), nullable=True)
 
 
 def _pick_free_port() -> int:
@@ -84,6 +77,7 @@ async def kv_client(
     client = ValkeyClient(ValkeyConfig(addresses=[(host, port)]))
     await client.connect()
     yield client
+    await client.client.custom_command(["FLUSHDB"])
     await client.disconnect()
 
 
@@ -115,9 +109,9 @@ def email_config() -> EmailConfig:
 
 
 @pytest.fixture
-def auth_config(jwt_config: JWTConfig) -> AuthConfig[User]:
+def auth_config(jwt_config: JWTConfig) -> AuthConfig:
     """Create an auth config for testing."""
-    return AuthConfig(jwt=jwt_config, enable_magic_link=True)
+    return AuthConfig(native=NativeAuthConfig(jwt=jwt_config, enable_magic_link=True))
 
 
 @pytest.fixture
@@ -126,7 +120,7 @@ async def derp(
     auth_config: AuthConfig,
     email_config: EmailConfig,
     kv_client: ValkeyClient,
-) -> AsyncGenerator[DerpClient[User], None]:
+) -> AsyncGenerator[DerpClient, None]:
     """Create a Derp client for testing."""
     derp = DerpClient(
         config=DerpConfig(
@@ -155,6 +149,10 @@ async def _create_auth_tables(db: DatabaseEngine) -> None:
             email VARCHAR(255) UNIQUE NOT NULL,
             email_confirmed_at TIMESTAMP WITH TIME ZONE,
             encrypted_password TEXT,
+            first_name VARCHAR(255),
+            last_name VARCHAR(255),
+            username VARCHAR(255),
+            image_url TEXT,
             provider VARCHAR(50) NOT NULL DEFAULT 'email',
             provider_id VARCHAR(255),
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -162,8 +160,7 @@ async def _create_auth_tables(db: DatabaseEngine) -> None:
             role VARCHAR(50) NOT NULL DEFAULT 'default',
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
             updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-            last_sign_in_at TIMESTAMP WITH TIME ZONE,
-            user_metadata JSONB
+            last_sign_in_at TIMESTAMP WITH TIME ZONE
         )
     """)
 
@@ -177,8 +174,32 @@ async def _create_auth_tables(db: DatabaseEngine) -> None:
             revoked BOOLEAN NOT NULL DEFAULT FALSE,
             user_agent TEXT,
             ip_address VARCHAR(45),
+            org_id UUID,
             not_after TIMESTAMP WITH TIME ZONE NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+        )
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS organizations (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(255) NOT NULL,
+            slug VARCHAR(255) UNIQUE NOT NULL,
+            metadata TEXT,
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+        )
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS org_members (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role VARCHAR(50) NOT NULL DEFAULT 'member',
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            UNIQUE (org_id, user_id)
         )
     """)
 

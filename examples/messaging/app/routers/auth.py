@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.dependencies import get_current_user, get_derp
-from app.models import User
 from app.schemas import (
     AuthResponse,
     MessageResponse,
@@ -27,6 +26,7 @@ from derp.auth.exceptions import (
     UserAlreadyExistsError,
     UserNotActiveError,
 )
+from derp.auth.models import UserInfo
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -46,7 +46,7 @@ def _get_client_info(request: Request) -> tuple[str | None, str | None]:
     "/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED
 )
 async def signup(
-    request: Request, data: SignUpRequest, derp: DerpClient[User] = Depends(get_derp)
+    request: Request, data: SignUpRequest, derp: DerpClient = Depends(get_derp)
 ) -> AuthResponse:
     """Register a new user with email and password."""
     user_agent, ip_address = _get_client_info(request)
@@ -86,7 +86,7 @@ async def signup(
 
 @router.post("/signin", response_model=AuthResponse)
 async def signin(
-    request: Request, data: SignInRequest, derp: DerpClient[User] = Depends(get_derp)
+    request: Request, data: SignInRequest, derp: DerpClient = Depends(get_derp)
 ) -> AuthResponse:
     """Sign in with email and password."""
     user_agent, ip_address = _get_client_info(request)
@@ -127,8 +127,8 @@ async def signin(
 @router.post("/signout", response_model=MessageResponse)
 async def signout(
     request: Request,
-    user: User = Depends(get_current_user),
-    derp: DerpClient[User] = Depends(get_derp),
+    user: UserInfo = Depends(get_current_user),
+    derp: DerpClient = Depends(get_derp),
 ) -> MessageResponse:
     """Sign out the current session."""
     session_id = getattr(request.state, "session_id", None)
@@ -139,7 +139,7 @@ async def signout(
 
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh(
-    data: RefreshTokenRequest, derp: DerpClient[User] = Depends(get_derp)
+    data: RefreshTokenRequest, derp: DerpClient = Depends(get_derp)
 ) -> TokenResponse:
     """Refresh access token using refresh token."""
     try:
@@ -166,7 +166,7 @@ async def refresh(
 
 @router.get("/user", response_model=UserPublicResponse)
 async def get_current_user_info(
-    user: User = Depends(get_current_user),
+    user: UserInfo = Depends(get_current_user),
 ) -> UserPublicResponse:
     """Get the current authenticated user."""
     return UserPublicResponse.model_validate(user)

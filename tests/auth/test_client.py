@@ -23,14 +23,15 @@ from derp.auth.jwt import decode_token
 from derp.auth.password import generate_secure_token
 from derp.derp_client import DerpClient
 from derp.kv.valkey import ValkeyClient
-from tests.auth.conftest import User, get_confirmation_token
+from tests.auth.conftest import get_confirmation_token
+from tests.conftest import bearer_request
 
 
 class TestSignUp:
     """Tests for sign up functionality."""
 
     async def test_sign_up_success(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test successful user signup."""
         user, tokens = await derp.auth.sign_up(
@@ -40,29 +41,15 @@ class TestSignUp:
         )
 
         assert user.email == "test@example.com"
-        assert user.provider == "email"
+        assert user.metadata["provider"] == "email"
         assert user.is_active is True
         assert user.is_superuser is False
         assert tokens.access_token is not None
         assert tokens.refresh_token is not None
 
-    async def test_sign_up_with_metadata(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
-    ) -> None:
-        """Test signup with user metadata."""
-        metadata = {"name": "Test User", "locale": "en-US"}
-        user, _ = await derp.auth.sign_up(
-            email="test@example.com",
-            password="password123",
-            confirmation_url="http://localhost:3000/auth/confirm",
-            user_metadata=metadata,
-        )
-
-        assert user.user_metadata == metadata
-
     async def test_sign_up_normalizes_email(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test that email is lowercased during signup."""
@@ -76,7 +63,7 @@ class TestSignUp:
 
     async def test_sign_up_duplicate_email(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test signup with duplicate email."""
@@ -95,7 +82,7 @@ class TestSignUp:
 
     async def test_sign_up_weak_password(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test signup with weak password."""
@@ -107,10 +94,11 @@ class TestSignUp:
             )
 
     async def test_sign_up_disabled(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test signup when disabled."""
-        derp.auth._config.enable_signup = False
+        assert derp.config.auth is not None and derp.config.auth.native is not None
+        derp.config.auth.native.enable_signup = False
 
         with pytest.raises(SignupDisabledError):
             await derp.auth.sign_up(
@@ -125,18 +113,19 @@ class TestSignIn:
 
     async def test_sign_in_success(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test successful sign in."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         user, _ = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
         token = await get_confirmation_token(
-            kv_client, derp.auth._config.cache_prefix, str(user.id)
+            kv_client, derp.config.auth.native.cache_prefix, str(user.id)
         )
         assert token is not None
         await derp.auth.confirm_email(token)
@@ -150,7 +139,7 @@ class TestSignIn:
         assert tokens.refresh_token is not None
 
     async def test_sign_in_wrong_password(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test sign in with wrong password."""
         await derp.auth.sign_up(
@@ -165,7 +154,7 @@ class TestSignIn:
             )
 
     async def test_sign_in_user_not_found(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test sign in with non-existent user."""
         with pytest.raises(InvalidCredentialsError):
@@ -174,7 +163,7 @@ class TestSignIn:
             )
 
     async def test_sign_in_inactive_user(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test sign in with inactive user."""
         user, _ = await derp.auth.sign_up(
@@ -193,18 +182,19 @@ class TestSignIn:
 
     async def test_sign_in_case_insensitive_email(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test sign in with different email case."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         user, _ = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
         token = await get_confirmation_token(
-            kv_client, derp.auth._config.cache_prefix, str(user.id)
+            kv_client, derp.config.auth.native.cache_prefix, str(user.id)
         )
         assert token is not None
         await derp.auth.confirm_email(token)
@@ -220,7 +210,7 @@ class TestTokenRefresh:
     """Tests for token refresh functionality."""
 
     async def test_refresh_success(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test successful token refresh."""
         _, tokens = await derp.auth.sign_up(
@@ -237,14 +227,14 @@ class TestTokenRefresh:
         assert new_tokens.refresh_token != tokens.refresh_token
 
     async def test_refresh_invalid_token(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test refresh with invalid token."""
         with pytest.raises(RefreshTokenRevokedError):
             await derp.auth.refresh_token("invalid_token")
 
     async def test_refresh_revoked_token(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test refresh with revoked token."""
         _, tokens = await derp.auth.sign_up(
@@ -265,7 +255,7 @@ class TestMagicLink:
     """Tests for magic link functionality."""
 
     async def test_send_magic_link(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test sending a magic link."""
         # Create user first
@@ -283,24 +273,25 @@ class TestMagicLink:
 
     async def test_verify_magic_link(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test verifying a magic link."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         # Create user
-        await derp.auth.sign_up(
+        user, _ = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
-        # Store magic link token in KV
+        # Store magic link token in KV (keyed by user ID)
         token = generate_secure_token()
-        prefix = derp.auth._config.cache_prefix
+        prefix = derp.config.auth.native.cache_prefix
         await kv_client.set(
             f"{prefix}:magic_link:{token}".encode(),
-            b"test@example.com",
+            str(user.id).encode(),
             ttl=3600,
         )
 
@@ -311,7 +302,7 @@ class TestMagicLink:
         assert tokens.access_token is not None
 
     async def test_verify_expired_magic_link(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test verifying an expired magic link (not found in KV)."""
         await derp.auth.sign_up(
@@ -328,23 +319,24 @@ class TestMagicLink:
 
     async def test_verify_magic_link_single_use(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test that a magic link can only be used once."""
-        await derp.auth.sign_up(
+        assert derp.config.auth is not None and derp.config.auth.native is not None
+        user, _ = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
-        # Store magic link token in KV
+        # Store magic link token in KV (keyed by user ID)
         token = generate_secure_token()
-        prefix = derp.auth._config.cache_prefix
+        prefix = derp.config.auth.native.cache_prefix
         await kv_client.set(
             f"{prefix}:magic_link:{token}".encode(),
-            b"test@example.com",
+            str(user.id).encode(),
             ttl=3600,
         )
 
@@ -360,7 +352,7 @@ class TestPasswordRecovery:
     """Tests for password recovery functionality."""
 
     async def test_request_recovery(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test requesting password recovery."""
         await derp.auth.sign_up(
@@ -375,7 +367,7 @@ class TestPasswordRecovery:
         )
 
     async def test_request_recovery_nonexistent_user(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test requesting recovery for non-existent user."""
         # Should not raise (don't reveal user existence)
@@ -386,25 +378,26 @@ class TestPasswordRecovery:
 
     async def test_reset_password(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test resetting password."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         user, _ = await derp.auth.sign_up(
             email="test@example.com",
             password="oldpassword123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
         conf_token = await get_confirmation_token(
-            kv_client, derp.auth._config.cache_prefix, str(user.id)
+            kv_client, derp.config.auth.native.cache_prefix, str(user.id)
         )
         assert conf_token is not None
         await derp.auth.confirm_email(conf_token)
 
         # Store recovery token in KV
         token = generate_secure_token()
-        prefix = derp.auth._config.cache_prefix
+        prefix = derp.config.auth.native.cache_prefix
         await kv_client.set(
             f"{prefix}:recovery:{token}".encode(),
             str(user.id).encode(),
@@ -421,14 +414,14 @@ class TestPasswordRecovery:
         assert user is not None
 
     async def test_reset_password_invalid_token(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test reset with invalid token."""
         with pytest.raises(RecoveryTokenInvalidError):
             await derp.auth.reset_password("invalid_token", "newpassword123")
 
     async def test_reset_password_expired_token(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test reset with expired token (not found in KV)."""
         await derp.auth.sign_up(
@@ -447,15 +440,16 @@ class TestPasswordRecovery:
 class TestSessionManagement:
     """Tests for session management."""
 
-    async def test_sign_out(self, derp: DerpClient[User], mock_smtp: AsyncMock) -> None:
+    async def test_sign_out(self, derp: DerpClient, mock_smtp: AsyncMock) -> None:
         """Test signing out a session."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         user, tokens = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
-        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
+        payload = decode_token(derp.config.auth.native.jwt, tokens.access_token)
         assert payload is not None
 
         # Sign out
@@ -467,18 +461,19 @@ class TestSessionManagement:
 
     async def test_sign_out_all(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test signing out all sessions."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         user, tokens1 = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
         token = await get_confirmation_token(
-            kv_client, derp.auth._config.cache_prefix, str(user.id)
+            kv_client, derp.config.auth.native.cache_prefix, str(user.id)
         )
         assert token is not None
         await derp.auth.confirm_email(token)
@@ -505,18 +500,19 @@ class TestUserManagement:
 
     async def test_get_user_by_id(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test getting user by ID."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         user, _ = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
         token = await get_confirmation_token(
-            kv_client, derp.auth._config.cache_prefix, str(user.id)
+            kv_client, derp.config.auth.native.cache_prefix, str(user.id)
         )
         assert token is not None
         await derp.auth.confirm_email(token)
@@ -527,29 +523,15 @@ class TestUserManagement:
         assert found.email == "test@example.com"
 
     async def test_get_user_by_id_not_found(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test getting non-existent user by ID."""
         found = await derp.auth.get_user(uuid.uuid4())
         assert found is None
 
-    async def test_get_user_by_email(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
-    ) -> None:
-        """Test getting user by email."""
-        await derp.auth.sign_up(
-            email="test@example.com",
-            password="password123",
-            confirmation_url="http://localhost:3000/auth/confirm",
-        )
-
-        found = await derp.auth.get_user(email="test@example.com")
-
-        assert found is not None
-        assert found.email == "test@example.com"
 
     async def test_update_user(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test updating user."""
         user, _ = await derp.auth.sign_up(
@@ -559,13 +541,13 @@ class TestUserManagement:
         )
 
         updated = await derp.auth.update_user(
-            user_id=user.id, user_metadata={"name": "Updated Name"}
+            user_id=user.id, role="admin"
         )
 
-        assert updated.user_metadata == {"name": "Updated Name"}
+        assert updated.role == "admin"
 
     async def test_update_user_not_found(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test updating non-existent user."""
         with pytest.raises(UserNotFoundError):
@@ -576,7 +558,7 @@ class TestRBAC:
     """Tests for role-based access control."""
 
     async def test_default_role_on_signup(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test that new users get the default role."""
         user, _ = await derp.auth.sign_up(
@@ -588,34 +570,36 @@ class TestRBAC:
         assert user.role == "default"
 
     async def test_role_embedded_in_jwt(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test that role is embedded in the access token."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         _, tokens = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
-        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
+        payload = decode_token(derp.config.auth.native.jwt, tokens.access_token)
         assert payload is not None
         assert payload.extra is not None
         assert payload.extra["role"] == "default"
 
     async def test_custom_role_in_jwt(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test that updated role appears in JWT after re-login."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         user, _ = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
         token = await get_confirmation_token(
-            kv_client, derp.auth._config.cache_prefix, str(user.id)
+            kv_client, derp.config.auth.native.cache_prefix, str(user.id)
         )
         assert token is not None
         await derp.auth.confirm_email(token)
@@ -628,13 +612,13 @@ class TestRBAC:
             email="test@example.com", password="password123"
         )
 
-        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
+        payload = decode_token(derp.config.auth.native.jwt, tokens.access_token)
         assert payload is not None
         assert payload.extra is not None
         assert payload.extra["role"] == "admin"
 
     async def test_is_authorized_matching_role(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test is_authorized returns True for matching role."""
         _, tokens = await derp.auth.sign_up(
@@ -643,12 +627,12 @@ class TestRBAC:
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
-        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
-        assert payload is not None
-        assert derp.auth.is_authorized(payload, "default") is True
+        session = await derp.auth.authenticate(bearer_request(tokens.access_token))
+        assert session is not None
+        assert derp.auth.is_authorized(session, "default") is True
 
     async def test_is_authorized_multiple_roles(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test is_authorized with multiple allowed roles."""
         _, tokens = await derp.auth.sign_up(
@@ -657,12 +641,12 @@ class TestRBAC:
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
-        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
-        assert payload is not None
-        assert derp.auth.is_authorized(payload, "admin", "default") is True
+        session = await derp.auth.authenticate(bearer_request(tokens.access_token))
+        assert session is not None
+        assert derp.auth.is_authorized(session, "admin", "default") is True
 
     async def test_is_authorized_wrong_role(
-        self, derp: DerpClient[User], mock_smtp: AsyncMock
+        self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test is_authorized returns False for non-matching role."""
         _, tokens = await derp.auth.sign_up(
@@ -671,24 +655,25 @@ class TestRBAC:
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
-        payload = decode_token(derp.auth._config.jwt, tokens.access_token)
-        assert payload is not None
-        assert derp.auth.is_authorized(payload, "admin") is False
+        session = await derp.auth.authenticate(bearer_request(tokens.access_token))
+        assert session is not None
+        assert derp.auth.is_authorized(session, "admin") is False
 
     async def test_role_survives_token_refresh(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test that refresh carries forward the session role (no DB hit)."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         user, tokens = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
         token = await get_confirmation_token(
-            kv_client, derp.auth._config.cache_prefix, str(user.id)
+            kv_client, derp.config.auth.native.cache_prefix, str(user.id)
         )
         assert token is not None
         await derp.auth.confirm_email(token)
@@ -696,25 +681,26 @@ class TestRBAC:
         # Refresh token — role carried from session row, no user fetch
         new_tokens = await derp.auth.refresh_token(tokens.refresh_token)
 
-        payload = decode_token(derp.auth._config.jwt, new_tokens.access_token)
+        payload = decode_token(derp.config.auth.native.jwt, new_tokens.access_token)
         assert payload is not None
         assert payload.extra is not None
         assert payload.extra["role"] == "default"
 
     async def test_role_change_takes_effect_on_new_sign_in(
         self,
-        derp: DerpClient[User],
+        derp: DerpClient,
         kv_client: ValkeyClient,
         mock_smtp: AsyncMock,
     ) -> None:
         """Test that a role change is picked up on next sign-in, not refresh."""
+        assert derp.config.auth is not None and derp.config.auth.native is not None
         user, tokens = await derp.auth.sign_up(
             email="test@example.com",
             password="password123",
             confirmation_url="http://localhost:3000/auth/confirm",
         )
         token = await get_confirmation_token(
-            kv_client, derp.auth._config.cache_prefix, str(user.id)
+            kv_client, derp.config.auth.native.cache_prefix, str(user.id)
         )
         assert token is not None
         await derp.auth.confirm_email(token)
@@ -724,7 +710,7 @@ class TestRBAC:
 
         # Refresh still carries old session role
         refreshed = await derp.auth.refresh_token(tokens.refresh_token)
-        payload = decode_token(derp.auth._config.jwt, refreshed.access_token)
+        payload = decode_token(derp.config.auth.native.jwt, refreshed.access_token)
         assert payload is not None
         assert payload.extra is not None
         assert payload.extra["role"] == "default"
@@ -734,7 +720,7 @@ class TestRBAC:
             email="test@example.com",
             password="password123",
         )
-        payload = decode_token(derp.auth._config.jwt, new_tokens.access_token)
+        payload = decode_token(derp.config.auth.native.jwt, new_tokens.access_token)
         assert payload is not None
         assert payload.extra is not None
         assert payload.extra["role"] == "admin"

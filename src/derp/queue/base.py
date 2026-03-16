@@ -30,6 +30,27 @@ class TaskStatus:
     error: str | None = None
 
 
+class ScheduleType(enum.StrEnum):
+    """Type of recurring schedule."""
+
+    CRON = "cron"
+    INTERVAL = "interval"
+
+
+@dataclasses.dataclass(slots=True, frozen=True)
+class Schedule:
+    """A recurring task schedule."""
+
+    name: str
+    task: str
+    type: ScheduleType
+    cron: str | None = None
+    interval: timedelta | None = None
+    payload: dict[str, Any] | None = None
+    queue: str | None = None
+    path: str | None = None
+
+
 class QueueClient(abc.ABC):
     """Async producer-side queue client."""
 

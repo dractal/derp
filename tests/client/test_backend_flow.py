@@ -9,15 +9,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from derp.auth import AuthConfig, EmailConfig, JWTConfig
-from derp.auth.jwt import decode_token
+from derp.auth import AuthConfig, EmailConfig, JWTConfig, NativeAuthConfig
 from derp.config import DatabaseConfig, DerpConfig, StorageConfig
 from derp.derp_client import DerpClient
+from tests.conftest import bearer_request
 from derp.orm import DatabaseEngine
 
 
 async def _create_bucket_with_retry(
-    client: DerpClient[Any], bucket: str, retries: int = 30
+    client: DerpClient, bucket: str, retries: int = 30
 ) -> None:
     for attempt in range(retries):
         try:
@@ -29,7 +29,7 @@ async def _create_bucket_with_retry(
             await asyncio.sleep(0.1)
 
 
-async def _delete_bucket_with_objects(client: DerpClient[Any], bucket: str) -> None:
+async def _delete_bucket_with_objects(client: DerpClient, bucket: str) -> None:
     keys = await client.storage.list_files(bucket=bucket)
     for key in keys:
         await client.storage.delete_file(bucket=bucket, key=key)
@@ -43,6 +43,10 @@ async def _create_backend_tables(db: DatabaseEngine) -> None:
             email VARCHAR(255) UNIQUE NOT NULL,
             email_confirmed_at TIMESTAMP WITH TIME ZONE,
             encrypted_password TEXT,
+            first_name VARCHAR(255),
+            last_name VARCHAR(255),
+            username VARCHAR(255),
+            image_url TEXT,
             provider VARCHAR(50) NOT NULL DEFAULT 'email',
             provider_id VARCHAR(255),
             is_active BOOLEAN NOT NULL DEFAULT TRUE,
@@ -65,6 +69,7 @@ async def _create_backend_tables(db: DatabaseEngine) -> None:
             revoked BOOLEAN NOT NULL DEFAULT FALSE,
             user_agent TEXT,
             ip_address VARCHAR(45),
+            org_id UUID,
             not_after TIMESTAMP WITH TIME ZONE NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
         )
@@ -74,7 +79,7 @@ async def _create_backend_tables(db: DatabaseEngine) -> None:
         CREATE TABLE IF NOT EXISTS user_asset_access_logs (
             id SERIAL PRIMARY KEY,
             user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-            session_id UUID NOT NULL REFERENCES auth_sessions(id) ON DELETE CASCADE,
+            session_id UUID NOT NULL,
             object_key VARCHAR(512) NOT NULL,
             object_size INTEGER NOT NULL,
             created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
@@ -84,17 +89,16 @@ async def _create_backend_tables(db: DatabaseEngine) -> None:
 
 async def _fetch_user_asset_and_log_access(
     *,
-    derp: DerpClient[Any],
+    derp: DerpClient,
     access_token: str,
     bucket: str,
     key: str,
 ) -> dict[str, Any]:
-    payload = decode_token(derp.auth._config.jwt, access_token)
-    session = await derp.auth.validate_session(access_token)
+    session = await derp.auth.authenticate(bearer_request(access_token))
     if session is None:
         raise ValueError("Session is not active.")
 
-    user = await derp.auth.get_user(payload.sub)
+    user = await derp.auth.get_user(session.user_id)
     if user is None:
         raise ValueError("User not found.")
 
@@ -111,7 +115,7 @@ async def _fetch_user_asset_and_log_access(
             object_key,
             object_size
         """,
-        [str(user.id), str(session.id), key, len(content)],
+        [str(user.id), session.session_id, key, len(content)],
     )
 
     return {
@@ -140,15 +144,17 @@ def _email_config() -> EmailConfig:
 
 def _auth_config() -> AuthConfig:
     return AuthConfig(
-        jwt=JWTConfig(
-            secret="test-secret-key-for-jwt-testing-purposes-12345",
-            algorithm="HS256",
-            access_token_expire_minutes=15,
-            refresh_token_expire_days=7,
-        ),
-        enable_signup=True,
-        enable_confirmation=False,
-        enable_magic_link=True,
+        native=NativeAuthConfig(
+            jwt=JWTConfig(
+                secret="test-secret-key-for-jwt-testing-purposes-12345",
+                algorithm="HS256",
+                access_token_expire_minutes=15,
+                refresh_token_expire_days=7,
+            ),
+            enable_signup=True,
+            enable_confirmation=False,
+            enable_magic_link=True,
+        )
     )
 
 

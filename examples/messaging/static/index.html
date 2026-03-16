@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Messaging App</title>
+    <title>Slack Clone</title>
     <link rel="stylesheet" href="/static/styles.css">
 </head>
 
@@ -12,7 +12,8 @@
     <!-- Auth View -->
     <div id="auth-view" class="view">
         <div class="auth-container">
-            <h1>Messaging App</h1>
+            <h1>Slack Clone</h1>
+            <p class="auth-subtitle">Built with Derp</p>
 
             <div class="tabs">
                 <button class="tab active" data-tab="signin">Sign In</button>
@@ -35,46 +36,93 @@
         </div>
     </div>
 
-    <!-- Main App View -->
+    <!-- Workspace Selection View -->
+    <div id="workspace-view" class="view hidden">
+        <div class="workspace-container">
+            <h2>Your Workspaces</h2>
+            <div id="workspace-list" class="workspace-list"></div>
+            <button id="create-workspace-btn" class="btn-primary">Create Workspace</button>
+
+            <div id="create-workspace-form" class="hidden" style="margin-top: 1rem;">
+                <input type="text" id="ws-name" placeholder="Workspace name" class="input">
+                <input type="text" id="ws-slug" placeholder="workspace-slug" class="input" style="margin-top: 0.5rem;">
+                <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
+                    <button id="ws-create-submit" class="btn-primary" style="flex:1;">Create</button>
+                    <button id="ws-create-cancel" class="btn-secondary" style="flex:1;">Cancel</button>
+                </div>
+                <p class="error" id="ws-create-error"></p>
+            </div>
+
+            <div class="workspace-footer">
+                <span id="ws-user-email"></span>
+                <button id="ws-signout-btn" class="btn-text">Sign Out</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main App View (Slack-like) -->
     <div id="app-view" class="view hidden">
-        <div class="app-container">
-            <!-- Sidebar -->
-            <aside class="sidebar">
-                <div class="sidebar-header">
-                    <h2>Conversations</h2>
-                    <button id="new-chat-btn" title="New conversation">+</button>
+        <div class="app-layout">
+            <!-- Workspace Sidebar (narrow) -->
+            <nav class="workspace-rail">
+                <div id="ws-rail-list" class="ws-rail-list"></div>
+                <div class="ws-rail-bottom">
+                    <button id="ws-rail-add" class="ws-rail-btn" title="Add workspace">+</button>
                 </div>
-                <div id="conversations-list" class="conversations-list">
-                    <!-- Conversations will be loaded here -->
+            </nav>
+
+            <!-- Channel Sidebar -->
+            <aside class="channel-sidebar">
+                <div class="channel-sidebar-header">
+                    <h2 id="ws-name-display"></h2>
                 </div>
-                <div class="sidebar-footer">
-                    <div class="user-info">
-                        <img id="user-avatar" src="" alt="" class="avatar">
-                        <span id="user-email"></span>
+
+                <div class="channel-section">
+                    <div class="channel-section-header">
+                        <span>Channels</span>
+                        <button id="add-channel-btn" class="icon-btn" title="Add channel">+</button>
                     </div>
-                    <button id="signout-btn" title="Sign out">Sign Out</button>
+                    <div id="channel-list" class="channel-list"></div>
+                </div>
+
+                <div class="channel-section">
+                    <div class="channel-section-header">
+                        <span>Direct Messages</span>
+                        <button id="add-dm-btn" class="icon-btn" title="New DM">+</button>
+                    </div>
+                    <div id="dm-list" class="channel-list"></div>
+                </div>
+
+                <div class="channel-sidebar-footer">
+                    <div class="user-profile">
+                        <div id="user-avatar" class="avatar small"></div>
+                        <span id="user-display-name"></span>
+                    </div>
+                    <button id="signout-btn" class="btn-text" title="Sign out">Sign Out</button>
                 </div>
             </aside>
 
-            <!-- Chat Area -->
-            <main class="chat-area">
-                <div id="no-chat" class="no-chat">
-                    <p>Select a conversation or start a new one</p>
+            <!-- Main Chat Area -->
+            <main class="chat-main">
+                <div id="no-channel" class="empty-state">
+                    <p>Select a channel to start chatting</p>
                 </div>
 
                 <div id="chat-view" class="chat-view hidden">
                     <div class="chat-header">
-                        <img id="chat-avatar" src="" alt="" class="avatar">
-                        <div class="chat-user-info">
-                            <span id="chat-user-name"></span>
-                            <span id="chat-user-email" class="email"></span>
+                        <div class="chat-header-info">
+                            <span id="chat-channel-name" class="chat-channel-name"></span>
+                            <span id="chat-channel-topic" class="chat-channel-topic"></span>
+                        </div>
+                        <div class="chat-header-actions">
+                            <span id="chat-member-count" class="member-count"></span>
                         </div>
                     </div>
-                    <div id="messages" class="messages">
-                        <!-- Messages will be loaded here -->
-                    </div>
+
+                    <div id="messages" class="messages"></div>
+
                     <form id="message-form" class="message-form">
-                        <input type="text" id="message-input" placeholder="Type a message..." required>
+                        <input type="text" id="message-input" placeholder="Message #channel" required autocomplete="off">
                         <button type="submit">Send</button>
                     </form>
                 </div>
@@ -82,18 +130,53 @@
         </div>
     </div>
 
-    <!-- New Chat Modal -->
-    <div id="new-chat-modal" class="modal hidden">
+    <!-- Create Channel Modal -->
+    <div id="channel-modal" class="modal hidden">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>Start New Conversation</h3>
-                <button class="modal-close">&times;</button>
+                <h3>Create Channel</h3>
+                <button class="modal-close" data-modal="channel-modal">&times;</button>
             </div>
             <div class="modal-body">
-                <input type="text" id="user-search" placeholder="Search users...">
-                <div id="users-list" class="users-list">
-                    <!-- Users will be loaded here -->
-                </div>
+                <label class="input-label">Name</label>
+                <input type="text" id="new-channel-name" placeholder="e.g. plan-budget" class="input">
+                <label class="input-label">Topic (optional)</label>
+                <input type="text" id="new-channel-topic" placeholder="What's this channel about?" class="input">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="new-channel-private"> Make private
+                </label>
+                <p class="error" id="channel-create-error"></p>
+                <button id="channel-create-submit" class="btn-primary" style="width:100%; margin-top:1rem;">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- New DM Modal -->
+    <div id="dm-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Direct Message</h3>
+                <button class="modal-close" data-modal="dm-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="dm-user-search" placeholder="Search people..." class="input">
+                <div id="dm-users-list" class="users-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Invite Member Modal -->
+    <div id="invite-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Invite to Workspace</h3>
+                <button class="modal-close" data-modal="invite-modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <label class="input-label">User ID</label>
+                <input type="text" id="invite-user-id" placeholder="User UUID" class="input">
+                <p class="error" id="invite-error"></p>
+                <button id="invite-submit" class="btn-primary" style="width:100%; margin-top:1rem;">Invite</button>
             </div>
         </div>
     </div>

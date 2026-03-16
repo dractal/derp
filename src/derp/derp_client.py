@@ -2,24 +2,27 @@
 
 from __future__ import annotations
 
+import datetime
 from types import TracebackType
 from typing import Self
 
-from derp.auth import AuthClient, AuthUser
+from derp.auth.base import BaseAuthClient
+from derp.auth.clerk_client import ClerkAuthClient
 from derp.auth.email import EmailClient
+from derp.auth.native_client import NativeAuthClient
 from derp.config import DerpConfig
 from derp.kv.base import KVClient
 from derp.kv.valkey import ValkeyClient
 from derp.orm import DatabaseEngine
 from derp.orm.router import ReplicaRouter
 from derp.payments import PaymentsClient
-from derp.queue.base import QueueClient
+from derp.queue.base import QueueClient, Schedule, ScheduleType
 from derp.queue.celery import CeleryQueueClient
 from derp.queue.vercel import VercelQueueClient
 from derp.storage import StorageClient
 
 
-class DerpClient[UserT: AuthUser]:
+class DerpClient:
     """Derp client for interacting with database, file storage, and more."""
 
     def __init__(self, config: DerpConfig):
@@ -54,11 +57,12 @@ class DerpClient[UserT: AuthUser]:
             if self._config.storage is not None
             else None
         )
-        self._auth: AuthClient[UserT] | None = (
-            AuthClient[UserT](self._config.auth, self._config.database.schema_path)
-            if self._config.auth is not None
-            else None
-        )
+        self._auth: BaseAuthClient | None = None
+        if self._config.auth is not None:
+            if self._config.auth.native is not None:
+                self._auth = NativeAuthClient(self._config.auth.native)
+            elif self._config.auth.clerk is not None:
+                self._auth = ClerkAuthClient(self._config.auth.clerk)
         self._kv: KVClient | None = (
             ValkeyClient(self._config.kv.valkey)
             if self._config.kv is not None and self._config.kv.valkey is not None
@@ -75,14 +79,40 @@ class DerpClient[UserT: AuthUser]:
                 self._queue = CeleryQueueClient(self._config.queue.celery)
             elif self._config.queue.vercel is not None:
                 self._queue = VercelQueueClient(self._config.queue.vercel)
+            if self._queue is not None and self._config.queue.schedules:
+                self._queue.register_schedules(
+                    [
+                        Schedule(
+                            name=sc.name,
+                            task=sc.task,
+                            type=(
+                                ScheduleType.CRON if sc.cron else ScheduleType.INTERVAL
+                            ),
+                            cron=sc.cron,
+                            interval=(
+                                datetime.timedelta(seconds=sc.interval_seconds)
+                                if sc.interval_seconds
+                                else None
+                            ),
+                            payload=sc.payload,
+                            queue=sc.queue,
+                            path=sc.path,
+                        )
+                        for sc in self._config.queue.schedules
+                    ]
+                )
         self._router: ReplicaRouter | None = None
         self._in_session = False
 
-        if self._email is None and self._auth is not None:
+        if (
+            self._config.auth is not None
+            and self._config.auth.native is not None
+            and self._email is None
+        ):
             raise ValueError(
-                "The email client needs to be configured for authentication to work. "
-                "Please make sure to configure `EmailConfig` when `AuthConfig` is "
-                "configured via `derp.toml` or `DerpConfig`."
+                "The email client needs to be configured for native authentication "
+                "to work. Please make sure to configure `EmailConfig` when "
+                "`NativeAuthConfig` is configured via `derp.toml` or `DerpConfig`."
             )
 
     async def connect(self) -> None:
@@ -196,7 +226,7 @@ class DerpClient[UserT: AuthUser]:
         return self._storage
 
     @property
-    def auth(self) -> AuthClient[UserT]:
+    def auth(self) -> BaseAuthClient:
         """Get the auth service."""
         if not self._in_session:
             raise ValueError("Not in a session. Call `connect()` first.")

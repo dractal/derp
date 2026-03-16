@@ -6,6 +6,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from derp.auth.base import BaseAuthClient
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     ConfirmationTokenInvalidError,
@@ -13,21 +14,35 @@ from derp.auth.exceptions import (
     EmailNotConfirmedError,
     InvalidCredentialsError,
     MagicLinkExpiredError,
+    NotOrgMemberError,
+    OrgAlreadyExistsError,
+    OrgLastOwnerError,
+    OrgMemberExistsError,
+    OrgMemberNotFoundError,
+    OrgNotFoundError,
     PasswordValidationError,
     RecoveryTokenInvalidError,
     RefreshTokenReusedError,
     RefreshTokenRevokedError,
     SessionExpiredError,
+    SessionNotFoundError,
     SignupDisabledError,
     UserAlreadyExistsError,
     UserNotActiveError,
     UserNotFoundError,
 )
-from derp.auth.jwt import TokenPair, TokenPayload, create_token_pair, decode_token
+from derp.auth.jwt import TokenPair, create_token_pair, decode_token
 from derp.auth.models import (
+    AuthOrganization,
+    AuthOrgMember,
     AuthProvider,
+    AuthRequest,
     AuthSession,
     AuthUser,
+    OrgInfo,
+    OrgMemberInfo,
+    SessionInfo,
+    UserInfo,
 )
 from derp.auth.password import (
     Argon2Hasher,
@@ -38,37 +53,16 @@ from derp.auth.password import (
 from derp.auth.providers.base import BaseOAuthProvider
 from derp.auth.providers.github import GitHubProvider
 from derp.auth.providers.google import GoogleProvider
-from derp.config import AuthConfig
+from derp.config import NativeAuthConfig
 from derp.kv.base import KVClient
 from derp.orm import DatabaseEngine
-from derp.orm.loader import discover_tables
 
 
-class AuthClient[UserT: AuthUser]:
-    """Core authentication client handling all auth operations."""
+class NativeAuthClient(BaseAuthClient):
+    """Native authentication client (email/password, magic link, OAuth)."""
 
-    def __init__(self, config: AuthConfig, schema_path: str):
-        all_tables = discover_tables(schema_path, include_auth=True)
-
-        user_table = next((t for t in all_tables if issubclass(t, AuthUser)), None)
-        if user_table is None:
-            raise ValueError(
-                "No AuthUser table found. Make sure your schema includes "
-                "AuthUser or a subclass of it."
-            )
-
-        auth_session_table = next(
-            (t for t in all_tables if issubclass(t, AuthSession)), None
-        )
-        if auth_session_table is None:
-            raise ValueError(
-                "No AuthSession table found. Make sure your schema includes "
-                "AuthSession or a subclass of it."
-            )
-
-        self._config: AuthConfig = config
-        self._user_table: type[UserT] = user_table
-        self._auth_session_table: type[AuthSession] = auth_session_table
+    def __init__(self, config: NativeAuthConfig):
+        self._config: NativeAuthConfig = config
         self._hasher: PasswordHasher = Argon2Hasher()
         self._email_client: EmailClient | None = None
         self._oauth_providers: dict[AuthProvider, BaseOAuthProvider] = {}
@@ -117,65 +111,128 @@ class AuthClient[UserT: AuthUser]:
             raise ValueError("Email client not set. Must call `set_email()` first.")
         return self._email_client
 
-    async def _invalidate_user_cache(self, user_id: str | uuid.UUID) -> None:
+    async def _invalidate_user_cache(
+        self, user_id: str | uuid.UUID, email: str | None = None
+    ) -> None:
         """Invalidate cached user data in KV store."""
         if self._kv_client is not None:
             await self._kv_client.delete(
                 f"{self._config.cache_prefix}:user:{user_id}".encode()
             )
+            if email is not None:
+                await self._kv_client.delete(
+                    f"{self._config.cache_prefix}:user:email:{email.lower()}".encode()
+                )
 
     # =========================================================================
     # User Management
     # =========================================================================
 
-    async def get_user(
-        self, user_id: str | uuid.UUID | None = None, *, email: str | None = None
-    ) -> UserT | None:
-        """Get a user by their ID or email address."""
+    def _to_user_info(self, user: AuthUser) -> UserInfo:
+        """Convert an internal AuthUser ORM model to a public UserInfo."""
+        return UserInfo(
+            id=str(user.id),
+            email=user.email,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            username=user.username,
+            image_url=user.image_url,
+            role=user.role,
+            is_active=user.is_active,
+            is_superuser=user.is_superuser,
+            created_at=user.created_at,
+            updated_at=user.updated_at,
+            last_sign_in_at=user.last_sign_in_at,
+            email_confirmed_at=user.email_confirmed_at,
+            metadata={
+                "provider": user.provider.value,
+                "provider_id": user.provider_id,
+            },
+        )
 
-        if user_id is not None and email is not None:
-            raise ValueError("Cannot get a user by both ID and email address.")
-        elif user_id is not None:
-            if self._config.use_kv_cache and self._kv_client is not None:
-                cache_key = f"{self._config.cache_prefix}:user:{user_id}".encode()
+    async def _fetch_user(self, user_id: str | uuid.UUID) -> AuthUser | None:
+        """Fetch a user by ID (internal, with caching)."""
+        if self._config.use_kv_cache and self._kv_client is not None:
+            cache_key = f"{self._config.cache_prefix}:user:{user_id}".encode()
 
-                async def _fetch_user() -> bytes:
-                    row = await (
-                        self._db()
-                        .select(self._user_table)
-                        .where(self._user_table.c.id == str(user_id))
-                        .first_or_none()
-                    )
-                    if row is None:
-                        return b""
-                    return row.model_dump_json().encode()
+            async def _compute() -> bytes:
+                row = await (
+                    self._db()
+                    .select(AuthUser)
+                    .where(AuthUser.c.id == str(user_id))
+                    .first_or_none()
+                )
+                if row is None:
+                    return b""
+                return row.model_dump_json().encode()
 
-                cached = await self._kv_client.guarded_get(
+            cached = await self._kv_client.guarded_get(
+                cache_key,
+                compute=_compute,
+                ttl=self._config.cache_user_ttl_seconds,
+            )
+            if cached == b"":
+                return None
+            return AuthUser.model_validate_json(cached)
+
+        return await (
+            self._db()
+            .select(AuthUser)
+            .where(AuthUser.c.id == str(user_id))
+            .first_or_none()
+        )
+
+    async def get_user(self, user_id: str | uuid.UUID) -> UserInfo | None:
+        """Get a user by their ID."""
+        user = await self._fetch_user(user_id)
+        return self._to_user_info(user) if user is not None else None
+
+    async def list_users(
+        self, *, limit: int | None = None, offset: int | None = None
+    ) -> list[UserInfo]:
+        """List users ordered by creation date (newest first)."""
+        q = self._db().select(AuthUser).order_by(AuthUser.c.created_at, asc=False)
+        if limit is not None:
+            q = q.limit(limit)
+        if offset is not None:
+            q = q.offset(offset)
+        return [self._to_user_info(u) for u in await q.execute()]
+
+    async def _get_user_by_email(self, email: str) -> AuthUser | None:
+        """Get a user by their email address (internal use only).
+
+        Unlike ``get_user``, negative results (user not found) are **not**
+        cached because email lookups are used in write paths (sign-up, OAuth)
+        where a subsequent insert would leave a stale "not found" entry.
+        """
+        normalized = email.lower()
+
+        if self._config.use_kv_cache and self._kv_client is not None:
+            cache_key = f"{self._config.cache_prefix}:user:email:{normalized}".encode()
+            cached = await self._kv_client.get(cache_key)
+            if cached is not None:
+                return AuthUser.model_validate_json(cached)
+
+            user = await (
+                self._db()
+                .select(AuthUser)
+                .where(AuthUser.c.email == normalized)
+                .first_or_none()
+            )
+            if user is not None:
+                await self._kv_client.set(
                     cache_key,
-                    compute=_fetch_user,
+                    user.model_dump_json().encode(),
                     ttl=self._config.cache_user_ttl_seconds,
                 )
-                if cached == b"":
-                    return None
-                return self._user_table.model_validate_json(cached)
+            return user
 
-            result = await (
-                self._db()
-                .select(self._user_table)
-                .where(self._user_table.c.id == str(user_id))
-                .first_or_none()
-            )
-        elif email is not None:
-            result = await (
-                self._db()
-                .select(self._user_table)
-                .where(self._user_table.c.email == email.lower())
-                .first_or_none()
-            )
-        else:
-            raise ValueError("Must provide either ID or email address.")
-
-        return result
+        return await (
+            self._db()
+            .select(AuthUser)
+            .where(AuthUser.c.email == normalized)
+            .first_or_none()
+        )
 
     async def update_user(
         self,
@@ -183,9 +240,9 @@ class AuthClient[UserT: AuthUser]:
         user_id: str | uuid.UUID,
         email: str | None = None,
         **kwargs: Any,
-    ) -> UserT:
+    ) -> UserInfo:
         """Update user data."""
-        user = await self.get_user(user_id=user_id)
+        user = await self._fetch_user(user_id=user_id)
         if not user:
             raise UserNotFoundError()
 
@@ -195,23 +252,41 @@ class AuthClient[UserT: AuthUser]:
             updates["email"] = email.lower()
 
         for key, value in kwargs.items():
-            if key in self._user_table.c:
+            if key in AuthUser.c:
                 updates[key] = value
             else:
                 raise ValueError(f"Invalid user field: {key}.")
 
         [result] = await (
             self._db()
-            .update(self._user_table)
+            .update(AuthUser)
             .set(**updates)
-            .where(self._user_table.c.id == str(user_id))
-            .returning(self._user_table)
+            .where(AuthUser.c.id == str(user_id))
+            .returning(AuthUser)
             .execute()
         )
 
-        await self._invalidate_user_cache(user_id)
+        await self._invalidate_user_cache(user_id, user.email)
+        if email is not None and email.lower() != user.email:
+            await self._invalidate_user_cache(user_id, email)
 
-        return result
+        return self._to_user_info(result)
+
+    async def delete_user(self, user_id: str | uuid.UUID) -> None:
+        """Delete a user and all their sessions."""
+        user = await self._fetch_user(user_id)
+        if not user:
+            raise UserNotFoundError()
+
+        await self.sign_out_all(user_id)
+
+        await self._db().delete(AuthUser).where(AuthUser.c.id == str(user_id)).execute()
+
+        await self._invalidate_user_cache(user_id, user.email)
+
+    async def count_users(self) -> int:
+        """Return the total number of users."""
+        return await self._db().select(AuthUser).count()
 
     # =========================================================================
     # Email/Password Authentication
@@ -227,7 +302,7 @@ class AuthClient[UserT: AuthUser]:
         user_agent: str | None = None,
         ip_address: str | None = None,
         **kwargs: Any,
-    ) -> tuple[UserT, TokenPair]:
+    ) -> tuple[UserInfo, TokenPair]:
         """Register a new user with email and password.
 
         Returns:
@@ -251,7 +326,7 @@ class AuthClient[UserT: AuthUser]:
             raise PasswordValidationError("; ".join(validation.errors))
 
         # Check if user exists
-        existing = await self.get_user(email=email.lower())
+        existing = await self._get_user_by_email(email=email.lower())
         if existing:
             raise UserAlreadyExistsError()
 
@@ -263,14 +338,14 @@ class AuthClient[UserT: AuthUser]:
 
         vals: dict[str, Any] = {}
         for key, value in kwargs.items():
-            if key in self._user_table.c:
+            if key in AuthUser.c:
                 vals[key] = value
             else:
                 raise ValueError(f"Invalid user field: {key}.")
 
         user = await (
             self._db()
-            .insert(self._user_table)
+            .insert(AuthUser)
             .values(
                 email=email.lower(),
                 encrypted_password=hashed_password,
@@ -281,7 +356,7 @@ class AuthClient[UserT: AuthUser]:
                 last_sign_in_at=now,
                 **vals,
             )
-            .returning(self._user_table)
+            .returning(AuthUser)
             .execute()
         )
 
@@ -310,16 +385,18 @@ class AuthClient[UserT: AuthUser]:
             ip_address=ip_address,
         )
 
-        return user, token_pair
+        return self._to_user_info(user), token_pair
 
     async def sign_in_with_password(
         self,
         email: str,
         password: str,
         *,
+        first_name: str | None = None,
+        last_name: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> tuple[UserT, TokenPair]:
+    ) -> tuple[UserInfo, TokenPair]:
         """Sign in with email and password.
 
         Returns:
@@ -330,7 +407,7 @@ class AuthClient[UserT: AuthUser]:
             UserNotActiveError: If user is disabled
             EmailNotConfirmedError: If email confirmation is required but not done
         """
-        user = await self.get_user(email=email.lower())
+        user = await self._get_user_by_email(email=email.lower())
         if not user:
             raise InvalidCredentialsError()
 
@@ -353,15 +430,16 @@ class AuthClient[UserT: AuthUser]:
         if self._hasher.needs_rehash(user.encrypted_password):
             updates["encrypted_password"] = await self._hasher.async_hash(password)
 
-        await (
+        [user] = await (
             self._db()
-            .update(self._user_table)
+            .update(AuthUser)
             .set(**updates)
-            .where(self._user_table.c.id == user.id)
+            .where(AuthUser.c.id == user.id)
+            .returning(AuthUser)
             .execute()
         )
 
-        await self._invalidate_user_cache(user.id)
+        await self._invalidate_user_cache(user.id, user.email)
 
         token_pair = await self._create_session(
             user.id,
@@ -370,7 +448,7 @@ class AuthClient[UserT: AuthUser]:
             ip_address=ip_address,
         )
 
-        return user, token_pair
+        return self._to_user_info(user), token_pair
 
     # =========================================================================
     # Magic Link Authentication
@@ -387,7 +465,7 @@ class AuthClient[UserT: AuthUser]:
         if not self._config.enable_magic_link:
             raise ValueError("Magic link authentication is not enabled.")
 
-        user = await self.get_user(email=email.lower())
+        user = await self._get_user_by_email(email=email.lower())
 
         if not user:
             if not self._config.enable_signup:
@@ -397,7 +475,7 @@ class AuthClient[UserT: AuthUser]:
             now = datetime.now(UTC)
             user = await (
                 self._db()
-                .insert(self._user_table)
+                .insert(AuthUser)
                 .values(
                     email=email.lower(),
                     provider=AuthProvider.MAGIC_LINK,
@@ -405,16 +483,16 @@ class AuthClient[UserT: AuthUser]:
                     created_at=now,
                     updated_at=now,
                 )
-                .returning(self._user_table)
+                .returning(AuthUser)
                 .execute()
             )
 
-        # Store magic link token in KV
+        # Store magic link token in KV (keyed by user ID)
         token = generate_secure_token()
         ttl = self._config.magic_link_expire_minutes * 60
         await self._kv().set(
             f"{self._config.cache_prefix}:magic_link:{token}".encode(),
-            email.lower().encode(),
+            str(user.id).encode(),
             ttl=ttl,
         )
 
@@ -432,7 +510,7 @@ class AuthClient[UserT: AuthUser]:
         *,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> tuple[UserT, TokenPair]:
+    ) -> tuple[UserInfo, TokenPair]:
         """Verify a magic link and sign in.
 
         Returns:
@@ -444,16 +522,15 @@ class AuthClient[UserT: AuthUser]:
             UserNotActiveError: If the user is disabled
         """
         kv_key = f"{self._config.cache_prefix}:magic_link:{token}".encode()
-        email_bytes = await self._kv().get(kv_key)
+        user_id_bytes = await self._kv().get(kv_key)
 
-        if email_bytes is None:
+        if user_id_bytes is None:
             raise MagicLinkExpiredError()
 
         # Delete on use (single use)
         await self._kv().delete(kv_key)
 
-        email = email_bytes.decode()
-        user = await self.get_user(email=email)
+        user = await self._fetch_user(user_id_bytes.decode())
         if not user:
             raise UserNotFoundError()
 
@@ -470,15 +547,16 @@ class AuthClient[UserT: AuthUser]:
         if not user.email_confirmed_at:
             updates["email_confirmed_at"] = now
 
-        await (
+        [user] = await (
             self._db()
-            .update(self._user_table)
+            .update(AuthUser)
             .set(**updates)
-            .where(self._user_table.c.id == user.id)
+            .where(AuthUser.c.id == user.id)
+            .returning(AuthUser)
             .execute()
         )
 
-        await self._invalidate_user_cache(user.id)
+        await self._invalidate_user_cache(user.id, user.email)
 
         token_pair = await self._create_session(
             user.id,
@@ -487,7 +565,7 @@ class AuthClient[UserT: AuthUser]:
             ip_address=ip_address,
         )
 
-        return user, token_pair
+        return self._to_user_info(user), token_pair
 
     # =========================================================================
     # OAuth Authentication
@@ -530,7 +608,7 @@ class AuthClient[UserT: AuthUser]:
         redirect_uri: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> tuple[UserT, TokenPair]:
+    ) -> tuple[UserInfo, TokenPair]:
         """Complete OAuth sign in with authorization code.
 
         Creates user if they don't exist.
@@ -549,7 +627,7 @@ class AuthClient[UserT: AuthUser]:
         user_info = await oauth_provider.authenticate(code, redirect_uri)
 
         # Find or create user
-        user = await self.get_user(email=user_info.email)
+        user = await self._get_user_by_email(email=user_info.email)
         now = datetime.now(UTC)
 
         if user:
@@ -570,19 +648,20 @@ class AuthClient[UserT: AuthUser]:
             if user_info.email_verified and not user.email_confirmed_at:
                 updates["email_confirmed_at"] = now
 
-            await (
+            [user] = await (
                 self._db()
-                .update(self._user_table)
+                .update(AuthUser)
                 .set(**updates)
-                .where(self._user_table.c.id == user.id)
+                .where(AuthUser.c.id == user.id)
+                .returning(AuthUser)
                 .execute()
             )
 
-            await self._invalidate_user_cache(user.id)
+            await self._invalidate_user_cache(user.id, user.email)
         else:
             user = await (
                 self._db()
-                .insert(self._user_table)
+                .insert(AuthUser)
                 .values(
                     email=user_info.email.lower(),
                     provider=provider,
@@ -592,7 +671,7 @@ class AuthClient[UserT: AuthUser]:
                     updated_at=now,
                     last_sign_in_at=now,
                 )
-                .returning(self._user_table)
+                .returning(AuthUser)
                 .execute()
             )
 
@@ -603,7 +682,7 @@ class AuthClient[UserT: AuthUser]:
             ip_address=ip_address,
         )
 
-        return user, token_pair
+        return self._to_user_info(user), token_pair
 
     # =========================================================================
     # Session Management
@@ -624,7 +703,7 @@ class AuthClient[UserT: AuthUser]:
 
         session = await (
             self._db()
-            .insert(self._auth_session_table)
+            .insert(AuthSession)
             .values(
                 user_id=user_id,
                 token=refresh_token,
@@ -634,7 +713,7 @@ class AuthClient[UserT: AuthUser]:
                 not_after=not_after,
                 created_at=now,
             )
-            .returning(self._auth_session_table)
+            .returning(AuthSession)
             .execute()
         )
 
@@ -665,11 +744,11 @@ class AuthClient[UserT: AuthUser]:
         # If the token doesn't exist or is already revoked, this returns [].
         revoked_rows = await (
             self._db()
-            .update(self._auth_session_table)
+            .update(AuthSession)
             .set(revoked=True)
-            .eq(self._auth_session_table.c.token, refresh_token)
-            .not_(self._auth_session_table.c.revoked)
-            .returning(self._auth_session_table)
+            .eq(AuthSession.c.token, refresh_token)
+            .not_(AuthSession.c.revoked)
+            .returning(AuthSession)
             .execute()
         )
 
@@ -677,17 +756,17 @@ class AuthClient[UserT: AuthUser]:
             # Token not found or already revoked — check which case.
             existing = await (
                 self._db()
-                .select(self._auth_session_table)
-                .eq(self._auth_session_table.c.revoked, False)
+                .select(AuthSession)
+                .eq(AuthSession.c.token, refresh_token)
                 .first_or_none()
             )
             if existing is not None and existing.revoked:
                 # Reuse detected — revoke all tokens for this session.
                 await (
                     self._db()
-                    .update(self._auth_session_table)
+                    .update(AuthSession)
                     .set(revoked=True)
-                    .eq(self._auth_session_table.c.session_id, existing.session_id)
+                    .eq(AuthSession.c.session_id, existing.session_id)
                     .execute()
                 )
                 if self._kv_client is not None:
@@ -706,7 +785,7 @@ class AuthClient[UserT: AuthUser]:
         new_refresh_token = generate_secure_token()
         await (
             self._db()
-            .insert(self._auth_session_table)
+            .insert(AuthSession)
             .values(
                 user_id=token_record.user_id,
                 session_id=token_record.session_id,
@@ -720,7 +799,7 @@ class AuthClient[UserT: AuthUser]:
             .execute()
         )
 
-        # Invalidate stale session cache so next validate_session re-fetches
+        # Invalidate stale session cache so next authenticate re-fetches
         if self._kv_client is not None:
             await self._kv_client.delete(
                 f"{self._config.cache_prefix}:session:{token_record.session_id}".encode()
@@ -734,62 +813,60 @@ class AuthClient[UserT: AuthUser]:
             extra_claims={"role": token_record.role},
         )
 
-    async def validate_session(self, token: str) -> AuthSession | None:
-        """Validate a session is active and not expired."""
+    async def authenticate(self, request: AuthRequest) -> SessionInfo | None:
+        """Authenticate a request via JWT (networkless).
+
+        Extracts the Bearer token from the Authorization header,
+        decodes and verifies the JWT signature and expiry.
+        Returns ``SessionInfo`` built from JWT claims, or ``None``
+        if the token is missing, invalid, or expired.
+        """
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            return None
+        token = auth_header.removeprefix("Bearer ")
         payload = decode_token(self._config.jwt, token)
         if payload is None:
             return None
-        session_id = str(payload.session_id)
-        cache_key = f"{self._config.cache_prefix}:session:{session_id}".encode()
-
-        if self._kv_client is not None and self._config.use_kv_cache:
-
-            async def _fetch_session() -> bytes:
-                row = await (
-                    self._db()
-                    .select(self._auth_session_table)
-                    .where(
-                        (self._auth_session_table.c.session_id == session_id)
-                        & ~self._auth_session_table.c.revoked
-                    )
-                    .first_or_none()
-                )
-                if row is None:
-                    return b""
-                return row.model_dump_json().encode()
-
-            remaining = self._config.cache_session_ttl_seconds
-            cached = await self._kv_client.guarded_get(
-                cache_key, compute=_fetch_session, ttl=remaining
-            )
-            if cached == b"":
-                return None
-            session = self._auth_session_table.model_validate_json(cached)
-            if session.revoked or session.not_after < datetime.now(UTC):
-                return None
-            return session
-
-        result = await (
-            self._db()
-            .select(self._auth_session_table)
-            .where(
-                (self._auth_session_table.c.session_id == session_id)
-                & ~self._auth_session_table.c.revoked
-            )
-            .first_or_none()
+        extra = payload.extra or {}
+        return SessionInfo(
+            user_id=payload.sub,
+            session_id=payload.session_id,
+            role=extra.get("role", "default"),
+            expires_at=payload.exp,
+            metadata=extra,
+            org_id=extra.get("org_id"),
+            org_role=extra.get("org_role"),
         )
 
-        if not result or result.not_after < datetime.now(UTC):
-            return None
-
-        return result
+    async def list_sessions(
+        self,
+        *,
+        user_id: str | uuid.UUID | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[AuthSession]:
+        """List active (non-revoked) sessions ordered by creation date."""
+        q = (
+            self._db()
+            .select(AuthSession)
+            .where(~AuthSession.c.revoked)
+            .order_by(AuthSession.c.created_at, asc=False)
+        )
+        if user_id is not None:
+            q = q.where(AuthSession.c.user_id == str(user_id))
+        if limit is not None:
+            q = q.limit(limit)
+        if offset is not None:
+            q = q.offset(offset)
+        return await q.execute()
 
     async def sign_out(self, session_id: str | uuid.UUID) -> None:
         """Sign out by deleting all tokens for a session."""
         await (
             self._db()
-            .delete(self._auth_session_table)
-            .where(self._auth_session_table.c.session_id == str(session_id))
+            .delete(AuthSession)
+            .where(AuthSession.c.session_id == str(session_id))
             .execute()
         )
 
@@ -803,8 +880,8 @@ class AuthClient[UserT: AuthUser]:
         """Sign out all sessions for a user by deleting all tokens."""
         sessions = await (
             self._db()
-            .select(self._auth_session_table)
-            .where(self._auth_session_table.c.user_id == str(user_id))
+            .select(AuthSession)
+            .where(AuthSession.c.user_id == str(user_id))
             .execute()
         )
 
@@ -815,8 +892,8 @@ class AuthClient[UserT: AuthUser]:
 
         await (
             self._db()
-            .delete(self._auth_session_table)
-            .where(self._auth_session_table.c.user_id == str(user_id))
+            .delete(AuthSession)
+            .where(AuthSession.c.user_id == str(user_id))
             .execute()
         )
 
@@ -844,7 +921,7 @@ class AuthClient[UserT: AuthUser]:
 
         Does not reveal whether user exists for security.
         """
-        user = await self.get_user(email=email)
+        user = await self._get_user_by_email(email=email)
         if not user:
             return  # Don't reveal user doesn't exist
 
@@ -868,7 +945,7 @@ class AuthClient[UserT: AuthUser]:
             **kwargs,
         )
 
-    async def reset_password(self, token: str, new_password: str) -> UserT:
+    async def reset_password(self, token: str, new_password: str) -> UserInfo:
         """Reset password using recovery token.
 
         Returns:
@@ -893,7 +970,7 @@ class AuthClient[UserT: AuthUser]:
         # Delete token (single use)
         await self._kv().delete(kv_key)
 
-        user = await self.get_user(user_id=user_id_bytes.decode())
+        user = await self._fetch_user(user_id=user_id_bytes.decode())
         if user is None:
             raise RecoveryTokenInvalidError()
 
@@ -903,25 +980,25 @@ class AuthClient[UserT: AuthUser]:
 
         [result] = await (
             self._db()
-            .update(self._user_table)
+            .update(AuthUser)
             .set(encrypted_password=hashed_password, updated_at=now)
-            .where(self._user_table.c.id == user.id)
-            .returning(self._user_table)
+            .where(AuthUser.c.id == user.id)
+            .returning(AuthUser)
             .execute()
         )
 
-        await self._invalidate_user_cache(user.id)
+        await self._invalidate_user_cache(user.id, user.email)
 
         # Sign out all sessions (security measure)
         await self.sign_out_all(user.id)
 
-        return result
+        return self._to_user_info(result)
 
     # =========================================================================
     # Email Confirmation
     # =========================================================================
 
-    async def confirm_email(self, token: str) -> UserT:
+    async def confirm_email(self, token: str) -> UserInfo:
         """Confirm email address with token.
 
         Returns:
@@ -939,7 +1016,7 @@ class AuthClient[UserT: AuthUser]:
         # Delete token (single use)
         await self._kv().delete(kv_key)
 
-        user = await self.get_user(user_id=user_id_bytes.decode())
+        user = await self._fetch_user(user_id=user_id_bytes.decode())
         if user is None:
             raise ConfirmationTokenInvalidError()
 
@@ -947,16 +1024,16 @@ class AuthClient[UserT: AuthUser]:
         now = datetime.now(UTC)
         [result] = await (
             self._db()
-            .update(self._user_table)
+            .update(AuthUser)
             .set(email_confirmed_at=now, updated_at=now)
-            .where(self._user_table.c.id == user.id)
-            .returning(self._user_table)
+            .where(AuthUser.c.id == user.id)
+            .returning(AuthUser)
             .execute()
         )
 
-        await self._invalidate_user_cache(user.id)
+        await self._invalidate_user_cache(user.id, user.email)
 
-        return result
+        return self._to_user_info(result)
 
     async def resend_confirmation_email(
         self,
@@ -970,7 +1047,7 @@ class AuthClient[UserT: AuthUser]:
 
         Does not reveal whether user exists for security.
         """
-        user = await self.get_user(email=email)
+        user = await self._get_user_by_email(email=email)
         if not user:
             return
 
@@ -995,22 +1072,401 @@ class AuthClient[UserT: AuthUser]:
         )
 
     # =========================================================================
-    # Role-Based Access Control
+    # Organizations
     # =========================================================================
 
-    def is_authorized(self, payload: TokenPayload, *roles: str) -> bool:
-        """Check if the token's role is in the allowed set.
+    def _to_org_info(self, org: AuthOrganization) -> OrgInfo:
+        """Convert an AuthOrganization ORM model to a public OrgInfo."""
+        import json
 
-        Reads the ``role`` claim embedded in the JWT at session creation.
-        No database hit required.
+        metadata: dict[str, Any] = {}
+        if org.metadata:
+            metadata = json.loads(org.metadata)
+        return OrgInfo(
+            id=str(org.id),
+            name=org.name,
+            slug=org.slug,
+            metadata=metadata,
+            created_at=org.created_at,
+            updated_at=org.updated_at,
+        )
 
-        Args:
-            payload: Decoded JWT token payload.
-            roles: One or more role strings that are permitted.
+    def _to_org_member_info(self, member: AuthOrgMember) -> OrgMemberInfo:
+        """Convert an AuthOrgMember ORM model to a public OrgMemberInfo."""
+        return OrgMemberInfo(
+            org_id=str(member.org_id),
+            user_id=str(member.user_id),
+            role=member.role,
+            created_at=member.created_at,
+            updated_at=member.updated_at,
+        )
 
-        Returns:
-            True if the token's role matches one of the allowed roles,
-            False otherwise.
-        """
-        role = (payload.extra or {}).get("role")
-        return role in roles
+    async def create_org(
+        self,
+        *,
+        name: str,
+        slug: str,
+        creator_id: str | uuid.UUID,
+        **kwargs: Any,
+    ) -> OrgInfo:
+        """Create an organization. The creator is added as owner."""
+        # Check for duplicate slug
+        existing = await (
+            self._db()
+            .select(AuthOrganization)
+            .where(AuthOrganization.c.slug == slug)
+            .first_or_none()
+        )
+        if existing is not None:
+            raise OrgAlreadyExistsError()
+
+        now = datetime.now(UTC)
+        org = await (
+            self._db()
+            .insert(AuthOrganization)
+            .values(
+                name=name,
+                slug=slug,
+                created_at=now,
+                updated_at=now,
+            )
+            .returning(AuthOrganization)
+            .execute()
+        )
+
+        # Add creator as owner
+        await (
+            self._db()
+            .insert(AuthOrgMember)
+            .values(
+                org_id=org.id,
+                user_id=str(creator_id),
+                role="owner",
+                created_at=now,
+                updated_at=now,
+            )
+            .execute()
+        )
+
+        return self._to_org_info(org)
+
+    async def get_org(self, org_id: str | uuid.UUID) -> OrgInfo | None:
+        """Get an organization by ID."""
+        org = await (
+            self._db()
+            .select(AuthOrganization)
+            .where(AuthOrganization.c.id == str(org_id))
+            .first_or_none()
+        )
+        return self._to_org_info(org) if org is not None else None
+
+    async def get_org_by_slug(self, slug: str) -> OrgInfo | None:
+        """Get an organization by slug."""
+        org = await (
+            self._db()
+            .select(AuthOrganization)
+            .where(AuthOrganization.c.slug == slug)
+            .first_or_none()
+        )
+        return self._to_org_info(org) if org is not None else None
+
+    async def update_org(
+        self,
+        *,
+        org_id: str | uuid.UUID,
+        name: str | None = None,
+        slug: str | None = None,
+        **kwargs: Any,
+    ) -> OrgInfo:
+        """Update an organization."""
+        existing = await (
+            self._db()
+            .select(AuthOrganization)
+            .where(AuthOrganization.c.id == str(org_id))
+            .first_or_none()
+        )
+        if existing is None:
+            raise OrgNotFoundError()
+
+        updates: dict[str, Any] = {"updated_at": datetime.now(UTC)}
+        if name is not None:
+            updates["name"] = name
+        if slug is not None:
+            updates["slug"] = slug
+
+        [result] = await (
+            self._db()
+            .update(AuthOrganization)
+            .set(**updates)
+            .where(AuthOrganization.c.id == str(org_id))
+            .returning(AuthOrganization)
+            .execute()
+        )
+
+        return self._to_org_info(result)
+
+    async def delete_org(self, org_id: str | uuid.UUID) -> None:
+        """Delete an organization and all its memberships."""
+        existing = await (
+            self._db()
+            .select(AuthOrganization)
+            .where(AuthOrganization.c.id == str(org_id))
+            .first_or_none()
+        )
+        if existing is None:
+            raise OrgNotFoundError()
+
+        await (
+            self._db()
+            .delete(AuthOrganization)
+            .where(AuthOrganization.c.id == str(org_id))
+            .execute()
+        )
+
+    async def list_orgs(
+        self,
+        *,
+        user_id: str | uuid.UUID | None = None,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[OrgInfo]:
+        """List organizations, optionally filtered by user membership."""
+        if user_id is not None:
+            # Get org IDs the user belongs to, then fetch orgs
+            members = await (
+                self._db()
+                .select(AuthOrgMember)
+                .where(AuthOrgMember.c.user_id == str(user_id))
+                .execute()
+            )
+            org_ids = [str(m.org_id) for m in members]
+            if not org_ids:
+                return []
+            q = (
+                self._db()
+                .select(AuthOrganization)
+                .where(AuthOrganization.c.id.in_(org_ids))
+                .order_by(AuthOrganization.c.created_at, asc=False)
+            )
+        else:
+            q = (
+                self._db()
+                .select(AuthOrganization)
+                .order_by(AuthOrganization.c.created_at, asc=False)
+            )
+
+        if limit is not None:
+            q = q.limit(limit)
+        if offset is not None:
+            q = q.offset(offset)
+        return [self._to_org_info(o) for o in await q.execute()]
+
+    # =========================================================================
+    # Organization Membership
+    # =========================================================================
+
+    async def add_org_member(
+        self,
+        *,
+        org_id: str | uuid.UUID,
+        user_id: str | uuid.UUID,
+        role: str = "member",
+    ) -> OrgMemberInfo:
+        """Add a user to an organization."""
+        existing = await (
+            self._db()
+            .select(AuthOrgMember)
+            .where(AuthOrgMember.c.org_id == str(org_id))
+            .where(AuthOrgMember.c.user_id == str(user_id))
+            .first_or_none()
+        )
+        if existing is not None:
+            raise OrgMemberExistsError()
+
+        now = datetime.now(UTC)
+        member = await (
+            self._db()
+            .insert(AuthOrgMember)
+            .values(
+                org_id=str(org_id),
+                user_id=str(user_id),
+                role=role,
+                created_at=now,
+                updated_at=now,
+            )
+            .returning(AuthOrgMember)
+            .execute()
+        )
+
+        return self._to_org_member_info(member)
+
+    async def update_org_member(
+        self,
+        *,
+        org_id: str | uuid.UUID,
+        user_id: str | uuid.UUID,
+        role: str,
+    ) -> OrgMemberInfo:
+        """Update a member's role within an organization."""
+        existing = await (
+            self._db()
+            .select(AuthOrgMember)
+            .where(AuthOrgMember.c.org_id == str(org_id))
+            .where(AuthOrgMember.c.user_id == str(user_id))
+            .first_or_none()
+        )
+        if existing is None:
+            raise OrgMemberNotFoundError()
+
+        [result] = await (
+            self._db()
+            .update(AuthOrgMember)
+            .set(role=role, updated_at=datetime.now(UTC))
+            .where(AuthOrgMember.c.org_id == str(org_id))
+            .where(AuthOrgMember.c.user_id == str(user_id))
+            .returning(AuthOrgMember)
+            .execute()
+        )
+
+        return self._to_org_member_info(result)
+
+    async def remove_org_member(
+        self,
+        *,
+        org_id: str | uuid.UUID,
+        user_id: str | uuid.UUID,
+    ) -> None:
+        """Remove a user from an organization."""
+        existing = await (
+            self._db()
+            .select(AuthOrgMember)
+            .where(AuthOrgMember.c.org_id == str(org_id))
+            .where(AuthOrgMember.c.user_id == str(user_id))
+            .first_or_none()
+        )
+        if existing is None:
+            raise OrgMemberNotFoundError()
+
+        # Prevent removing the last owner
+        if existing.role == "owner":
+            owner_count = await (
+                self._db()
+                .select(AuthOrgMember)
+                .where(AuthOrgMember.c.org_id == str(org_id))
+                .where(AuthOrgMember.c.role == "owner")
+                .count()
+            )
+            if owner_count <= 1:
+                raise OrgLastOwnerError()
+
+        await (
+            self._db()
+            .delete(AuthOrgMember)
+            .where(AuthOrgMember.c.org_id == str(org_id))
+            .where(AuthOrgMember.c.user_id == str(user_id))
+            .execute()
+        )
+
+    async def list_org_members(
+        self,
+        org_id: str | uuid.UUID,
+        *,
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> list[OrgMemberInfo]:
+        """List members of an organization."""
+        q = (
+            self._db()
+            .select(AuthOrgMember)
+            .where(AuthOrgMember.c.org_id == str(org_id))
+            .order_by(AuthOrgMember.c.created_at, asc=True)
+        )
+        if limit is not None:
+            q = q.limit(limit)
+        if offset is not None:
+            q = q.offset(offset)
+        return [self._to_org_member_info(m) for m in await q.execute()]
+
+    async def get_org_member(
+        self,
+        *,
+        org_id: str | uuid.UUID,
+        user_id: str | uuid.UUID,
+    ) -> OrgMemberInfo | None:
+        """Get a single membership record."""
+        member = await (
+            self._db()
+            .select(AuthOrgMember)
+            .where(AuthOrgMember.c.org_id == str(org_id))
+            .where(AuthOrgMember.c.user_id == str(user_id))
+            .first_or_none()
+        )
+        return self._to_org_member_info(member) if member is not None else None
+
+    # =========================================================================
+    # Organization Session Context
+    # =========================================================================
+
+    async def set_active_org(
+        self,
+        *,
+        session_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None,
+    ) -> TokenPair:
+        """Switch the active organization for a session. Returns new tokens."""
+        # Find the active session
+        session = await (
+            self._db()
+            .select(AuthSession)
+            .where(AuthSession.c.session_id == str(session_id))
+            .where(~AuthSession.c.revoked)
+            .order_by(AuthSession.c.created_at, asc=False)
+            .first_or_none()
+        )
+        if session is None:
+            raise SessionNotFoundError()
+
+        extra_claims: dict[str, Any] = {"role": session.role}
+
+        if org_id is not None:
+            # Verify user is a member
+            member = await (
+                self._db()
+                .select(AuthOrgMember)
+                .where(AuthOrgMember.c.org_id == str(org_id))
+                .where(AuthOrgMember.c.user_id == str(session.user_id))
+                .first_or_none()
+            )
+            if member is None:
+                raise NotOrgMemberError()
+
+            extra_claims["org_id"] = str(org_id)
+            extra_claims["org_role"] = member.role
+
+            # Update session's org_id
+            await (
+                self._db()
+                .update(AuthSession)
+                .set(org_id=str(org_id))
+                .where(AuthSession.c.session_id == str(session_id))
+                .where(~AuthSession.c.revoked)
+                .execute()
+            )
+        else:
+            # Clear org context
+            await (
+                self._db()
+                .update(AuthSession)
+                .set(org_id=None)
+                .where(AuthSession.c.session_id == str(session_id))
+                .where(~AuthSession.c.revoked)
+                .execute()
+            )
+
+        return create_token_pair(
+            self._config.jwt,
+            session.user_id,
+            session.session_id,
+            session.token,
+            extra_claims=extra_claims,
+        )

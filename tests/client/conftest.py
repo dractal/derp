@@ -29,15 +29,11 @@ from derp.orm.fields import (
 )
 
 
-class User(AuthUser, table="users"):
-    display_name: str | None = Field(Varchar(255), nullable=True)
-
-
 class UserAssetAccessLog(Table, table="user_asset_access_logs"):
     id: int = Field(Serial(), primary_key=True)
     user_id: uuid.UUID = Field(
         UUID(),
-        foreign_key=ForeignKey(User, on_delete=ForeignKeyAction.CASCADE),
+        foreign_key=ForeignKey(AuthUser, on_delete=ForeignKeyAction.CASCADE),
         index=True,
     )
     session_id: uuid.UUID = Field(

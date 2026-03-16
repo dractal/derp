@@ -36,7 +36,21 @@ packages = ["src/derp"]
 [tool.uv.build-backend]
 module-name = "derp"
 
+[project.optional-dependencies]
+docs = [
+    "sphinx>=8.0",
+    "furo>=2024.8",
+    "sphinx-copybutton>=0.5",
+    "sphinx-design>=0.6",
+]
+
 [dependency-groups]
+docs = [
+    "sphinx>=8.0",
+    "furo>=2024.8",
+    "sphinx-copybutton>=0.5",
+    "sphinx-design>=0.6",
+]
 dev = [
     "ruff>=0.9",
     "ty>=0.0.1a5",
@@ -50,6 +64,7 @@ dev = [
     "python-multipart>=0.0.22",
     "valkey-glide",
     "celery>=5.6.2",
+    "clerk-backend-api>=5.0.2",
 ]
 
 [tool.ruff]

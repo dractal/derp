@@ -68,7 +68,10 @@ def push(
 
     # Load tables from schema module
     try:
-        tables = discover_tables(schema_path, include_auth=config.auth is not None)
+        tables = discover_tables(
+            schema_path,
+            include_auth=config.auth is not None and config.auth.native is not None,
+        )
     except FileNotFoundError:
         typer.echo(f"Error: Schema file not found: {schema_path}", err=True)
         raise typer.Exit(1)

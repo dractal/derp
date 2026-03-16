@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 
 from etils import epy
 
 from derp.config import CeleryConfig
-from derp.queue.base import QueueClient, TaskState, TaskStatus
+from derp.queue.base import QueueClient, Schedule, ScheduleType, TaskState, TaskStatus
 from derp.queue.exceptions import QueueNotConnectedError, QueueProviderError
 
 with epy.lazy_imports():
     import celery
     import celery.result as celery_result
+    import celery.schedules as celery_schedules
 
 
 # Map Celery states to TaskState.
@@ -39,6 +41,7 @@ class CeleryQueueClient(QueueClient):
     def __init__(self, config: CeleryConfig):
         self._config = config
         self._app: celery.Celery | None = None
+        self._schedules: list[Schedule] = []
 
     @property
     def app(self) -> celery.Celery:
@@ -61,6 +64,8 @@ class CeleryQueueClient(QueueClient):
         if self._app is not None:
             return
         self._create_app()
+        if self._schedules:
+            self._apply_beat_schedule()
 
     async def disconnect(self) -> None:
         if self._app is not None:
@@ -118,3 +123,37 @@ class CeleryQueueClient(QueueClient):
             result=task_result,
             error=error,
         )
+
+    def register_schedules(self, schedules: Sequence[Schedule]) -> None:
+        """Register recurring schedules with Celery Beat."""
+        self._schedules = list(schedules)
+        if self._app is not None:
+            self._apply_beat_schedule()
+
+    def get_schedules(self) -> list[Schedule]:
+        """Return the currently registered schedules."""
+        return self._schedules
+
+    def _apply_beat_schedule(self) -> None:
+        """Write schedules into Celery's beat_schedule config."""
+        assert self._app is not None
+        beat_schedule: dict[str, Any] = {}
+        for s in self._schedules:
+            entry: dict[str, Any] = {"task": s.task}
+            if s.type == ScheduleType.CRON and s.cron:
+                parts = s.cron.split()
+                entry["schedule"] = celery_schedules.crontab(
+                    minute=parts[0] if len(parts) > 0 else "*",
+                    hour=parts[1] if len(parts) > 1 else "*",
+                    day_of_month=parts[2] if len(parts) > 2 else "*",
+                    month_of_year=parts[3] if len(parts) > 3 else "*",
+                    day_of_week=parts[4] if len(parts) > 4 else "*",
+                )
+            elif s.type == ScheduleType.INTERVAL and s.interval:
+                entry["schedule"] = s.interval.total_seconds()
+            if s.payload:
+                entry["kwargs"] = s.payload
+            if s.queue:
+                entry["options"] = {"queue": s.queue}
+            beat_schedule[s.name] = entry
+        self._app.conf.beat_schedule = beat_schedule

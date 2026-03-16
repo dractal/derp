@@ -1,26 +1,18 @@
 """Derp ORM - A strongly-typed async Python ORM for PostgreSQL.
 
-Example usage:
+Example usage::
 
     from derp import Derp, Table, Field, eq
     from derp.fields import Serial, Varchar, Timestamp
 
-    # Define tables
     class User(Table, table="users"):
         id: int = Field(Serial(), primary_key=True)
         name: str = Field(Varchar(255))
         email: str = Field(Varchar(255), unique=True)
         created_at: datetime = Field(Timestamp(), default="now()")
 
-    # Query using .c accessor for columns
     async with Derp("postgresql://...") as db:
         users = await db.select(User).where(User.c.name == "Alice").execute()
-        new_user = await (
-            db.insert(User)
-            .values(name="Bob", email="bob@example.com")
-            .returning(User)
-            .execute()
-        )
 """
 
 from derp.config import DatabaseConfig
@@ -54,8 +46,10 @@ from derp.orm.fields import (
 from derp.orm.query import (
     ComparisonOperator,
     JoinType,
+    LockMode,
     LogicalOperator,
     SortOrder,
+    sql,
 )
 from derp.orm.table import Table
 
@@ -94,7 +88,10 @@ __all__ = [
     "Array",
     # Query enums
     "JoinType",
+    "LockMode",
     "SortOrder",
     "LogicalOperator",
     "ComparisonOperator",
+    # SQL expressions
+    "sql",
 ]

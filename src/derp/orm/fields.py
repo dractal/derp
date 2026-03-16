@@ -395,12 +395,16 @@ class FieldInfo[T]:
             expressions.to_expr(other),
         )
 
-    def in_(self, values: Sequence[Any]) -> Any:
-        """IN clause."""
+    def in_(self, values: Sequence[Any] | Any) -> Any:
+        """IN clause. Accepts a list of values or a SelectQuery."""
+        if hasattr(values, "build"):
+            return expressions.InSubquery(self, values, negated=False)
         return expressions.InList(self, tuple(values), negated=False)
 
-    def not_in(self, values: Sequence[Any]) -> Any:
-        """NOT IN clause."""
+    def not_in(self, values: Sequence[Any] | Any) -> Any:
+        """NOT IN clause. Accepts a list of values or a SelectQuery."""
+        if hasattr(values, "build"):
+            return expressions.InSubquery(self, values, negated=True)
         return expressions.InList(self, tuple(values), negated=True)
 
     def like(self, pattern: str) -> Any:
@@ -422,6 +426,39 @@ class FieldInfo[T]:
     def between(self, low: Any, high: Any) -> Any:
         """BETWEEN range check."""
         return expressions.Between(self, low, high)
+
+    def count(self) -> Any:
+        """COUNT(column) aggregate."""
+        return expressions.AggregateFunc("COUNT", self)
+
+    def sum(self) -> Any:
+        """SUM(column) aggregate."""
+        return expressions.AggregateFunc("SUM", self)
+
+    def avg(self) -> Any:
+        """AVG(column) aggregate."""
+        return expressions.AggregateFunc("AVG", self)
+
+    def min(self) -> Any:
+        """MIN(column) aggregate."""
+        return expressions.AggregateFunc("MIN", self)
+
+    def max(self) -> Any:
+        """MAX(column) aggregate."""
+        return expressions.AggregateFunc("MAX", self)
+
+    def case(
+        self,
+        mapping: dict[Any, Any],
+        *,
+        else_: Any | None = None,
+    ) -> Any:
+        """Simple CASE expression.
+
+        ``User.c.role.case({"admin": 1, "user": 0}, else_=-1)``
+        produces ``CASE users.role WHEN 'admin' THEN 1 ... END``
+        """
+        return expressions.CaseExpression(self, list(mapping.items()), else_value=else_)
 
 
 def Field[T](

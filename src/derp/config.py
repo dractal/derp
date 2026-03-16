@@ -25,9 +25,13 @@ def _resolve_env_value(
     *,
     _path: tuple[str, ...] = (),
     _env_vars: dict[tuple[str, ...], str] | None = None,
+    _missing: list[str] | None = None,
+    _root: bool = True,
 ) -> Any:
     if _env_vars is None:
         _env_vars = {}
+    if _missing is None:
+        _missing = []
     if isinstance(value, str):
         if value.startswith("$"):
             env_name = value[1:]
@@ -35,28 +39,50 @@ def _resolve_env_value(
                 raise ConfigError("Invalid environment variable reference: '$'")
             env_value = os.environ.get(env_name)
             if not env_value:
-                raise ConfigError(
-                    f"Environment variable '{env_name}' is not set or empty."
-                )
+                _missing.append(env_name)
+                return value
             _env_vars[_path] = env_name
             return env_value
         return value
     if isinstance(value, list):
-        return [
-            _resolve_env_value(item, _path=(*_path, str(i)), _env_vars=_env_vars)
+        result = [
+            _resolve_env_value(
+                item,
+                _path=(*_path, str(i)),
+                _env_vars=_env_vars,
+                _missing=_missing,
+                _root=False,
+            )
             for i, item in enumerate(value)
         ]
-    if isinstance(value, tuple):
-        return tuple(
-            _resolve_env_value(item, _path=(*_path, str(i)), _env_vars=_env_vars)
+    elif isinstance(value, tuple):
+        result = tuple(
+            _resolve_env_value(
+                item,
+                _path=(*_path, str(i)),
+                _env_vars=_env_vars,
+                _missing=_missing,
+                _root=False,
+            )
             for i, item in enumerate(value)
         )
-    if isinstance(value, dict):
-        return {
-            key: _resolve_env_value(val, _path=(*_path, key), _env_vars=_env_vars)
+    elif isinstance(value, dict):
+        result = {
+            key: _resolve_env_value(
+                val,
+                _path=(*_path, key),
+                _env_vars=_env_vars,
+                _missing=_missing,
+                _root=False,
+            )
             for key, val in value.items()
         }
-    return value
+    else:
+        return value
+    if _root and _missing:
+        names = ", ".join(f"${v}" for v in _missing)
+        raise ConfigError(f"Missing environment variables: {names}")
+    return result
 
 
 class DatabaseConfig(BaseModel):
@@ -142,8 +168,8 @@ class GitHubOAuthConfig(BaseModel):
     scopes: Sequence[str] = ("user:email",)
 
 
-class AuthConfig(BaseModel):
-    """Main configuration for the auth module."""
+class NativeAuthConfig(BaseModel):
+    """Configuration for native authentication (email/password, magic link, OAuth)."""
 
     jwt: JWTConfig
     password: PasswordConfig = Field(default_factory=PasswordConfig)
@@ -164,6 +190,35 @@ class AuthConfig(BaseModel):
     cache_prefix: str = "derp:auth"
     cache_session_ttl_seconds: int = 300
     cache_user_ttl_seconds: int = 300
+
+
+class ClerkConfig(BaseModel):
+    """Configuration for Clerk authentication."""
+
+    secret_key: str
+    jwt_key: str | None = None
+    authorized_parties: Sequence[str] = ()
+
+
+class AuthConfig(BaseModel):
+    """Auth configuration — exactly one backend must be set."""
+
+    native: NativeAuthConfig | None = None
+    clerk: ClerkConfig | None = None
+
+    @model_validator(mode="after")
+    def _check_single_backend(self) -> AuthConfig:
+        if self.native is not None and self.clerk is not None:
+            raise ValueError(
+                "Only one auth backend can be configured at a time. "
+                "Set either [auth.native] or [auth.clerk], not both."
+            )
+        if self.native is None and self.clerk is None:
+            raise ValueError(
+                "At least one auth backend must be configured. "
+                "Set either [auth.native] or [auth.clerk]."
+            )
+        return self
 
 
 class StorageConfig(BaseModel):
@@ -230,11 +285,37 @@ class VercelQueueConfig(BaseModel):
     default_queue: str = "default"
 
 
+class ScheduleConfig(BaseModel):
+    """A single recurring task schedule."""
+
+    name: str
+    task: str
+    cron: str | None = None
+    interval_seconds: float | None = None
+    payload: dict[str, Any] | None = None
+    queue: str | None = None
+    path: str | None = None
+
+    @model_validator(mode="after")
+    def _check_schedule_type(self) -> ScheduleConfig:
+        if self.cron is not None and self.interval_seconds is not None:
+            raise ValueError(
+                f"Schedule '{self.name}': set either 'cron' or "
+                "'interval_seconds', not both."
+            )
+        if self.cron is None and self.interval_seconds is None:
+            raise ValueError(
+                f"Schedule '{self.name}': must set either 'cron' or 'interval_seconds'."
+            )
+        return self
+
+
 class QueueConfig(BaseModel):
     """Queue configuration."""
 
     celery: CeleryConfig | None = None
     vercel: VercelQueueConfig | None = None
+    schedules: Sequence[ScheduleConfig] = ()
 
     @model_validator(mode="after")
     def _check_single_backend(self) -> QueueConfig:
@@ -320,11 +401,11 @@ migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # secret_access_key = "$AWS_SECRET_ACCESS_KEY"
 # region = "us-east-1"
 
-# [auth]
-# user_table_name = "users"
-
-# [auth.jwt]
+# [auth.native.jwt]
 # secret = "$JWT_SECRET"
+
+# [auth.clerk]
+# secret_key = "$CLERK_SECRET_KEY"
 
 # [kv.valkey]
 # addresses = [["localhost", 6379]]

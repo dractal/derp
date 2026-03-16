@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from derp.auth.client import AuthClient
+from derp.auth.base import BaseAuthClient
+from derp.auth.clerk_client import ClerkAuthClient
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     AuthError,
@@ -12,9 +13,15 @@ from derp.auth.exceptions import (
     InvalidCredentialsError,
     InvalidTokenError,
     MagicLinkExpiredError,
+    NotOrgMemberError,
     OAuthError,
     OAuthProviderError,
     OAuthStateError,
+    OrgAlreadyExistsError,
+    OrgLastOwnerError,
+    OrgMemberExistsError,
+    OrgMemberNotFoundError,
+    OrgNotFoundError,
     PasswordValidationError,
     RecoveryTokenInvalidError,
     RefreshTokenReusedError,
@@ -29,10 +36,18 @@ from derp.auth.exceptions import (
 )
 from derp.auth.jwt import TokenPair, TokenPayload
 from derp.auth.models import (
+    AuthOrganization,
+    AuthOrgMember,
     AuthProvider,
+    AuthRequest,
     AuthSession,
     AuthUser,
+    OrgInfo,
+    OrgMemberInfo,
+    SessionInfo,
+    UserInfo,
 )
+from derp.auth.native_client import NativeAuthClient
 from derp.auth.password import (
     Argon2Hasher,
     PasswordHasher,
@@ -47,20 +62,24 @@ from derp.auth.providers import (
 )
 from derp.config import (
     AuthConfig,
+    ClerkConfig,
     EmailConfig,
     GitHubOAuthConfig,
     GoogleOAuthConfig,
     JWTConfig,
+    NativeAuthConfig,
     PasswordConfig,
 )
 
 __all__ = [
     # Config
     "AuthConfig",
+    "ClerkConfig",
     "EmailConfig",
     "GitHubOAuthConfig",
     "GoogleOAuthConfig",
     "JWTConfig",
+    "NativeAuthConfig",
     "PasswordConfig",
     # Exceptions
     "AuthError",
@@ -70,9 +89,15 @@ __all__ = [
     "InvalidCredentialsError",
     "InvalidTokenError",
     "MagicLinkExpiredError",
+    "NotOrgMemberError",
     "OAuthError",
     "OAuthProviderError",
     "OAuthStateError",
+    "OrgAlreadyExistsError",
+    "OrgLastOwnerError",
+    "OrgMemberExistsError",
+    "OrgMemberNotFoundError",
+    "OrgNotFoundError",
     "PasswordValidationError",
     "RecoveryTokenInvalidError",
     "RefreshTokenRevokedError",
@@ -89,9 +114,16 @@ __all__ = [
     "TokenPair",
     "TokenPayload",
     # Models
+    "AuthOrgMember",
+    "AuthOrganization",
     "AuthProvider",
+    "AuthRequest",
     "AuthSession",
     "AuthUser",
+    "OrgInfo",
+    "OrgMemberInfo",
+    "SessionInfo",
+    "UserInfo",
     # Password
     "Argon2Hasher",
     "BcryptHasher",
@@ -109,5 +141,7 @@ __all__ = [
     # Email
     "EmailClient",
     # Client
-    "AuthClient",
+    "BaseAuthClient",
+    "ClerkAuthClient",
+    "NativeAuthClient",
 ]

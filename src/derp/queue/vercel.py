@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
@@ -10,7 +11,7 @@ from urllib.parse import quote
 import httpx
 
 from derp.config import VercelQueueConfig
-from derp.queue.base import QueueClient, TaskState, TaskStatus
+from derp.queue.base import QueueClient, Schedule, ScheduleType, TaskState, TaskStatus
 from derp.queue.exceptions import QueueNotConnectedError, QueueProviderError
 
 VERCEL_API_BASE = "https://api.vercel.com"
@@ -26,6 +27,7 @@ class VercelQueueClient(QueueClient):
     def __init__(self, config: VercelQueueConfig):
         self._config = config
         self._client: httpx.AsyncClient | None = None
+        self._schedules: list[Schedule] = []
 
     async def connect(self) -> None:
         if self._client is not None:
@@ -96,3 +98,27 @@ class VercelQueueClient(QueueClient):
             task_id=task_id,
             state=TaskState.UNKNOWN,
         )
+
+    def register_schedules(self, schedules: Sequence[Schedule]) -> None:
+        """Register recurring schedules. Vercel only supports cron expressions."""
+        for s in schedules:
+            if s.type == ScheduleType.INTERVAL:
+                raise QueueProviderError(
+                    f"Schedule '{s.name}': Vercel cron only supports "
+                    "cron expressions, not intervals.",
+                )
+        self._schedules = list(schedules)
+
+    def get_schedules(self) -> list[Schedule]:
+        """Return the currently registered schedules."""
+        return self._schedules
+
+    def generate_vercel_cron_config(self) -> list[dict[str, str]]:
+        """Generate the ``crons`` section for vercel.json."""
+        return [
+            {
+                "path": s.path or f"/api/cron/{s.name}",
+                "schedule": s.cron or "",
+            }
+            for s in self._schedules
+        ]

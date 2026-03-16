@@ -6,7 +6,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, status
 
-from app.dependencies import get_current_user, get_derp
+from app.dependencies import get_current_user, get_derp, get_workspace_member
 from app.models import User
 from app.schemas import (
     AvatarUploadResponse,
@@ -14,41 +14,14 @@ from app.schemas import (
     UserPublicResponse,
 )
 from derp import DerpClient
+from derp.auth.models import OrgMemberInfo, UserInfo
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-@router.get("", response_model=list[UserPublicResponse])
-async def list_users(
-    user: User = Depends(get_current_user),
-    derp: DerpClient[User] = Depends(get_derp),
-    search: str | None = Query(min_length=1, max_length=100, default=None),
-    limit: int = Query(ge=1, le=50, default=20),
-    offset: int = Query(ge=0, default=0),
-) -> list[UserPublicResponse]:
-    """List users, optionally filtered by search query."""
-    query = (
-        derp.db.select(User)
-        .where(User.c.is_active == True)  # noqa: E712
-        .where(User.c.id != str(user.id))
-        .order_by(User.c.created_at, asc=False)
-        .limit(limit)
-        .offset(offset)
-    )
-
-    if search:
-        query = query.where(
-            (User.c.email.ilike(f"%{search}%")) | (User.c.username.ilike(f"%{search}%"))
-        )
-
-    users = await query.execute()
-
-    return [UserPublicResponse.model_validate(u) for u in users]
-
-
 @router.get("/me", response_model=UserPublicResponse)
 async def get_current_user_profile(
-    user: User = Depends(get_current_user),
+    user: UserInfo = Depends(get_current_user),
 ) -> UserPublicResponse:
     """Get current user's public profile."""
     return UserPublicResponse.model_validate(user)
@@ -57,8 +30,8 @@ async def get_current_user_profile(
 @router.patch("/me", response_model=UserPublicResponse)
 async def update_current_user_profile(
     data: UserProfileUpdateRequest,
-    user: User = Depends(get_current_user),
-    derp: DerpClient[User] = Depends(get_derp),
+    user: UserInfo = Depends(get_current_user),
+    derp: DerpClient = Depends(get_derp),
 ) -> UserPublicResponse:
     """Update current user's profile."""
     updates = data.model_dump(exclude_unset=True)
@@ -75,8 +48,8 @@ async def update_current_user_profile(
 @router.post("/me/avatar", response_model=AvatarUploadResponse)
 async def upload_avatar(
     file: UploadFile,
-    user: User = Depends(get_current_user),
-    derp: DerpClient[User] = Depends(get_derp),
+    user: UserInfo = Depends(get_current_user),
+    derp: DerpClient = Depends(get_derp),
 ) -> AvatarUploadResponse:
     """Upload or update user avatar."""
     allowed_types = {"image/jpeg", "image/png", "image/webp", "image/gif"}
@@ -95,11 +68,12 @@ async def upload_avatar(
         )
 
     extension = file.content_type.split("/")[-1]
-    key = f"avatars/{user.id}/{uuid.uuid4()}.{extension}"
+    key = f"avatars/{user.id}/{uuid.uuid4().hex}.{extension}"
 
     # Delete old avatar if exists
-    if user.avatar_url:
-        old_key = user.avatar_url.split("avatars/")[-1]
+    full_user = await derp.db.select(User).where(User.c.id == user.id).first_or_none()
+    if full_user and full_user.avatar_url:
+        old_key = full_user.avatar_url.split("avatars/")[-1]
         try:
             await derp.storage.delete_file(bucket="avatars", key=old_key)
         except Exception:
@@ -119,17 +93,41 @@ async def upload_avatar(
     return AvatarUploadResponse(avatar_url=avatar_url)
 
 
-@router.get("/{user_id}", response_model=UserPublicResponse)
-async def get_user_profile(
-    user_id: uuid.UUID,
-    derp: DerpClient[User] = Depends(get_derp),
-) -> UserPublicResponse:
-    """Get a user's public profile."""
-    user = await derp.auth.get_user(user_id)
-    if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
+@router.get(
+    "/workspaces/{workspace_id}/users/search",
+    response_model=list[UserPublicResponse],
+)
+async def search_workspace_users(
+    workspace_id: uuid.UUID,
+    _member: OrgMemberInfo = Depends(get_workspace_member),
+    user: UserInfo = Depends(get_current_user),
+    derp: DerpClient = Depends(get_derp),
+    q: str | None = Query(default=None, min_length=1, max_length=100),
+    limit: int = Query(ge=1, le=50, default=20),
+) -> list[UserPublicResponse]:
+    """Search users within a workspace."""
+    members = await derp.auth.list_org_members(workspace_id)
+    member_ids = [str(m.user_id) for m in members]
+
+    if not member_ids:
+        return []
+
+    query = (
+        derp.db.select(User)
+        .where(
+            (User.c.id.in_(member_ids))
+            & (User.c.id != str(user.id))
+            & (User.c.is_active == True)  # noqa: E712
+        )
+        .limit(limit)
+    )
+
+    if q:
+        query = query.where(
+            (User.c.email.ilike(f"%{q}%"))
+            | (User.c.username.ilike(f"%{q}%"))
+            | (User.c.display_name.ilike(f"%{q}%"))
         )
 
-    return UserPublicResponse.model_validate(user)
+    users = await query.execute()
+    return [UserPublicResponse.model_validate(u) for u in users]

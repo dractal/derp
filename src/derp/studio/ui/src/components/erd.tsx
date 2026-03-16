@@ -407,8 +407,9 @@ export function ERDiagram({
     [dragging, viewBox.w, viewBox.h],
   );
 
-  const onPointerUp = useCallback(() => {
+  const onPointerUp = useCallback((e: React.PointerEvent) => {
     setDragging(false);
+    (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
   }, []);
 
   // Zoom handler

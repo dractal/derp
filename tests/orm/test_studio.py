@@ -69,7 +69,7 @@ def test_studio_errors_when_env_missing(temp_dir: Path) -> None:
     result = runner.invoke(app, ["studio"])
 
     assert result.exit_code == 1
-    assert "Error: Environment variable 'TEST_DATABASE_URL'" in result.output
+    assert "Missing environment variables: $TEST_DATABASE_URL" in result.output
 
 
 def test_studio_runs_uvicorn_with_host_port(
@@ -376,7 +376,9 @@ def test_database_tables_endpoint(temp_dir: Path) -> None:
         )
     }
 
-    mock_derp.db.execute = AsyncMock(return_value=[{"cnt": 42}])
+    mock_derp.db.table.return_value.select.return_value.count = AsyncMock(
+        return_value=42
+    )
 
     with patch("derp.studio.server.PostgresIntrospector") as mock_introspector_cls:
         mock_introspector = MagicMock()
@@ -406,12 +408,12 @@ def test_database_tables_endpoint(temp_dir: Path) -> None:
 def test_database_table_rows_endpoint(temp_dir: Path) -> None:
     """Database rows endpoint should return paginated rows."""
     mock_derp = _make_mock_derp()
-    mock_derp.db.execute = AsyncMock(
-        side_effect=[
-            [{"cnt": 100}],  # count query
-            [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}],  # rows
-        ]
+    mock_select = MagicMock()
+    mock_select.count = AsyncMock(return_value=100)
+    mock_select.limit.return_value.offset.return_value.execute = AsyncMock(
+        return_value=[{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
     )
+    mock_derp.db.table.return_value.select.return_value = mock_select
 
     client = _create_app_with_mock_derp(temp_dir, mock_derp)
     response = client.get("/api/database/tables/users/rows?limit=2&offset=0")
@@ -428,12 +430,12 @@ def test_database_table_rows_endpoint(temp_dir: Path) -> None:
 def test_database_table_rows_default_limit(temp_dir: Path) -> None:
     """Database rows endpoint should default to limit=50, offset=0."""
     mock_derp = _make_mock_derp()
-    mock_derp.db.execute = AsyncMock(
-        side_effect=[
-            [{"cnt": 0}],  # count query
-            [],  # rows
-        ]
+    mock_select = MagicMock()
+    mock_select.count = AsyncMock(return_value=0)
+    mock_select.limit.return_value.offset.return_value.execute = AsyncMock(
+        return_value=[]
     )
+    mock_derp.db.table.return_value.select.return_value = mock_select
 
     client = _create_app_with_mock_derp(temp_dir, mock_derp)
     response = client.get("/api/database/tables/users/rows")
@@ -447,12 +449,12 @@ def test_database_table_rows_default_limit(temp_dir: Path) -> None:
 def test_database_table_rows_clamps_limit(temp_dir: Path) -> None:
     """Database rows endpoint should clamp limit to 1-500 range."""
     mock_derp = _make_mock_derp()
-    mock_derp.db.execute = AsyncMock(
-        side_effect=[
-            [{"cnt": 0}],
-            [],
-        ]
+    mock_select = MagicMock()
+    mock_select.count = AsyncMock(return_value=0)
+    mock_select.limit.return_value.offset.return_value.execute = AsyncMock(
+        return_value=[]
     )
+    mock_derp.db.table.return_value.select.return_value = mock_select
 
     client = _create_app_with_mock_derp(temp_dir, mock_derp)
     response = client.get("/api/database/tables/users/rows?limit=9999")

@@ -16,4 +16,7 @@ src/derp/studio/ui/.next/
 src/derp/studio/ui/out/
 src/derp/studio/static/
 
+# Docs build output
+docs/_build/
+
 .DS_Store

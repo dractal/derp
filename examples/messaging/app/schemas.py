@@ -7,31 +7,26 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# ---------------------------------------------------------------------------
+# Auth
+# ---------------------------------------------------------------------------
 
-# Auth schemas
+
 class SignUpRequest(BaseModel):
-    """Request to register a new user."""
-
     email: str
     password: str = Field(min_length=8, max_length=128)
 
 
 class SignInRequest(BaseModel):
-    """Request to sign in."""
-
     email: str
     password: str
 
 
 class RefreshTokenRequest(BaseModel):
-    """Request to refresh access token."""
-
     refresh_token: str
 
 
 class TokenResponse(BaseModel):
-    """Token response."""
-
     access_token: str
     refresh_token: str
     token_type: str = "bearer"
@@ -40,8 +35,6 @@ class TokenResponse(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    """Response after authentication."""
-
     user: UserPublicResponse
     access_token: str
     refresh_token: str
@@ -51,89 +44,135 @@ class AuthResponse(BaseModel):
 
 
 class MessageResponse(BaseModel):
-    """Generic message response."""
-
     message: str
 
 
-# User schemas
-class UserPublicResponse(BaseModel):
-    """Public user information."""
+# ---------------------------------------------------------------------------
+# Users
+# ---------------------------------------------------------------------------
 
+
+class UserPublicResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     email: str
     username: str | None = None
+    display_name: str | None = None
     avatar_url: str | None = None
-    bio: str | None = None
 
 
 class UserProfileUpdateRequest(BaseModel):
-    """Request to update user profile."""
-
     username: str | None = Field(None, min_length=1, max_length=100)
-    bio: str | None = Field(None, max_length=500)
+    display_name: str | None = Field(None, min_length=1, max_length=255)
 
 
 class AvatarUploadResponse(BaseModel):
-    """Response after avatar upload."""
-
     avatar_url: str
 
 
-# Conversation schemas
-class StartConversationRequest(BaseModel):
-    """Request to start a conversation."""
+# ---------------------------------------------------------------------------
+# Workspaces
+# ---------------------------------------------------------------------------
 
+
+class CreateWorkspaceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    slug: str = Field(min_length=1, max_length=255, pattern=r"^[a-z0-9-]+$")
+
+
+class WorkspaceResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    slug: str
+    created_at: datetime
+
+
+class WorkspaceMemberResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: str
+    role: str
+    user: UserPublicResponse | None = None
+
+
+class InviteMemberRequest(BaseModel):
+    user_id: uuid.UUID
+    role: str = "member"
+
+
+# ---------------------------------------------------------------------------
+# Channels
+# ---------------------------------------------------------------------------
+
+
+class CreateChannelRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9_-]+$")
+    topic: str | None = Field(None, max_length=500)
+    is_private: bool = False
+
+
+class UpdateChannelRequest(BaseModel):
+    name: str | None = Field(
+        None, min_length=1, max_length=80, pattern=r"^[a-z0-9_-]+$"
+    )
+    topic: str | None = Field(None, max_length=500)
+
+
+class ChannelResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    workspace_id: uuid.UUID
+    name: str
+    topic: str | None = None
+    is_private: bool = False
+    is_dm: bool = False
+    member_count: int = 0
+    last_message_at: datetime | None = None
+    created_at: datetime
+
+
+class ChannelMemberResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: uuid.UUID
+    username: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
+    joined_at: datetime
+
+
+class StartDMRequest(BaseModel):
     user_id: uuid.UUID
 
 
-class ConversationResponse(BaseModel):
-    """Conversation with the other user."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    other_user: UserPublicResponse
-    last_message_at: datetime | None = None
-    created_at: datetime
-    unread_count: int = 0
-
-
-class ConversationDetailResponse(BaseModel):
-    """Conversation with messages."""
-
-    id: uuid.UUID
-    other_user: UserPublicResponse
-    messages: list[ChatMessageResponse]
-    created_at: datetime
-
-
-# Message schemas
-class ChatMessageResponse(BaseModel):
-    """Message response."""
-
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    sender_id: uuid.UUID
-    content: str
-    read_at: datetime | None = None
-    created_at: datetime
-    is_mine: bool = False
+# ---------------------------------------------------------------------------
+# Messages
+# ---------------------------------------------------------------------------
 
 
 class SendMessageRequest(BaseModel):
-    """Request to send a message."""
-
     content: str = Field(min_length=1, max_length=5000)
 
 
-class MarkReadResponse(BaseModel):
-    """Response after marking messages as read."""
+class EditMessageRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=5000)
 
-    marked_count: int
+
+class ChatMessageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    channel_id: uuid.UUID
+    sender_id: uuid.UUID
+    sender_name: str = ""
+    sender_avatar: str | None = None
+    content: str
+    created_at: datetime
+    edited_at: datetime | None = None
 
 
 # Fix forward reference

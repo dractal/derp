@@ -128,7 +128,7 @@ async def test_check_lag_computes_byte_difference() -> None:
 async def test_start_and_stop() -> None:
     router, _, _ = _make_router()
 
-    with patch.object(router, "_lag_check_loop", new_callable=AsyncMock) as mock_loop:
+    with patch.object(router, "_lag_check_loop", new_callable=AsyncMock):
         await router.start()
         assert router._check_task is not None
 

@@ -36,6 +36,7 @@ class TestJWT:
 
         token = create_access_token(jwt_config, user_id, session_id)
         payload = decode_token(jwt_config, token)
+        assert payload is not None
 
         assert payload.sub == str(user_id)
         assert payload.session_id == str(session_id)
@@ -50,6 +51,7 @@ class TestJWT:
 
         token = create_access_token(jwt_config, user_id, session_id, extra_claims=extra)
         payload = decode_token(jwt_config, token)
+        assert payload is not None
 
         assert payload.sub == str(user_id)
         assert payload.session_id == str(session_id)
@@ -126,6 +128,7 @@ class TestJWT:
 
         token = create_access_token(config, user_id, session_id)
         payload = decode_token(config, token)
+        assert payload is not None
 
         assert payload.iss == "test-issuer"
         assert payload.aud == "test-audience"

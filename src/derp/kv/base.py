@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from typing import Any
 
 
 class KVClient(abc.ABC):
@@ -129,3 +131,69 @@ class KVClient(abc.ABC):
                 return cached
 
         return await compute()
+
+    async def idempotent_execute(
+        self,
+        *,
+        key: str,
+        compute: Callable[[], Awaitable[Any]],
+        status_code: int = 200,
+        ttl: float = 86400,
+        key_prefix: str = "derp:idempotency",
+    ) -> tuple[Any, int, bool]:
+        """Execute idempotently: run ``compute`` once per key.
+
+        On the first call for a given key, ``compute`` is invoked and
+        the result is cached. Subsequent calls return the cached result
+        without re-invoking ``compute``. Uses :meth:`guarded_get` for
+        stampede protection.
+
+        Args:
+            key: Idempotency key (typically from a client header).
+            compute: Async callable producing a JSON-serializable result.
+            status_code: HTTP status code to cache alongside the body.
+            ttl: Cache TTL in seconds (default 24h).
+            key_prefix: KV key prefix.
+
+        Returns:
+            ``(body, status_code, is_replay)`` — *body* is the
+            deserialized result, *status_code* is the cached status,
+            and *is_replay* is ``True`` when the cached value was used.
+        """
+        cache_key = f"{key_prefix}:{key}".encode()
+        was_computed = False
+
+        async def _compute() -> bytes:
+            nonlocal was_computed
+            was_computed = True
+            result = await compute()
+            payload = json.dumps(
+                {"status_code": status_code, "body": result},
+                default=str,
+            )
+            return payload.encode()
+
+        raw = await self.guarded_get(cache_key, compute=_compute, ttl=ttl)
+        parsed = json.loads(raw)
+        return parsed["body"], parsed["status_code"], not was_computed
+
+    async def already_processed(
+        self,
+        *,
+        event_id: str,
+        ttl: float = 86400,
+        key_prefix: str = "derp:webhook",
+    ) -> bool:
+        """Check if an event has already been processed.
+
+        Uses :meth:`set_nx` to atomically mark the event. Returns
+        ``True`` if the event was already seen, ``False`` on first call.
+
+        Args:
+            event_id: Unique event identifier (e.g. Stripe event ID).
+            ttl: How long to remember the event (default 24h).
+            key_prefix: KV key prefix.
+        """
+        cache_key = f"{key_prefix}:{event_id}".encode()
+        acquired = await self.set_nx(cache_key, b"1", ttl=ttl)
+        return not acquired

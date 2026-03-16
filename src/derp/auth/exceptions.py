@@ -162,3 +162,47 @@ class ConfirmationTokenInvalidError(AuthError):
 
     def __init__(self, message: str = "Invalid confirmation token"):
         super().__init__(message, code="confirmation_token_invalid")
+
+
+class OrgNotFoundError(AuthError):
+    """Raised when an organization cannot be found."""
+
+    def __init__(self, message: str = "Organization not found"):
+        super().__init__(message, code="org_not_found")
+
+
+class OrgAlreadyExistsError(AuthError):
+    """Raised when an organization with the same slug already exists."""
+
+    def __init__(self, message: str = "Organization with this slug already exists"):
+        super().__init__(message, code="org_already_exists")
+
+
+class OrgMemberExistsError(AuthError):
+    """Raised when a user is already a member of the organization."""
+
+    def __init__(self, message: str = "User is already a member of this organization"):
+        super().__init__(message, code="org_member_exists")
+
+
+class OrgMemberNotFoundError(AuthError):
+    """Raised when a user is not a member of the organization."""
+
+    def __init__(self, message: str = "User is not a member of this organization"):
+        super().__init__(message, code="org_member_not_found")
+
+
+class OrgLastOwnerError(AuthError):
+    """Raised when attempting to remove or demote the last owner."""
+
+    def __init__(self, message: str = "Cannot remove or demote the last owner"):
+        super().__init__(message, code="org_last_owner")
+
+
+class NotOrgMemberError(AuthError):
+    """Raised when a user is not a member of the specified organization."""
+
+    def __init__(
+        self, message: str = "User is not a member of the specified organization"
+    ):
+        super().__init__(message, code="not_org_member")

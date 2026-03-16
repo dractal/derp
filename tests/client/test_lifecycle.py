@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -42,7 +41,7 @@ def _config(
 
 
 async def _create_bucket_with_retry(
-    client: DerpClient[Any], bucket: str, retries: int = 30
+    client: DerpClient, bucket: str, retries: int = 30
 ) -> None:
     for attempt in range(retries):
         try:
@@ -54,7 +53,7 @@ async def _create_bucket_with_retry(
             await asyncio.sleep(0.1)
 
 
-async def _delete_bucket_with_objects(client: DerpClient[Any], bucket: str) -> None:
+async def _delete_bucket_with_objects(client: DerpClient, bucket: str) -> None:
     keys = await client.storage.list_files(bucket=bucket)
     for key in keys:
         await client.storage.delete_file(bucket=bucket, key=key)
@@ -62,7 +61,7 @@ async def _delete_bucket_with_objects(client: DerpClient[Any], bucket: str) -> N
 
 
 def test_properties_require_active_session(client_schema_path: str) -> None:
-    client = DerpClient[Any](
+    client = DerpClient(
         _config(db_url="postgresql://unused", schema_path=client_schema_path)
     )
 
@@ -86,7 +85,7 @@ async def test_connect_enables_access_disconnect_disables_access(
     mock_db.disconnect = AsyncMock()
 
     with patch("derp.derp_client.DatabaseEngine", return_value=mock_db):
-        client = DerpClient[Any](
+        client = DerpClient(
             _config(db_url="postgresql://unused", schema_path=client_schema_path)
         )
         await client.connect()
@@ -107,7 +106,7 @@ async def test_optional_services_require_config(client_schema_path: str) -> None
     mock_db.disconnect = AsyncMock()
 
     with patch("derp.derp_client.DatabaseEngine", return_value=mock_db):
-        client = DerpClient[Any](
+        client = DerpClient(
             _config(db_url="postgresql://unused", schema_path=client_schema_path)
         )
         await client.connect()
@@ -137,7 +136,7 @@ async def test_payments_service_available_in_session(client_schema_path: str) ->
         patch("derp.derp_client.DatabaseEngine", return_value=mock_db),
         patch("derp.derp_client.PaymentsClient", return_value=mock_payments),
     ):
-        client = DerpClient[Any](
+        client = DerpClient(
             _config(
                 db_url="postgresql://unused",
                 schema_path=client_schema_path,
@@ -159,7 +158,7 @@ async def test_async_context_manager_scopes_access(client_schema_path: str) -> N
     mock_db.disconnect = AsyncMock()
 
     with patch("derp.derp_client.DatabaseEngine", return_value=mock_db):
-        client = DerpClient[Any](
+        client = DerpClient(
             _config(db_url="postgresql://unused", schema_path=client_schema_path)
         )
         async with client as entered:
@@ -174,7 +173,7 @@ async def test_async_context_manager_scopes_access(client_schema_path: str) -> N
 async def test_db_with_replica_executes_queries(
     clean_database: str, client_schema_path: str
 ) -> None:
-    client = DerpClient[Any](
+    client = DerpClient(
         _config(
             db_url=clean_database,
             schema_path=client_schema_path,
@@ -203,7 +202,7 @@ async def test_kv_service_available_in_session(
     client_schema_path: str,
 ) -> None:
     host, port = valkey_server
-    client = DerpClient[Any](
+    client = DerpClient(
         _config(
             db_url=clean_database,
             schema_path=client_schema_path,
@@ -234,7 +233,7 @@ async def test_storage_service_available_in_session(
     minio_server: dict[str, str],
     client_schema_path: str,
 ) -> None:
-    client = DerpClient[Any](
+    client = DerpClient(
         _config(
             db_url=clean_database,
             schema_path=client_schema_path,

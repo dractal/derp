@@ -73,10 +73,7 @@ def test_auth_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 db_url = "$TEST_DATABASE_URL"
 schema_path = "src/schema.py"
 
-[auth]
-user_table_name = "users"
-
-[auth.email]
+[email]
 site_name = "Test"
 site_url = "https://example.com"
 from_email = "noreply@example.com"
@@ -85,13 +82,14 @@ smtp_port = 587
 smtp_user = "smtp_user"
 smtp_password = "$SMTP_PASSWORD"
 
-[auth.jwt]
+[auth.native.jwt]
 secret = "$JWT_SECRET"
 """,
     )
 
     config = DerpConfig.load(config_path)
     assert config.auth is not None
+    assert config.auth.native is not None
 
 
 def test_payments_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

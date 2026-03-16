@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.routers import auth, conversations, users
+from app.routers import auth, channels, users, workspaces
 from derp import DerpClient, DerpConfig
 
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -33,15 +33,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="Messaging API",
-    description="Example messaging application using Derp",
+    title="Slack Clone API",
+    description="Example Slack clone built with Derp",
     version="0.1.0",
     lifespan=lifespan,
 )
 
 app.include_router(auth.router)
 app.include_router(users.router)
-app.include_router(conversations.router)
+app.include_router(workspaces.router)
+app.include_router(channels.router)
 
 # Serve static files
 static_dir = Path(__file__).parent.parent / "static"

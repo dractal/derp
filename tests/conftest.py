@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import tempfile
 from collections.abc import Generator
@@ -11,6 +12,18 @@ from pathlib import Path
 import asyncpg
 import pytest
 import testing.postgresql
+
+
+@dataclasses.dataclass
+class MockRequest:
+    """Minimal request object satisfying the AuthRequest protocol."""
+
+    headers: dict[str, str]
+
+
+def bearer_request(token: str) -> MockRequest:
+    """Create a mock request with a Bearer Authorization header."""
+    return MockRequest(headers={"Authorization": f"Bearer {token}"})
 
 # Store the original working directory at module load time
 _ORIGINAL_CWD = os.getcwd()

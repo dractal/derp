@@ -10,7 +10,7 @@ access_key_id = "$STORAGE_ACCESS_KEY_ID"
 secret_access_key = "$STORAGE_SECRET_ACCESS_KEY"
 
 [email]
-site_name = "Messaging App"
+site_name = "Slack Clone"
 site_url = "http://localhost:8000"
 from_email = "noreply@localhost"
 smtp_user = "localhost"
@@ -23,11 +23,11 @@ use_tls = false
 host = "localhost"
 port = 6379
 
-[auth]
+[auth.native]
 enable_confirmation = false
 enable_magic_link = true
 
-[auth.jwt]
+[auth.native.jwt]
 secret = "$JWT_SECRET"
 access_token_expire_minutes = 15
 refresh_token_expire_days = 7

@@ -16,19 +16,14 @@ from derp.config import StorageConfig
 class StorageClient:
     """S3-compatible storage client for uploading and fetching files.
 
-    Example:
+    Example::
+
         config = StorageConfig(
             endpoint_url="https://s3.amazonaws.com",
             access_key_id="key",
             secret_access_key="secret",
         )
         storage = StorageClient(config)
-
-        async with storage:
-            await storage.upload_file("local.txt", "remote.txt")
-            content = await storage.fetch_file("remote.txt")
-
-        # Or manual lifecycle
         await storage.connect()
         await storage.upload_file("local.txt", "remote.txt")
         await storage.disconnect()
@@ -136,7 +131,8 @@ class StorageClient:
             metadata: Metadata to attach to the object.
             extra_args: Additional arguments to pass to put_object.
 
-        Example:
+        Example::
+
             await storage.upload_file(
                 bucket="my-bucket",
                 key="remote/file.txt",

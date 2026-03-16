@@ -309,10 +309,7 @@ def create_app(
                 if table.schema_name != "public"
                 else f'"{table.name}"'
             )
-            count_rows = await derp.db.execute(
-                f"SELECT count(*) AS cnt FROM {qualified}"  # noqa: S608
-            )
-            row_count = count_rows[0]["cnt"] if count_rows else 0
+            row_count = await derp.db.table(qualified).select("*").count()
             tables.append(
                 {
                     "name": table.name,
@@ -341,11 +338,13 @@ def create_app(
         offset = max(offset, 0)
 
         qualified = f'"{schema}"."{table}"' if schema != "public" else f'"{table}"'
-        count_rows = await derp.db.execute(f"SELECT count(*) AS cnt FROM {qualified}")
-        total = count_rows[0]["cnt"] if count_rows else 0
-        rows = await derp.db.execute(
-            f"SELECT * FROM {qualified} LIMIT $1 OFFSET $2",
-            [limit, offset],
+        total = await derp.db.table(qualified).select("*").count()
+        rows = (
+            await derp.db.table(qualified)
+            .select("*")
+            .limit(limit)
+            .offset(offset)
+            .execute()
         )
         return {"rows": rows, "total": total, "limit": limit, "offset": offset}
 
@@ -386,22 +385,16 @@ def create_app(
 
         deleted = 0
         for row_key in row_keys:
-            conditions = []
-            params = []
-            for i, pk_col in enumerate(pk_columns, 1):
+            q = derp.db.table(qualified).delete()
+            for pk_col in pk_columns:
                 if pk_col not in row_key:
                     raise HTTPException(
                         status_code=400,
                         detail=f"Missing primary key column {pk_col!r}",
                     )
-                conditions.append(f'"{pk_col}" = ${i}')
-                params.append(row_key[pk_col])
-            where = " AND ".join(conditions)
-            result = await derp.db.execute(
-                f"DELETE FROM {qualified} WHERE {where}",  # noqa: S608
-                params,
-            )
-            deleted += len(result) if result else 0
+                q = q.eq(pk_col, row_key[pk_col])
+            result = await q.returning("*").execute()
+            deleted += len(result)
 
         return {"deleted": deleted}
 
@@ -444,29 +437,22 @@ def create_app(
 
         col_types = {c.name: c.type for c in table_snapshot.columns.values()}
 
-        set_clauses = []
-        params: list = []
-        for i, (col, val) in enumerate(values.items(), 1):
-            set_clauses.append(f'"{col}" = ${i}')
-            params.append(_coerce_value(val, col_types.get(col, "text")))
+        coerced = {
+            col: _coerce_value(val, col_types.get(col, "text"))
+            for col, val in values.items()
+        }
 
-        conditions = []
+        q = derp.db.table(qualified).update(coerced)
         for pk_col in pk_columns:
             if pk_col not in key:
                 raise HTTPException(
                     status_code=400,
                     detail=f"Missing primary key column {pk_col!r}",
                 )
-            params.append(key[pk_col])
-            conditions.append(f'"{pk_col}" = ${len(params)}')
+            q = q.eq(pk_col, key[pk_col])
 
-        set_sql = ", ".join(set_clauses)
-        where_sql = " AND ".join(conditions)
-        result = await derp.db.execute(
-            f"UPDATE {qualified} SET {set_sql} WHERE {where_sql}",  # noqa: S608
-            params,
-        )
-        updated = len(result) if result else 0
+        result = await q.returning("*").execute()
+        updated = len(result)
 
         return {"updated": updated}
 
@@ -533,15 +519,9 @@ def create_app(
         """List auth users."""
         if derp._auth is None:
             raise HTTPException(status_code=400, detail="Auth is not configured.")
-        table = derp.auth._user_table.get_table_name()
         limit = min(max(limit, 1), 500)
-        rows = await derp.db.execute(
-            f"SELECT id, email, provider, is_active, email_confirmed_at,"
-            f" last_sign_in_at, created_at"
-            f' FROM "{table}" ORDER BY created_at DESC LIMIT $1',
-            [limit],
-        )
-        return {"users": rows}
+        users = await derp.auth.list_users(limit=limit)
+        return {"users": users}
 
     @app.get("/api/auth/sessions")
     async def list_auth_sessions(
@@ -551,16 +531,9 @@ def create_app(
         """List auth sessions."""
         if derp._auth is None:
             raise HTTPException(status_code=400, detail="Auth is not configured.")
-        table = derp.auth._auth_session_table.get_table_name()
         limit = min(max(limit, 1), 500)
-        rows = await derp.db.execute(
-            f"SELECT DISTINCT ON (session_id)"
-            f" session_id, user_id, user_agent, ip_address, created_at, not_after"
-            f' FROM "{table}" WHERE revoked = FALSE'
-            f" ORDER BY session_id, created_at DESC LIMIT $1",
-            [limit],
-        )
-        return {"sessions": rows}
+        sessions = await derp.auth.list_sessions(limit=limit)
+        return {"sessions": sessions}
 
     # --- Payments ---
 

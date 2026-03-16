@@ -88,7 +88,7 @@ def version() -> None:
     try:
         from importlib.metadata import version as get_version
 
-        ver = get_version("derp")
+        ver = get_version("derp-py")
     except Exception:
         ver = "unknown"
 

@@ -185,11 +185,15 @@ def discover_tables(
     tables = load_tables(schema_path)
 
     if include_auth:
-        from derp.auth.models import AuthSession, AuthUser
+        from derp.auth.models import (
+            AuthOrganization,
+            AuthOrgMember,
+            AuthSession,
+            AuthUser,
+        )
 
-        if not any(issubclass(t, AuthUser) for t in tables):
-            tables.append(AuthUser)
-        if not any(issubclass(t, AuthSession) for t in tables):
-            tables.append(AuthSession)
+        for auth_table in (AuthUser, AuthSession, AuthOrganization, AuthOrgMember):
+            if not any(issubclass(t, auth_table) for t in tables):
+                tables.append(auth_table)
 
     return _deduplicate_tables(tables)
