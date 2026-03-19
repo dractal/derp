@@ -21,6 +21,7 @@ from derp.cli.commands.generate import generate
 from derp.cli.commands.migrate import migrate
 from derp.cli.commands.pull import pull
 from derp.cli.commands.push import push
+from derp.cli.commands.rollback import rollback
 from derp.cli.commands.status import status
 from derp.cli.commands.studio import studio, studio_dev
 from derp.config import CONFIG_FILE, create_default_config
@@ -42,6 +43,7 @@ app.command()(pull)
 app.command()(status)
 app.command()(check)
 app.command()(drop)
+app.command()(rollback)
 app.command()(studio)
 app.command()(studio_dev)
 

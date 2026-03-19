@@ -291,3 +291,18 @@ def get_migration_sql(migration_folder: Path) -> str | None:
     if sql_path.exists():
         return sql_path.read_text()
     return None
+
+
+def get_migration_down_sql(migration_folder: Path) -> str | None:
+    """Read the rollback SQL from a migration folder.
+
+    Args:
+        migration_folder: Path to migration folder
+
+    Returns:
+        SQL content or None if not found
+    """
+    sql_path = migration_folder / "down.sql"
+    if sql_path.exists():
+        return sql_path.read_text()
+    return None

@@ -32,6 +32,7 @@ from derp.orm.migrations.safety import (
     has_high_risk_operations,
 )
 from derp.orm.migrations.snapshot.differ import SnapshotDiffer
+from derp.orm.migrations.snapshot.normalize import get_normalizer
 from derp.orm.migrations.snapshot.serializer import serialize_schema
 
 
@@ -98,16 +99,19 @@ def push(
             # Serialize desired schema
             desired_snapshot = serialize_schema(tables, schema="public")
 
+            # Normalize both snapshots for comparison
+            normalizer = get_normalizer(desired_snapshot.dialect)
+            db_norm = normalizer.normalize(db_snapshot)
+            desired_norm = normalizer.normalize(desired_snapshot)
+
             # Prompt for potential column renames before diffing
-            rename_decisions = create_rename_resolver(
-                db_snapshot, desired_snapshot, force
-            )
+            rename_decisions = create_rename_resolver(db_norm, desired_norm, force)
             rename_callback = (
                 make_rename_callback(rename_decisions) if rename_decisions else None
             )
 
             # Diff
-            differ = SnapshotDiffer(db_snapshot, desired_snapshot, rename_callback)
+            differ = SnapshotDiffer(db_norm, desired_norm, rename_callback)
             statements = differ.diff()
 
             if not statements:

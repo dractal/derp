@@ -40,6 +40,7 @@ from derp.orm.migrations.safety import (
 )
 from derp.orm.migrations.snapshot.differ import SnapshotDiffer
 from derp.orm.migrations.snapshot.models import ColumnSnapshot, SchemaSnapshot
+from derp.orm.migrations.snapshot.normalize import get_normalizer
 from derp.orm.migrations.snapshot.serializer import serialize_schema
 
 
@@ -215,14 +216,19 @@ def generate(
         prev_id=prev_snapshot.id if prev_snapshot.id else None,
     )
 
+    # Normalize both snapshots for comparison (save originals for disk)
+    normalizer = get_normalizer("postgresql")
+    prev_norm = normalizer.normalize(prev_snapshot)
+    current_norm = normalizer.normalize(current_snapshot)
+
     # Prompt for potential column renames before diffing
-    rename_decisions = create_rename_resolver(prev_snapshot, current_snapshot, force)
+    rename_decisions = create_rename_resolver(prev_norm, current_norm, force)
     rename_callback = (
         make_rename_callback(rename_decisions) if rename_decisions else None
     )
 
     # Diff snapshots
-    differ = SnapshotDiffer(prev_snapshot, current_snapshot, rename_callback)
+    differ = SnapshotDiffer(prev_norm, current_norm, rename_callback)
     statements = differ.diff()
 
     if not statements:
@@ -244,15 +250,31 @@ def generate(
     # Generate SQL
     sql = ConvertorRegistry.convert_all(statements)
 
+    # Generate reverse (down) SQL by diffing in the opposite direction
+    reverse_differ = SnapshotDiffer(current_norm, prev_norm, rename_callback)
+    reverse_statements = reverse_differ.diff()
+    down_sql = (
+        ConvertorRegistry.convert_all(reverse_statements) if reverse_statements else ""
+    )
+
     # Add header
+    generated_at = datetime.now(UTC).isoformat()
     header = f"""\
 -- Migration: {name}
 -- Version: {next_version}
--- Generated at: {datetime.now(UTC).isoformat()}
+-- Generated at: {generated_at}
 -- Previous: {prev_snapshot.id or "none"}
 
 """
     full_sql = header + sql
+
+    down_header = f"""\
+-- Rollback: {name}
+-- Version: {next_version}
+-- Generated at: {generated_at}
+
+"""
+    full_down_sql = down_header + down_sql
 
     # Save files
     migrations_dir.mkdir(parents=True, exist_ok=True)
@@ -265,6 +287,7 @@ def generate(
         current_snapshot.model_dump(mode="json", by_alias=True),
     )
     sql_path = save_migration_sql(folder_path, full_sql)
+    save_migration_sql(folder_path, full_down_sql, filename="down.sql")
 
     # Update journal
     journal.add_entry(version=next_version, tag=name)
@@ -273,6 +296,7 @@ def generate(
     typer.echo("")
     typer.echo(f"Created migration: {folder_path.name}/")
     typer.echo(f"  - {sql_path.name}")
+    typer.echo("  - down.sql")
     typer.echo("  - snapshot.json")
     typer.echo("")
     typer.echo("Review the migration and run 'derp migrate' to apply.")

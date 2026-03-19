@@ -11,6 +11,7 @@ from derp.orm.loader import discover_tables
 from derp.orm.migrations.journal import load_journal, load_latest_snapshot
 from derp.orm.migrations.snapshot.differ import SnapshotDiffer
 from derp.orm.migrations.snapshot.models import SchemaSnapshot
+from derp.orm.migrations.snapshot.normalize import get_normalizer
 from derp.orm.migrations.snapshot.serializer import serialize_schema
 from derp.orm.migrations.statements.types import (
     AddColumnStatement,
@@ -92,8 +93,13 @@ def check() -> None:
     # Serialize current schema
     current_snapshot = serialize_schema(tables, schema="public")
 
+    # Normalize for comparison
+    normalizer = get_normalizer("postgresql")
+    prev_norm = normalizer.normalize(prev_snapshot)
+    current_norm = normalizer.normalize(current_snapshot)
+
     # Diff
-    differ = SnapshotDiffer(prev_snapshot, current_snapshot)
+    differ = SnapshotDiffer(prev_norm, current_norm)
     statements = differ.diff()
 
     if not statements:
