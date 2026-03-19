@@ -6,21 +6,7 @@
       "idx": 0,
       "version": "0000",
       "tag": "migration",
-      "when": 1770672478,
-      "breakpoints": false
-    },
-    {
-      "idx": 1,
-      "version": "0001",
-      "tag": "migration",
-      "when": 1771709351,
-      "breakpoints": false
-    },
-    {
-      "idx": 2,
-      "version": "0002",
-      "tag": "migration",
-      "when": 1773512772,
+      "when": 1773903937,
       "breakpoints": false
     }
   ]
