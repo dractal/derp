@@ -88,9 +88,7 @@ class GoogleProvider(BaseOAuthProvider[GoogleOAuthConfig]):
             )
 
             if response.status_code != 200:
-                logger.error(
-                    "Google get user info failed: %s", response.text
-                )
+                logger.error("Google get user info failed: %s", response.text)
                 return None
 
             user_data = response.json()

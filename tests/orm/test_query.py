@@ -1091,23 +1091,17 @@ async def test_execute_returns_tuples_for_columns():
     mock_conn = AsyncMock()
     mock_record_1 = MagicMock()
     mock_record_1.__iter__ = MagicMock(return_value=iter([1, "Alice"]))
-    mock_record_1.items = MagicMock(
-        return_value=[("id", 1), ("name", "Alice")]
-    )
+    mock_record_1.items = MagicMock(return_value=[("id", 1), ("name", "Alice")])
     mock_record_1.keys = MagicMock(return_value=["id", "name"])
     mock_record_1.__getitem__ = lambda self, k: {"id": 1, "name": "Alice"}[k]
 
     mock_record_2 = MagicMock()
     mock_record_2.__iter__ = MagicMock(return_value=iter([2, "Bob"]))
-    mock_record_2.items = MagicMock(
-        return_value=[("id", 2), ("name", "Bob")]
-    )
+    mock_record_2.items = MagicMock(return_value=[("id", 2), ("name", "Bob")])
     mock_record_2.keys = MagicMock(return_value=["id", "name"])
     mock_record_2.__getitem__ = lambda self, k: {"id": 2, "name": "Bob"}[k]
 
-    mock_conn.fetch = AsyncMock(
-        return_value=[mock_record_1, mock_record_2]
-    )
+    mock_conn.fetch = AsyncMock(return_value=[mock_record_1, mock_record_2])
 
     query = SelectQuery[Any](mock_conn, (User.id, User.name))
     query.from_(User)

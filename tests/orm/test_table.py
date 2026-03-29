@@ -249,8 +249,7 @@ def test_generated_column_ddl():
     """Test DDL generation for generated columns."""
     ddl = OrderLine.to_ddl()
     assert (
-        "amount INTEGER NOT NULL"
-        " GENERATED ALWAYS AS (price * quantity) STORED" in ddl
+        "amount INTEGER NOT NULL GENERATED ALWAYS AS (price * quantity) STORED" in ddl
     )
 
 

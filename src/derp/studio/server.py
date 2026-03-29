@@ -548,14 +548,20 @@ def create_app(
         results = []
         for org in orgs:
             members = await derp.auth.list_org_members(org.id)
-            results.append({
-                "id": org.id,
-                "name": org.name,
-                "slug": org.slug,
-                "member_count": len(members),
-                "created_at": org.created_at.isoformat() if org.created_at else None,
-                "updated_at": org.updated_at.isoformat() if org.updated_at else None,
-            })
+            results.append(
+                {
+                    "id": org.id,
+                    "name": org.name,
+                    "slug": org.slug,
+                    "member_count": len(members),
+                    "created_at": org.created_at.isoformat()
+                    if org.created_at
+                    else None,
+                    "updated_at": org.updated_at.isoformat()
+                    if org.updated_at
+                    else None,
+                }
+            )
         return {"organizations": results}
 
     # --- Payments ---

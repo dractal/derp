@@ -208,7 +208,7 @@ class TestGitHubProvider:
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
             tokens = await provider.exchange_code("auth-code")
-        
+
         assert tokens is not None
         assert tokens.access_token == "access-token-123"
         assert tokens.scope == "user:email"
@@ -257,7 +257,7 @@ class TestGitHubProvider:
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
             user_info = await provider.get_user_info("access-token")
-        
+
         assert user_info is not None
         assert user_info.id == "12345"
         assert user_info.email == "user@github.com"
@@ -293,7 +293,7 @@ class TestGitHubProvider:
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
             user_info = await provider.get_user_info("access-token")
-        
+
         assert user_info is not None
         assert user_info.email == "primary@example.com"
         assert user_info.email_verified is True

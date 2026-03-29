@@ -607,9 +607,7 @@ class SelectQuery[T](_WhereShorthandMixin):
 
     def _is_single_column(self) -> bool:
         """True when selecting exactly one Column descriptor."""
-        return len(self._columns) == 1 and isinstance(
-            self._columns[0], Column
-        )
+        return len(self._columns) == 1 and isinstance(self._columns[0], Column)
 
     def _is_multi_column(self) -> bool:
         """True when selecting multiple Column descriptors."""
@@ -625,9 +623,7 @@ class SelectQuery[T](_WhereShorthandMixin):
                 model_class._from_row(row) for row in rows_data
             ]
         if self._is_single_column():
-            return [
-                next(iter(row.values())) for row in rows_data
-            ]
+            return [next(iter(row.values())) for row in rows_data]
         if self._is_multi_column():
             return [  # type: ignore[return-value]
                 tuple(row.values()) for row in rows_data

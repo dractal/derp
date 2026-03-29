@@ -145,11 +145,7 @@ async def _create_confirmed_user(
             TemporaryPassword=password,
             MessageAction="SUPPRESS",
         )
-        sub = next(
-            a["Value"]
-            for a in resp["User"]["Attributes"]
-            if a["Name"] == "sub"
-        )
+        sub = next(a["Value"] for a in resp["User"]["Attributes"] if a["Name"] == "sub")
         await admin.admin_set_user_password(
             UserPoolId=pool_id,
             Username=email,
@@ -164,9 +160,7 @@ async def _create_confirmed_user(
 
 @pytest.fixture
 def rsa_keypair():
-    private_key = rsa.generate_private_key(
-        public_exponent=65537, key_size=2048
-    )
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     return private_key, private_key.public_key()
 
 
@@ -215,10 +209,7 @@ class TestAuthenticate:
         payload = {
             "sub": "user-123",
             "jti": "session-456",
-            "iss": (
-                "https://cognito-idp.us-east-1.amazonaws.com/"
-                "us-east-1_TestPool"
-            ),
+            "iss": ("https://cognito-idp.us-east-1.amazonaws.com/us-east-1_TestPool"),
             "client_id": "test-client-id",
             "token_use": "access",
             "iat": int(now.timestamp()),
@@ -239,17 +230,11 @@ class TestAuthenticate:
         mock_resp.json.return_value = jwks_json
         mock_resp.raise_for_status = MagicMock()
 
-        with patch(
-            "derp.auth.cognito_client.httpx.AsyncClient"
-        ) as mock_http:
+        with patch("derp.auth.cognito_client.httpx.AsyncClient") as mock_http:
             mock_http.return_value.__aenter__ = AsyncMock(
-                return_value=MagicMock(
-                    get=AsyncMock(return_value=mock_resp)
-                )
+                return_value=MagicMock(get=AsyncMock(return_value=mock_resp))
             )
-            mock_http.return_value.__aexit__ = AsyncMock(
-                return_value=False
-            )
+            mock_http.return_value.__aexit__ = AsyncMock(return_value=False)
             session = await jwt_client.authenticate(request)
 
         assert session is not None
@@ -324,9 +309,7 @@ class TestSignUp:
     async def test_success(self, cognito_env):
         client, _, _ = cognito_env
 
-        result = await client.sign_up(
-            email="new@example.com", password=TEST_PASSWORD
-        )
+        result = await client.sign_up(email="new@example.com", password=TEST_PASSWORD)
         assert result is not None
         assert result.user.email == "new@example.com"
         assert result.tokens.access_token
@@ -336,9 +319,7 @@ class TestSignUp:
         await _create_confirmed_user(cognito_env)
 
         with pytest.raises(Exception):
-            await client.sign_up(
-                email=TEST_EMAIL, password=TEST_PASSWORD
-            )
+            await client.sign_up(email=TEST_EMAIL, password=TEST_PASSWORD)
 
 
 class TestSignIn:
@@ -346,9 +327,7 @@ class TestSignIn:
         client, _, _ = cognito_env
         await _create_confirmed_user(cognito_env)
 
-        result = await client.sign_in_with_password(
-            TEST_EMAIL, TEST_PASSWORD
-        )
+        result = await client.sign_in_with_password(TEST_EMAIL, TEST_PASSWORD)
         assert result is not None
         assert result.user.email == TEST_EMAIL
         assert result.tokens.access_token
@@ -359,9 +338,7 @@ class TestSignIn:
         await _create_confirmed_user(cognito_env)
 
         with pytest.raises(Exception):
-            await client.sign_in_with_password(
-                TEST_EMAIL, "WrongPass123!"
-            )
+            await client.sign_in_with_password(TEST_EMAIL, "WrongPass123!")
 
 
 # ── Token Refresh (moto) ─────────────────────────────────────────
@@ -372,9 +349,7 @@ class TestRefreshToken:
         client, _, _ = cognito_env
         await _create_confirmed_user(cognito_env)
 
-        sign_in = await client.sign_in_with_password(
-            TEST_EMAIL, TEST_PASSWORD
-        )
+        sign_in = await client.sign_in_with_password(TEST_EMAIL, TEST_PASSWORD)
         assert sign_in is not None
 
         tokens = await client.refresh_token(

@@ -110,16 +110,8 @@ def Field(
         default=default,
         generated=generated,
         foreign_key=foreign_key,
-        on_delete=(
-            FK(on_delete.upper())
-            if isinstance(on_delete, str)
-            else on_delete
-        ),
-        on_update=(
-            FK(on_update.upper())
-            if isinstance(on_update, str)
-            else on_update
-        ),
+        on_delete=(FK(on_delete.upper()) if isinstance(on_delete, str) else on_delete),
+        on_update=(FK(on_update.upper()) if isinstance(on_update, str) else on_update),
     )
 
 

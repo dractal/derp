@@ -220,5 +220,3 @@ class CognitoOrgMember(Table, table="org_members"):
             Index(cls.org_id),
             Index(cls.user_id),
         ]
-
-

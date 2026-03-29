@@ -92,9 +92,7 @@ class GitHubProvider(BaseOAuthProvider[GitHubOAuthConfig]):
             response = await client.get(self.USERINFO_URL, headers=headers)
 
             if response.status_code != 200:
-                logger.error(
-                    "GitHub get user info failed: %s", response.text
-                )
+                logger.error("GitHub get user info failed: %s", response.text)
                 return None
 
             user_data = response.json()

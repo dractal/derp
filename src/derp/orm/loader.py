@@ -203,7 +203,10 @@ def discover_tables(
             )
 
             auth_tables = [
-                AuthUser, AuthSession, AuthOrganization, AuthOrgMember,
+                AuthUser,
+                AuthSession,
+                AuthOrganization,
+                AuthOrgMember,
             ]
 
         elif cognito is not None:

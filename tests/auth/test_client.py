@@ -126,7 +126,7 @@ class TestSignIn:
         sign_in_result = await derp.auth.sign_in_with_password(
             email="test@example.com", password="password123"
         )
-        
+
         assert sign_in_result is not None
         assert sign_in_result.user.email == "test@example.com"
         assert sign_in_result.tokens.access_token is not None

@@ -38,59 +38,110 @@ class _QueryBase:
 
     @overload
     def select[A, B](
-        self, c1: Column[A], c2: Column[B], /,
+        self,
+        c1: Column[A],
+        c2: Column[B],
+        /,
     ) -> SelectQuery[tuple[A, B]]: ...
 
     @overload
     def select[A, B, C](
-        self, c1: Column[A], c2: Column[B], c3: Column[C], /,
+        self,
+        c1: Column[A],
+        c2: Column[B],
+        c3: Column[C],
+        /,
     ) -> SelectQuery[tuple[A, B, C]]: ...
 
     @overload
     def select[A, B, C, D](
-        self, c1: Column[A], c2: Column[B], c3: Column[C],
-        c4: Column[D], /,
+        self,
+        c1: Column[A],
+        c2: Column[B],
+        c3: Column[C],
+        c4: Column[D],
+        /,
     ) -> SelectQuery[tuple[A, B, C, D]]: ...
 
     @overload
     def select[A, B, C, D, E](
-        self, c1: Column[A], c2: Column[B], c3: Column[C],
-        c4: Column[D], c5: Column[E], /,
+        self,
+        c1: Column[A],
+        c2: Column[B],
+        c3: Column[C],
+        c4: Column[D],
+        c5: Column[E],
+        /,
     ) -> SelectQuery[tuple[A, B, C, D, E]]: ...
 
     @overload
     def select[A, B, C, D, E, F](
-        self, c1: Column[A], c2: Column[B], c3: Column[C],
-        c4: Column[D], c5: Column[E], c6: Column[F], /,
+        self,
+        c1: Column[A],
+        c2: Column[B],
+        c3: Column[C],
+        c4: Column[D],
+        c5: Column[E],
+        c6: Column[F],
+        /,
     ) -> SelectQuery[tuple[A, B, C, D, E, F]]: ...
 
     @overload
     def select[A, B, C, D, E, F, G](
-        self, c1: Column[A], c2: Column[B], c3: Column[C],
-        c4: Column[D], c5: Column[E], c6: Column[F],
-        c7: Column[G], /,
+        self,
+        c1: Column[A],
+        c2: Column[B],
+        c3: Column[C],
+        c4: Column[D],
+        c5: Column[E],
+        c6: Column[F],
+        c7: Column[G],
+        /,
     ) -> SelectQuery[tuple[A, B, C, D, E, F, G]]: ...
 
     @overload
     def select[A, B, C, D, E, F, G, H](
-        self, c1: Column[A], c2: Column[B], c3: Column[C],
-        c4: Column[D], c5: Column[E], c6: Column[F],
-        c7: Column[G], c8: Column[H], /,
+        self,
+        c1: Column[A],
+        c2: Column[B],
+        c3: Column[C],
+        c4: Column[D],
+        c5: Column[E],
+        c6: Column[F],
+        c7: Column[G],
+        c8: Column[H],
+        /,
     ) -> SelectQuery[tuple[A, B, C, D, E, F, G, H]]: ...
 
     @overload
     def select[A, B, C, D, E, F, G, H, I](
-        self, c1: Column[A], c2: Column[B], c3: Column[C],
-        c4: Column[D], c5: Column[E], c6: Column[F],
-        c7: Column[G], c8: Column[H], c9: Column[I], /,
+        self,
+        c1: Column[A],
+        c2: Column[B],
+        c3: Column[C],
+        c4: Column[D],
+        c5: Column[E],
+        c6: Column[F],
+        c7: Column[G],
+        c8: Column[H],
+        c9: Column[I],
+        /,
     ) -> SelectQuery[tuple[A, B, C, D, E, F, G, H, I]]: ...
 
     @overload
     def select[A, B, C, D, E, F, G, H, I, J](
-        self, c1: Column[A], c2: Column[B], c3: Column[C],
-        c4: Column[D], c5: Column[E], c6: Column[F],
-        c7: Column[G], c8: Column[H], c9: Column[I],
-        c10: Column[J], /,
+        self,
+        c1: Column[A],
+        c2: Column[B],
+        c3: Column[C],
+        c4: Column[D],
+        c5: Column[E],
+        c6: Column[F],
+        c7: Column[G],
+        c8: Column[H],
+        c9: Column[I],
+        c10: Column[J],
+        /,
     ) -> SelectQuery[tuple[A, B, C, D, E, F, G, H, I, J]]: ...
 
     @overload
@@ -123,21 +174,24 @@ class _QueryBase:
     def insert[T: Table](self, table: type[T]) -> InsertQuery[T]:
         """Start an INSERT query."""
         return InsertQuery(
-            self._pool, table,
+            self._pool,
+            table,
             router=getattr(self, "_router", None),
         )
 
     def update[T: Table](self, table: type[T]) -> UpdateQuery[T]:
         """Start an UPDATE query."""
         return UpdateQuery(
-            self._pool, table,
+            self._pool,
+            table,
             router=getattr(self, "_router", None),
         )
 
     def delete[T: Table](self, table: type[T]) -> DeleteQuery[T]:
         """Start a DELETE query."""
         return DeleteQuery(
-            self._pool, table,
+            self._pool,
+            table,
             router=getattr(self, "_router", None),
         )
 
@@ -277,9 +331,7 @@ class DatabaseEngine(_QueryBase):
     def table(self, table_name: Table | str) -> TableRef:
         """Start a non ORM query from a table name or Table class."""
         name = (
-            table_name
-            if isinstance(table_name, str)
-            else table_name.get_table_name()
+            table_name if isinstance(table_name, str) else table_name.get_table_name()
         )
         return TableRef(
             name,
