@@ -29,20 +29,22 @@ Sign Up
 
 .. code-block:: python
 
-   user, tokens = await derp.auth.sign_up(
+   result = await derp.auth.sign_up(
        email="alice@example.com",
        password="s3cur3passw0rd",
+       request=request,  # auto-extracts user_agent and ip_address
        confirmation_url="https://app.example.com/confirm",
    )
-   # tokens.access_token, tokens.refresh_token
+   # result.user, result.tokens.access_token
 
 Sign In
 -------
 
 .. code-block:: python
 
-   user, tokens = await derp.auth.sign_in_with_password(
-       "alice@example.com", "s3cur3passw0rd"
+   result = await derp.auth.sign_in_with_password(
+       "alice@example.com", "s3cur3passw0rd",
+       request=request,  # optional — auto-extracts user_agent/ip
    )
 
 Refresh Tokens
@@ -149,6 +151,35 @@ Protecting Routes
    async def list_orders(session: SessionInfo = Depends(get_current_user)):
        ...
 
+Cognito Backend
+---------------
+
+.. code-block:: toml
+
+   [auth.cognito]
+   user_pool_id = "$COGNITO_USER_POOL_ID"
+   client_id = "$COGNITO_CLIENT_ID"
+   client_secret = "$COGNITO_CLIENT_SECRET"
+   region = "us-east-1"
+   # Optional — required for OAuth via hosted UI:
+   domain = "myapp.auth.us-east-1.amazoncognito.com"
+   redirect_uri = "https://app.example.com/auth/callback"
+
+Cognito uses the same interface as native auth. Organizations are
+database-backed (no FK to users since Cognito manages users externally).
+
+**Org context** uses a signed ``X-Org-Context`` header for networkless
+authentication:
+
+.. code-block:: python
+
+   # Switch org — returns signed context in tokens.access_token
+   tokens = await derp.auth.set_active_org(
+       session_id=session.user_id, org_id=org.id
+   )
+   # Frontend sends: X-Org-Context: <tokens.access_token>
+   # authenticate() verifies the signature locally (no DB call)
+
 Clerk Backend
 -------------
 
@@ -159,6 +190,6 @@ Same interface, different config:
    [auth.clerk]
    secret_key = "$CLERK_SECRET_KEY"
 
-Only one backend (``[auth.native]`` or ``[auth.clerk]``) can be active
-at a time. The ``derp.auth`` property returns the configured backend
-transparently.
+Only one backend (``[auth.native]``, ``[auth.cognito]``, or
+``[auth.clerk]``) can be active at a time. The ``derp.auth`` property
+returns the configured backend transparently.

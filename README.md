@@ -25,14 +25,14 @@ Requires Python 3.12+.
 Define a table:
 
 ```python
-from derp.orm import Table, Field, UUID, Varchar, Integer, Boolean, TimestampTZ
+from derp.orm import Table, Field, Fn, UUID, Varchar, Integer, Boolean, TimestampTZ
 
 class Product(Table, table="products"):
-    id: UUID = Field(primary=True, default="gen_random_uuid()")
+    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
     name: Varchar[255] = Field()
     price_cents: Integer = Field()
-    is_active: Boolean = Field(default="true")
-    created_at: TimestampTZ = Field(default="now()")
+    is_active: Boolean = Field(default=True)
+    created_at: TimestampTZ = Field(default=Fn.NOW)
 ```
 
 Generate and apply a migration:

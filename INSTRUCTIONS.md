@@ -55,27 +55,27 @@ Use `schema_path = "app/*"` to load tables from all files in a directory.
 from __future__ import annotations
 
 from derp.orm import (
-    Table, Field, Nullable, UUID, Varchar, Text, Integer,
-    Boolean, TimestampTZ,
+    Table, Field, Fn, FK, Nullable, UUID, Varchar, Text,
+    Integer, Boolean, TimestampTZ,
 )
 
 
 class User(Table, table="users"):
-    id: UUID = Field(primary=True, default="gen_random_uuid()")
+    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
     name: Varchar[255] = Field()
     email: Varchar[255] = Field(unique=True)
     age: Nullable[Integer] = Field()
-    is_active: Boolean = Field(default="true")
-    created_at: TimestampTZ = Field(default="now()")
+    is_active: Boolean = Field(default=True)
+    created_at: TimestampTZ = Field(default=Fn.NOW)
 
 
 class Post(Table, table="posts"):
-    id: UUID = Field(primary=True, default="gen_random_uuid()")
-    author_id: UUID = Field(foreign_key=User.id, on_delete="cascade")
+    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    author_id: UUID = Field(foreign_key=User.id, on_delete=FK.CASCADE)
     title: Varchar[255] = Field()
     content: Text = Field()
-    published: Boolean = Field(default="false")
-    created_at: TimestampTZ = Field(default="now()")
+    published: Boolean = Field(default=False)
+    created_at: TimestampTZ = Field(default=Fn.NOW)
 ```
 
 ### Key rules
@@ -83,8 +83,8 @@ class Post(Table, table="posts"):
 1. **Always use `from __future__ import annotations`**.
 2. **Column type is the annotation**, not a `Field()` argument: `name: Varchar[255] = Field()`.
 3. **Fields default to NOT NULL**. Use `Nullable[Type]` for optional columns.
-4. **Foreign keys**: `Field(foreign_key=User.id, on_delete="cascade")` or `Field(foreign_key="users.id")`.
-5. **Defaults can be SQL expressions**: `default="now()"`, `default="gen_random_uuid()"`.
+4. **Foreign keys**: `Field(foreign_key=User.id, on_delete=FK.CASCADE)`.
+5. **Use `Fn` for SQL defaults**: `default=Fn.NOW`, `default=Fn.GEN_RANDOM_UUID`.
 
 ### Field types
 
@@ -522,6 +522,24 @@ new_tokens = await derp.auth.set_active_org(
 )
 orgs = await derp.auth.list_orgs(user_id=user.id)
 ```
+
+### Cognito backend
+
+```toml
+[auth.cognito]
+user_pool_id = "$COGNITO_USER_POOL_ID"
+client_id = "$COGNITO_CLIENT_ID"
+client_secret = "$COGNITO_CLIENT_SECRET"
+region = "us-east-1"
+# Optional — for OAuth via hosted UI:
+domain = "myapp.auth.us-east-1.amazoncognito.com"
+redirect_uri = "https://app.example.com/auth/callback"
+```
+
+Cognito uses the same auth interface. Organizations are database-backed
+(uses `CognitoOrgMember` without FK to users). Org context is
+passed via a signed `X-Org-Context` header — `authenticate()` verifies
+the HMAC signature locally with no network call.
 
 ### Clerk backend
 

@@ -7,18 +7,18 @@ Defining Tables
 .. code-block:: python
 
    from derp.orm import (
-       Table, Field, Nullable, UUID, Varchar, Text, Integer,
-       Boolean, TimestampTZ,
+       Table, Field, Fn, FK, Nullable, UUID, Varchar, Text,
+       Integer, Boolean, TimestampTZ,
    )
 
    class Product(Table, table="products"):
-       id: UUID = Field(primary=True, default="gen_random_uuid()")
+       id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
        name: Varchar[255] = Field()
        description: Nullable[Text] = Field()
        price: Integer = Field()
-       is_active: Boolean = Field(default="true")
-       seller_id: UUID = Field(foreign_key="users.id", on_delete="cascade")
-       created_at: TimestampTZ = Field(default="now()")
+       is_active: Boolean = Field(default=True)
+       seller_id: UUID = Field(foreign_key=User.id, on_delete=FK.CASCADE)
+       created_at: TimestampTZ = Field(default=Fn.NOW)
 
 The column type is the **annotation** (e.g. ``Varchar[255]``), not a ``Field()``
 argument. Use ``Nullable[Type]`` for nullable columns. Access columns via
@@ -71,13 +71,33 @@ Foreign Keys
 
 .. code-block:: python
 
-   # Reference a column directly
-   seller_id: UUID = Field(foreign_key=User.id, on_delete="cascade")
+   from derp.orm import FK
 
-   # Or use a string
-   seller_id: UUID = Field(foreign_key="users.id", on_delete="cascade")
+   seller_id: UUID = Field(foreign_key=User.id, on_delete=FK.CASCADE)
 
-Actions: ``cascade``, ``set null``, ``set default``, ``restrict``.
+``FK`` members: ``CASCADE``, ``SET_NULL``, ``SET_DEFAULT``, ``RESTRICT``.
+Lowercase strings (``"cascade"``, etc.) are also accepted.
+
+SQL Functions (Fn)
+------------------
+
+Use the ``Fn`` enum for predefined SQL defaults instead of magic strings:
+
+.. code-block:: python
+
+   from derp.orm import Fn
+
+   id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+   created_at: TimestampTZ = Field(default=Fn.NOW)
+
+Members: ``GEN_RANDOM_UUID``, ``NOW``, ``CURRENT_TIMESTAMP``.
+
+``Fn.to_tsvector(config, *columns)`` builds a tsvector expression:
+
+.. code-block:: python
+
+   Fn.to_tsvector("english", "title", "body")
+   # → to_tsvector('english', title || ' ' || body)
 
 Generated Columns
 -----------------

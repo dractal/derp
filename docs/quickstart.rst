@@ -10,17 +10,17 @@ Define a table
    from __future__ import annotations
 
    from derp.orm import (
-       Table, Field, Nullable, UUID, Varchar, Text, Integer,
-       Boolean, TimestampTZ,
+       Table, Field, Fn, Nullable, UUID, Varchar, Text,
+       Integer, Boolean, TimestampTZ,
    )
 
    class Product(Table, table="products"):
-       id: UUID = Field(primary=True, default="gen_random_uuid()")
+       id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
        name: Varchar[255] = Field()
        description: Nullable[Text] = Field()
        price_cents: Integer = Field()
-       is_active: Boolean = Field(default="true")
-       created_at: TimestampTZ = Field(default="now()")
+       is_active: Boolean = Field(default=True)
+       created_at: TimestampTZ = Field(default=Fn.NOW)
 
 Configure
 ---------
