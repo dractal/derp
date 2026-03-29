@@ -214,7 +214,7 @@ def discover_tables(
             from derp.auth.models import AuthOrganization, CognitoOrgMember
 
             auth_tables = [AuthOrganization, CognitoOrgMember]
-        
+
         elif supabase is not None:
             from derp.auth.models import AuthOrganization, SupabaseOrgMember
 
