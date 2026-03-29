@@ -12,13 +12,13 @@ Defining Tables
    )
 
    class Product(Table, table="products"):
-       id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+       id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
        name: Varchar[255] = Field()
        description: Nullable[Text] = Field()
        price: Integer = Field()
        is_active: Boolean = Field(default=True)
        seller_id: UUID = Field(foreign_key=User.id, on_delete=FK.CASCADE)
-       created_at: TimestampTZ = Field(default=Fn.NOW)
+       created_at: TimestampTZ = Field(default=Fn.now())
 
 The column type is the **annotation** (e.g. ``Varchar[255]``), not a ``Field()``
 argument. Use ``Nullable[Type]`` for nullable columns. Access columns via
@@ -87,10 +87,10 @@ Use the ``Fn`` enum for predefined SQL defaults instead of magic strings:
 
    from derp.orm import Fn
 
-   id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
-   created_at: TimestampTZ = Field(default=Fn.NOW)
+   id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
+   created_at: TimestampTZ = Field(default=Fn.now())
 
-Members: ``GEN_RANDOM_UUID``, ``NOW``, ``CURRENT_TIMESTAMP``.
+Functions: ``gen_random_uuid()``, ``now()``, ``current_timestamp()``.
 
 ``Fn.to_tsvector(config, *columns)`` builds a tsvector expression:
 

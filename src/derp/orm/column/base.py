@@ -18,12 +18,20 @@ class FK(enum_lib.StrEnum):
     RESTRICT = "RESTRICT"
 
 
-class Fn(enum_lib.StrEnum):
+class Fn:
     """Predefined SQL functions for use as column defaults."""
 
-    GEN_RANDOM_UUID = "gen_random_uuid()"
-    NOW = "now()"
-    CURRENT_TIMESTAMP = "CURRENT_TIMESTAMP"
+    @staticmethod
+    def gen_random_uuid() -> str:
+        return "gen_random_uuid()"
+
+    @staticmethod
+    def now() -> str:
+        return "now()"
+
+    @staticmethod
+    def current_timestamp() -> str:
+        return "CURRENT_TIMESTAMP"
 
     @staticmethod
     def to_tsvector(config: str, *columns: str) -> str:

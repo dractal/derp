@@ -92,7 +92,7 @@ class SessionInfo(BaseModel):
 class AuthUser(Table, table="users"):
     """User authentication table."""
 
-    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
     email: Varchar[L[255]] = Field(unique=True)
     email_confirmed_at: Nullable[TimestampTZ] = Field()
     encrypted_password: Nullable[Text] = Field()
@@ -105,8 +105,8 @@ class AuthUser(Table, table="users"):
     is_active: Boolean = Field(default=True)
     is_superuser: Boolean = Field(default=False)
     role: Varchar[L[50]] = Field(default="default")
-    created_at: TimestampTZ = Field(default=Fn.NOW)
-    updated_at: TimestampTZ = Field(default=Fn.NOW)
+    created_at: TimestampTZ = Field(default=Fn.now())
+    updated_at: TimestampTZ = Field(default=Fn.now())
     last_sign_in_at: Nullable[TimestampTZ] = Field()
 
     @classmethod
@@ -122,9 +122,9 @@ class AuthSession(Table, table="auth_sessions"):
     inserts a new row and revokes the old one.
     """
 
-    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
     user_id: UUID = Field(foreign_key=AuthUser.id, on_delete=FK.CASCADE)
-    session_id: UUID = Field(default=Fn.GEN_RANDOM_UUID)
+    session_id: UUID = Field(default=Fn.gen_random_uuid())
     token: Varchar[L[255]] = Field(unique=True)
     role: Varchar[L[50]] = Field(default="default")
     revoked: Boolean = Field(default=False)
@@ -132,7 +132,7 @@ class AuthSession(Table, table="auth_sessions"):
     ip_address: Nullable[Varchar[L[45]]] = Field()  # IPv6 compatible
     org_id: Nullable[UUID] = Field()
     not_after: TimestampTZ = Field()
-    created_at: TimestampTZ = Field(default=Fn.NOW)
+    created_at: TimestampTZ = Field(default=Fn.now())
 
     @classmethod
     def indexes(cls) -> list[Index]:
@@ -172,12 +172,12 @@ class OrgMemberInfo(BaseModel):
 class AuthOrganization(Table, table="organizations"):
     """Organization table for multi-tenancy."""
 
-    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
     name: Varchar[L[255]] = Field()
     slug: Varchar[L[255]] = Field(unique=True)
     metadata: Nullable[JSONB] = Field()
-    created_at: TimestampTZ = Field(default=Fn.NOW)
-    updated_at: TimestampTZ = Field(default=Fn.NOW)
+    created_at: TimestampTZ = Field(default=Fn.now())
+    updated_at: TimestampTZ = Field(default=Fn.now())
 
     @classmethod
     def indexes(cls) -> list[Index]:
@@ -187,12 +187,12 @@ class AuthOrganization(Table, table="organizations"):
 class AuthOrgMember(Table, table="org_members"):
     """Organization membership table (native auth — FK to AuthUser)."""
 
-    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
     org_id: UUID = Field(foreign_key=AuthOrganization.id, on_delete=FK.CASCADE)
     user_id: UUID = Field(foreign_key=AuthUser.id, on_delete=FK.CASCADE)
     role: Varchar[L[50]] = Field(default="member")
-    created_at: TimestampTZ = Field(default=Fn.NOW)
-    updated_at: TimestampTZ = Field(default=Fn.NOW)
+    created_at: TimestampTZ = Field(default=Fn.now())
+    updated_at: TimestampTZ = Field(default=Fn.now())
 
     @classmethod
     def indexes(cls) -> list[Index]:
@@ -206,12 +206,12 @@ class AuthOrgMember(Table, table="org_members"):
 class CognitoOrgMember(Table, table="org_members"):
     """Organization membership table (Cognito — no FK to users table)."""
 
-    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
     org_id: UUID = Field(foreign_key=AuthOrganization.id, on_delete=FK.CASCADE)
     user_id: UUID = Field()
     role: Varchar[L[50]] = Field(default="member")
-    created_at: TimestampTZ = Field(default=Fn.NOW)
-    updated_at: TimestampTZ = Field(default=Fn.NOW)
+    created_at: TimestampTZ = Field(default=Fn.now())
+    updated_at: TimestampTZ = Field(default=Fn.now())
 
     @classmethod
     def indexes(cls) -> list[Index]:

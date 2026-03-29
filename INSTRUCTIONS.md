@@ -61,21 +61,21 @@ from derp.orm import (
 
 
 class User(Table, table="users"):
-    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
     name: Varchar[255] = Field()
     email: Varchar[255] = Field(unique=True)
     age: Nullable[Integer] = Field()
     is_active: Boolean = Field(default=True)
-    created_at: TimestampTZ = Field(default=Fn.NOW)
+    created_at: TimestampTZ = Field(default=Fn.now())
 
 
 class Post(Table, table="posts"):
-    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
     author_id: UUID = Field(foreign_key=User.id, on_delete=FK.CASCADE)
     title: Varchar[255] = Field()
     content: Text = Field()
     published: Boolean = Field(default=False)
-    created_at: TimestampTZ = Field(default=Fn.NOW)
+    created_at: TimestampTZ = Field(default=Fn.now())
 ```
 
 ### Key rules
@@ -84,7 +84,7 @@ class Post(Table, table="posts"):
 2. **Column type is the annotation**, not a `Field()` argument: `name: Varchar[255] = Field()`.
 3. **Fields default to NOT NULL**. Use `Nullable[Type]` for optional columns.
 4. **Foreign keys**: `Field(foreign_key=User.id, on_delete=FK.CASCADE)`.
-5. **Use `Fn` for SQL defaults**: `default=Fn.NOW`, `default=Fn.GEN_RANDOM_UUID`.
+5. **Use `Fn` for SQL defaults**: `default=Fn.now()`, `default=Fn.gen_random_uuid()`.
 
 ### Field types
 

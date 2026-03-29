@@ -15,12 +15,12 @@ Define a table
    )
 
    class Product(Table, table="products"):
-       id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+       id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
        name: Varchar[255] = Field()
        description: Nullable[Text] = Field()
        price_cents: Integer = Field()
        is_active: Boolean = Field(default=True)
-       created_at: TimestampTZ = Field(default=Fn.NOW)
+       created_at: TimestampTZ = Field(default=Fn.now())
 
 Configure
 ---------
