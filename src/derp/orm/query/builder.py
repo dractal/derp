@@ -8,7 +8,38 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Self, overload
+from typing import TYPE_CHECKING, Any, Self, overload
+
+if TYPE_CHECKING:
+    from derp.orm.query.returning import (
+        RMT2,
+        RMT3,
+        RMT4,
+        RMT5,
+        RMT6,
+        RMT7,
+        RMT8,
+        RMT9,
+        RMT10,
+        ROT2,
+        ROT3,
+        ROT4,
+        ROT5,
+        ROT6,
+        ROT7,
+        ROT8,
+        ROT9,
+        ROT10,
+        ROTO2,
+        ROTO3,
+        ROTO4,
+        ROTO5,
+        ROTO6,
+        ROTO7,
+        ROTO8,
+        ROTO9,
+        ROTO10,
+    )
 
 import asyncpg
 
@@ -853,6 +884,15 @@ class _InsertQueryBase[T: Table]:
 
         return sql, params
 
+    def _resolve_target(
+        self,
+        target: Column[Any] | tuple[Column[Any], ...],
+    ) -> tuple[str, ...]:
+        """Resolve conflict target to column name strings."""
+        if isinstance(target, Column):
+            return (target._field_name or "",)
+        return tuple(f._field_name or "" for f in target)
+
 
 class InsertQuery[T: Table](_InsertQueryBase[T]):
     """INSERT query without RETURNING - execute() returns None."""
@@ -862,10 +902,16 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
         self._values = kwargs
         return self
 
-    def values_list(self, rows: list[dict[str, Any]]) -> InsertQuery[T]:
-        """Set multiple rows to insert."""
-        self._values_list = rows
-        return self
+    def values_list(self, rows: list[dict[str, Any]]) -> InsertBulkQuery[T]:
+        """Set multiple rows to insert. Returns a bulk query."""
+        query: InsertBulkQuery[T] = InsertBulkQuery(
+            self._pool, self._table, router=self._router
+        )
+        query._values_list = rows
+        query._on_conflict = self._on_conflict
+        query._insert_columns = self._insert_columns
+        query._from_select = self._from_select
+        return query
 
     def columns(self, *cols: Column[Any] | str) -> InsertQuery[T]:
         """Set column names for INSERT ... SELECT."""
@@ -883,26 +929,30 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
         self._from_select = query
         return self
 
-    def _resolve_target(
-        self,
-        target: Column[Any] | tuple[Column[Any], ...],
-    ) -> tuple[str, ...]:
-        """Resolve conflict target to column name strings."""
-        if isinstance(target, Column):
-            return (target._field_name or "",)
-        return tuple(f._field_name or "" for f in target)
-
     def ignore_conflicts(
         self,
         *,
         target: Column[Any] | tuple[Column[Any], ...],
-    ) -> InsertQuery[T]:
-        """Add ON CONFLICT DO NOTHING."""
+    ) -> InsertQueryIgnoreConflicts[T]:
+        """Add ON CONFLICT DO NOTHING.
+
+        Returns a query whose ``returning().execute()`` yields
+        ``T | None`` instead of ``T``, since the conflict may suppress
+        the insert.
+        """
         self._on_conflict = OnConflictClause(
             target=self._resolve_target(target),
             action="nothing",
         )
-        return self
+        query: InsertQueryIgnoreConflicts[T] = InsertQueryIgnoreConflicts(
+            self._pool, self._table, router=self._router
+        )
+        query._values = self._values
+        query._values_list = self._values_list
+        query._on_conflict = self._on_conflict
+        query._insert_columns = self._insert_columns
+        query._from_select = self._from_select
+        return query
 
     def upsert(
         self,
@@ -923,54 +973,401 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
         )
         return self
 
+    # fmt: off
     @overload
-    def returning(self, table: type[T], /) -> InsertQueryReturning[T]: ...
-
+    def returning(self, table: type[T], /) -> ReturningOne[T]: ...
     @overload
-    def returning(self, *columns: Column[Any]) -> InsertQueryReturningDict[T]: ...
+    def returning[V](self, c1: Column[V], /) -> ReturningOneScalar[T, V]: ...
+    @overload
+    def returning[A, B](self, c1: Column[A], c2: Column[B], /) -> ROT2[T, A, B]: ...
+    @overload
+    def returning[A, B, C](self, c1: Column[A], c2: Column[B], c3: Column[C], /) -> ROT3[T, A, B, C]: ...
+    @overload
+    def returning[A, B, C, D](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], /) -> ROT4[T, A, B, C, D]: ...
+    @overload
+    def returning[A, B, C, D, E](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], /) -> ROT5[T, A, B, C, D, E]: ...
+    @overload
+    def returning[A, B, C, D, E, F](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], /) -> ROT6[T, A, B, C, D, E, F]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], /) -> ROT7[T, A, B, C, D, E, F, G]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G, H](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], c8: Column[H], /) -> ROT8[T, A, B, C, D, E, F, G, H]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G, H, I](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], c8: Column[H], c9: Column[I], /) -> ROT9[T, A, B, C, D, E, F, G, H, I]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G, H, I, J](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], c8: Column[H], c9: Column[I], c10: Column[J], /) -> ROT10[T, A, B, C, D, E, F, G, H, I, J]: ...
+    # fmt: on
 
     def returning(
-        self, *columns: type[Table] | Column[Any]
-    ) -> InsertQueryReturning[T] | InsertQueryReturningDict[T]:
+        self, *columns: Any
+    ) -> ReturningOne[T] | ReturningOneScalar[T, Any] | ReturningOneTuple[T]:
         """Add RETURNING clause."""
         if (
             len(columns) == 1
             and isinstance(columns[0], type)
             and issubclass(columns[0], Table)
         ):
-            query: InsertQueryReturning[T] = InsertQueryReturning(
-                self._pool, self._table, router=self._router
-            )
-            query._values = self._values
-            query._values_list = self._values_list
-            query._on_conflict = self._on_conflict
-            query._insert_columns = self._insert_columns
-            query._from_select = self._from_select
-            query._returning = columns
-            return query
-        else:
-            query_dict: InsertQueryReturningDict[T] = InsertQueryReturningDict(
-                self._pool, self._table, router=self._router
-            )
-            query_dict._values = self._values
-            query_dict._values_list = self._values_list
-            query_dict._on_conflict = self._on_conflict
-            query_dict._insert_columns = self._insert_columns
-            query_dict._from_select = self._from_select
-            query_dict._returning = columns
-            return query_dict
+            return ReturningOne(self, columns)
+        if len(columns) == 1:
+            return ReturningOneScalar(self, columns)
+        return ReturningOneTuple(self, columns)
 
     def build(self) -> tuple[str, list[Any]]:
         """Build the SQL query and parameters."""
         return self._build()
 
     async def execute(self) -> None:
-        """Execute the insert.
+        """Execute the insert."""
+        if not self._pool:
+            raise RuntimeError("No database connection. Call db.connect() first.")
 
-        For bulk inserts via ``values_list()``, rows are automatically
-        split into chunks when the total parameter count would exceed
-        PostgreSQL's 65 535 limit.  Chunks run inside a single
-        transaction so the operation is atomic.
+        sql, params = self.build()
+        async with _acquire(self._pool) as conn:
+            await conn.execute(sql, *params)
+
+        if self._router is not None:
+            self._router.record_write()
+
+
+# =============================================================================
+# Shared RETURNING executors
+# =============================================================================
+
+
+class _ReturningBase[T: Table]:
+    """Shared state for all RETURNING query executors."""
+
+    __slots__ = ("_parent", "_columns")
+
+    def __init__(
+        self,
+        parent: Any,
+        columns: tuple[type[Table] | Column[Any], ...],
+    ) -> None:
+        self._parent = parent
+        # Set _returning on the parent so _build() generates the clause.
+        parent._returning = columns
+        self._columns = columns
+
+    def build(self) -> tuple[str, list[Any]]:
+        return self._parent._build()
+
+    def _is_table_return(self) -> bool:
+        return (
+            len(self._columns) == 1
+            and isinstance(self._columns[0], type)
+            and issubclass(self._columns[0], Table)
+        )
+
+    def _row_to_model(self, row: Any) -> Any:
+        return self._parent._table._from_row(_deserialize_row(self._parent._table, row))
+
+    def _row_to_scalar(self, row: Any) -> Any:
+        deserialized = _deserialize_row(self._parent._table, row)
+        col = self._columns[0]
+        if isinstance(col, Column) and col._field_name:
+            return deserialized[col._field_name]
+        raise RuntimeError("Expected a single Column for scalar return")
+
+    def _row_to_tuple(self, row: Any) -> tuple[Any, ...]:
+        deserialized = _deserialize_row(self._parent._table, row)
+        return tuple(
+            deserialized[col._field_name]
+            for col in self._columns
+            if isinstance(col, Column) and col._field_name
+        )
+
+    def _record_write(self) -> None:
+        router = self._parent._router
+        if router is not None:
+            router.record_write()
+
+    def _check_pool(self) -> Any:
+        pool = self._parent._pool
+        if not pool:
+            raise RuntimeError("No database connection. Call db.connect() first.")
+        return pool
+
+
+class ReturningOne[T: Table](_ReturningBase[T]):
+    """Single-row RETURNING (INSERT) → ``T``."""
+
+    async def execute(self) -> T:
+        pool = self._check_pool()
+        sql, params = self.build()
+        async with _acquire(pool) as conn:
+            row = await conn.fetchrow(sql, *params)
+            if row is None:
+                raise RuntimeError("INSERT RETURNING returned no rows")
+        self._record_write()
+        return self._row_to_model(row)
+
+
+class ReturningOneScalar[T: Table, V](_ReturningBase[T]):
+    """Single-row RETURNING one column (INSERT) → scalar ``V``."""
+
+    async def execute(self) -> V:
+        pool = self._check_pool()
+        sql, params = self.build()
+        async with _acquire(pool) as conn:
+            row = await conn.fetchrow(sql, *params)
+            if row is None:
+                raise RuntimeError("INSERT RETURNING returned no rows")
+        self._record_write()
+        return self._row_to_scalar(row)
+
+
+class ReturningOneTuple[T: Table](_ReturningBase[T]):
+    """Single-row RETURNING 2+ columns (INSERT) → ``tuple[Any, ...]``."""
+
+    async def execute(self) -> tuple[Any, ...]:
+        pool = self._check_pool()
+        sql, params = self.build()
+        async with _acquire(pool) as conn:
+            row = await conn.fetchrow(sql, *params)
+            if row is None:
+                raise RuntimeError("INSERT RETURNING returned no rows")
+        self._record_write()
+        return self._row_to_tuple(row)
+
+
+class ReturningOneOptional[T: Table](_ReturningBase[T]):
+    """Single-row RETURNING with ON CONFLICT → ``T | None``."""
+
+    async def execute(self) -> T | None:
+        pool = self._check_pool()
+        sql, params = self.build()
+        async with _acquire(pool) as conn:
+            row = await conn.fetchrow(sql, *params)
+            if row is None:
+                return None
+        self._record_write()
+        return self._row_to_model(row)
+
+
+class ReturningOneScalarOptional[T: Table, V](_ReturningBase[T]):
+    """Single-row RETURNING one column with ON CONFLICT → ``V | None``."""
+
+    async def execute(self) -> V | None:
+        pool = self._check_pool()
+        sql, params = self.build()
+        async with _acquire(pool) as conn:
+            row = await conn.fetchrow(sql, *params)
+            if row is None:
+                return None
+        self._record_write()
+        return self._row_to_scalar(row)
+
+
+class ReturningOneTupleOptional[T: Table](_ReturningBase[T]):
+    """Single-row RETURNING 2+ columns with ON CONFLICT → ``tuple[Any, ...] | None``."""
+
+    async def execute(self) -> tuple[Any, ...] | None:
+        pool = self._check_pool()
+        sql, params = self.build()
+        async with _acquire(pool) as conn:
+            row = await conn.fetchrow(sql, *params)
+            if row is None:
+                return None
+        self._record_write()
+        return self._row_to_tuple(row)
+
+
+class ReturningMany[T: Table](_ReturningBase[T]):
+    """Multi-row RETURNING (UPDATE/DELETE) → ``list[T]``."""
+
+    async def execute(self) -> list[T]:
+        pool = self._check_pool()
+        sql, params = self.build()
+        async with _acquire(pool) as conn:
+            rows = await conn.fetch(sql, *params)
+        self._record_write()
+        return [self._row_to_model(row) for row in rows]
+
+
+class ReturningManyScalar[T: Table, V](_ReturningBase[T]):
+    """Multi-row RETURNING one column (UPDATE/DELETE) → ``list[V]``."""
+
+    async def execute(self) -> list[V]:
+        pool = self._check_pool()
+        sql, params = self.build()
+        async with _acquire(pool) as conn:
+            rows = await conn.fetch(sql, *params)
+        self._record_write()
+        return [self._row_to_scalar(row) for row in rows]
+
+
+class ReturningManyTuple[T: Table](_ReturningBase[T]):
+    """Multi-row RETURNING 2+ columns (UPDATE/DELETE) → ``list[tuple[Any, ...]]``."""
+
+    async def execute(self) -> list[tuple[Any, ...]]:
+        pool = self._check_pool()
+        sql, params = self.build()
+        async with _acquire(pool) as conn:
+            rows = await conn.fetch(sql, *params)
+        self._record_write()
+        return [self._row_to_tuple(row) for row in rows]
+
+
+# =============================================================================
+# Shared returning mixin for multi-row queries
+# =============================================================================
+
+
+class _ReturningManyMixin[T: Table]:
+    """``returning()`` overloads for multi-row queries.
+
+    Used by ``InsertBulkQuery``, ``UpdateQuery``, and ``DeleteQuery``.
+    """
+
+    # fmt: off
+    @overload
+    def returning(self, table: type[T], /) -> ReturningMany[T]: ...
+    @overload
+    def returning[V](self, c1: Column[V], /) -> ReturningManyScalar[T, V]: ...
+    @overload
+    def returning[A, B](self, c1: Column[A], c2: Column[B], /) -> RMT2[T, A, B]: ...
+    @overload
+    def returning[A, B, C](self, c1: Column[A], c2: Column[B], c3: Column[C], /) -> RMT3[T, A, B, C]: ...
+    @overload
+    def returning[A, B, C, D](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], /) -> RMT4[T, A, B, C, D]: ...
+    @overload
+    def returning[A, B, C, D, E](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], /) -> RMT5[T, A, B, C, D, E]: ...
+    @overload
+    def returning[A, B, C, D, E, F](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], /) -> RMT6[T, A, B, C, D, E, F]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], /) -> RMT7[T, A, B, C, D, E, F, G]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G, H](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], c8: Column[H], /) -> RMT8[T, A, B, C, D, E, F, G, H]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G, H, I](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], c8: Column[H], c9: Column[I], /) -> RMT9[T, A, B, C, D, E, F, G, H, I]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G, H, I, J](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], c8: Column[H], c9: Column[I], c10: Column[J], /) -> RMT10[T, A, B, C, D, E, F, G, H, I, J]: ...
+    # fmt: on
+
+    def returning(
+        self, *columns: Any
+    ) -> ReturningMany[T] | ReturningManyScalar[T, Any] | ReturningManyTuple[T]:
+        """Add RETURNING clause."""
+        if (
+            len(columns) == 1
+            and isinstance(columns[0], type)
+            and issubclass(columns[0], Table)
+        ):
+            return ReturningMany(self, columns)
+        if len(columns) == 1:
+            return ReturningManyScalar(self, columns)
+        return ReturningManyTuple(self, columns)
+
+
+# =============================================================================
+# INSERT returning() + ignore_conflicts
+# =============================================================================
+
+
+class InsertQueryIgnoreConflicts[T: Table](_InsertQueryBase[T]):
+    """INSERT … ON CONFLICT DO NOTHING query."""
+
+    # fmt: off
+    @overload
+    def returning(self, table: type[T], /) -> ReturningOneOptional[T]: ...
+    @overload
+    def returning[V](self, c1: Column[V], /) -> ReturningOneScalarOptional[T, V]: ...
+    @overload
+    def returning[A, B](self, c1: Column[A], c2: Column[B], /) -> ROTO2[T, A, B]: ...
+    @overload
+    def returning[A, B, C](self, c1: Column[A], c2: Column[B], c3: Column[C], /) -> ROTO3[T, A, B, C]: ...
+    @overload
+    def returning[A, B, C, D](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], /) -> ROTO4[T, A, B, C, D]: ...
+    @overload
+    def returning[A, B, C, D, E](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], /) -> ROTO5[T, A, B, C, D, E]: ...
+    @overload
+    def returning[A, B, C, D, E, F](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], /) -> ROTO6[T, A, B, C, D, E, F]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], /) -> ROTO7[T, A, B, C, D, E, F, G]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G, H](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], c8: Column[H], /) -> ROTO8[T, A, B, C, D, E, F, G, H]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G, H, I](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], c8: Column[H], c9: Column[I], /) -> ROTO9[T, A, B, C, D, E, F, G, H, I]: ...
+    @overload
+    def returning[A, B, C, D, E, F, G, H, I, J](self, c1: Column[A], c2: Column[B], c3: Column[C], c4: Column[D], c5: Column[E], c6: Column[F], c7: Column[G], c8: Column[H], c9: Column[I], c10: Column[J], /) -> ROTO10[T, A, B, C, D, E, F, G, H, I, J]: ...
+    # fmt: on
+
+    def returning(
+        self, *columns: Any
+    ) -> (
+        ReturningOneOptional[T]
+        | ReturningOneScalarOptional[T, Any]
+        | ReturningOneTupleOptional[T]
+    ):
+        """Add RETURNING clause (optional result due to ON CONFLICT)."""
+        if (
+            len(columns) == 1
+            and isinstance(columns[0], type)
+            and issubclass(columns[0], Table)
+        ):
+            return ReturningOneOptional(self, columns)
+        if len(columns) == 1:
+            return ReturningOneScalarOptional(self, columns)
+        return ReturningOneTupleOptional(self, columns)
+
+    def build(self) -> tuple[str, list[Any]]:
+        return self._build()
+
+    async def execute(self) -> None:
+        """Execute the insert (no RETURNING)."""
+        if not self._pool:
+            raise RuntimeError("No database connection. Call db.connect() first.")
+        sql, params = self.build()
+        async with _acquire(self._pool) as conn:
+            await conn.execute(sql, *params)
+        if self._router is not None:
+            self._router.record_write()
+
+
+class InsertBulkQuery[T: Table](_InsertQueryBase[T], _ReturningManyMixin[T]):
+    """INSERT with multiple rows via ``values_list()``.
+
+    ``returning()`` uses multi-row fetch and returns ``list[T]``,
+    ``list[V]``, or ``list[tuple]``.
+    """
+
+    def ignore_conflicts(
+        self,
+        *,
+        target: Column[Any] | tuple[Column[Any], ...],
+    ) -> InsertBulkQuery[T]:
+        """Add ON CONFLICT DO NOTHING."""
+        self._on_conflict = OnConflictClause(
+            target=self._resolve_target(target),
+            action="nothing",
+        )
+        return self
+
+    def upsert(
+        self,
+        *,
+        target: Column[Any] | tuple[Column[Any], ...],
+        **kwargs: Any,
+    ) -> InsertBulkQuery[T]:
+        """Add ON CONFLICT DO UPDATE SET (upsert)."""
+        self._on_conflict = OnConflictClause(
+            target=self._resolve_target(target),
+            action="update",
+            set_values=kwargs,
+        )
+        return self
+
+    def build(self) -> tuple[str, list[Any]]:
+        return self._build()
+
+    async def execute(self) -> None:
+        """Execute the bulk insert.
+
+        Rows are automatically split into chunks when the total
+        parameter count would exceed PostgreSQL's 65 535 limit.
+        Chunks run inside a single transaction so the operation
+        is atomic.
         """
         if not self._pool:
             raise RuntimeError("No database connection. Call db.connect() first.")
@@ -994,69 +1391,13 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
             self._router.record_write()
 
 
-class InsertQueryReturning[T: Table](_InsertQueryBase[T]):
-    """INSERT query with RETURNING table - execute() returns T."""
-
-    def values(self, **kwargs: Any) -> InsertQueryReturning[T]:
-        """Set values to insert."""
-        self._values = kwargs
-        return self
-
-    def build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
-        return self._build()
-
-    async def execute(self) -> T:
-        """Execute the insert and return model instance."""
-        if not self._pool:
-            raise RuntimeError("No database connection. Call db.connect() first.")
-
-        sql, params = self.build()
-        async with _acquire(self._pool) as conn:
-            row = await conn.fetchrow(sql, *params)
-            if row is None:
-                raise RuntimeError("INSERT RETURNING returned no rows")
-            result = self._table._from_row(_deserialize_row(self._table, row))
-        if self._router is not None:
-            self._router.record_write()
-        return result
-
-
-class InsertQueryReturningDict[T: Table](_InsertQueryBase[T]):
-    """INSERT query with RETURNING columns - execute() returns dict."""
-
-    def values(self, **kwargs: Any) -> InsertQueryReturningDict[T]:
-        """Set values to insert."""
-        self._values = kwargs
-        return self
-
-    def build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
-        return self._build()
-
-    async def execute(self) -> dict[str, Any]:
-        """Execute the insert and return dict."""
-        if not self._pool:
-            raise RuntimeError("No database connection. Call db.connect() first.")
-
-        sql, params = self.build()
-        async with _acquire(self._pool) as conn:
-            row = await conn.fetchrow(sql, *params)
-            if row is None:
-                raise RuntimeError("INSERT RETURNING returned no rows")
-            result = _deserialize_row(self._table, row)
-        if self._router is not None:
-            self._router.record_write()
-        return result
-
-
 # =============================================================================
 # UPDATE Query with typed returning()
 # =============================================================================
 
 
-class _UpdateQueryBase[T: Table](_WhereShorthandMixin):
-    """Base class for UPDATE queries with shared implementation."""
+class UpdateQuery[T: Table](_WhereShorthandMixin, _ReturningManyMixin[T]):
+    """UPDATE query — execute() returns None, returning() for results."""
 
     def __init__(
         self,
@@ -1072,8 +1413,20 @@ class _UpdateQueryBase[T: Table](_WhereShorthandMixin):
         self._returning: tuple[type[Table] | Column[Any], ...] | None = None
         self._router: ReplicaRouter | None = router
 
+    def set(self, **kwargs: Any) -> UpdateQuery[T]:
+        """Set values to update."""
+        self._set_values = kwargs
+        return self
+
+    def where(self, cond: Expression) -> UpdateQuery[T]:
+        """Add WHERE clause. Multiple calls combine with AND."""
+        if self._where_clause is not None:
+            self._where_clause = self._where_clause & cond
+        else:
+            self._where_clause = cond
+        return self
+
     def _build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
         table_name = self._table.get_table_name()
         params: list[Any] = []
 
@@ -1105,56 +1458,7 @@ class _UpdateQueryBase[T: Table](_WhereShorthandMixin):
 
         return sql, params
 
-
-class UpdateQuery[T: Table](_UpdateQueryBase[T]):
-    """UPDATE query without RETURNING - execute() returns None."""
-
-    def set(self, **kwargs: Any) -> UpdateQuery[T]:
-        """Set values to update."""
-        self._set_values = kwargs
-        return self
-
-    def where(self, cond: Expression) -> UpdateQuery[T]:
-        """Add WHERE clause. Multiple calls combine with AND."""
-        if self._where_clause is not None:
-            self._where_clause = self._where_clause & cond
-        else:
-            self._where_clause = cond
-        return self
-
-    @overload
-    def returning(self, table: type[T], /) -> UpdateQueryReturning[T]: ...
-
-    @overload
-    def returning(self, *columns: Column[Any]) -> UpdateQueryReturningDict[T]: ...
-
-    def returning(
-        self, *columns: type[Table] | Column[Any]
-    ) -> UpdateQueryReturning[T] | UpdateQueryReturningDict[T]:
-        """Add RETURNING clause."""
-        if (
-            len(columns) == 1
-            and isinstance(columns[0], type)
-            and issubclass(columns[0], Table)
-        ):
-            query: UpdateQueryReturning[T] = UpdateQueryReturning(
-                self._pool, self._table, router=self._router
-            )
-            query._set_values = self._set_values
-            query._where_clause = self._where_clause
-            query._returning = columns
-            return query
-        else:
-            query_dict: UpdateQueryReturningDict[T] = UpdateQueryReturningDict(
-                self._pool, self._table, router=self._router
-            )
-            query_dict._set_values = self._set_values
-            query_dict._where_clause = self._where_clause
-            query_dict._returning = columns
-            return query_dict
-
     def build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
         return self._build()
 
     async def execute(self) -> None:
@@ -1169,84 +1473,13 @@ class UpdateQuery[T: Table](_UpdateQueryBase[T]):
             self._router.record_write()
 
 
-class UpdateQueryReturning[T: Table](_UpdateQueryBase[T]):
-    """UPDATE query with RETURNING table - execute() returns list[T]."""
-
-    def set(self, **kwargs: Any) -> UpdateQueryReturning[T]:
-        """Set values to update."""
-        self._set_values = kwargs
-        return self
-
-    def where(self, cond: Expression) -> UpdateQueryReturning[T]:
-        """Add WHERE clause. Multiple calls combine with AND."""
-        if self._where_clause is not None:
-            self._where_clause = self._where_clause & cond
-        else:
-            self._where_clause = cond
-        return self
-
-    def build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
-        return self._build()
-
-    async def execute(self) -> list[T]:
-        """Execute the update and return model instances."""
-        if not self._pool:
-            raise RuntimeError("No database connection. Call db.connect() first.")
-
-        sql, params = self.build()
-        async with _acquire(self._pool) as conn:
-            rows = await conn.fetch(sql, *params)
-            result = [
-                self._table._from_row(_deserialize_row(self._table, row))
-                for row in rows
-            ]
-        if self._router is not None:
-            self._router.record_write()
-        return result
-
-
-class UpdateQueryReturningDict[T: Table](_UpdateQueryBase[T]):
-    """UPDATE query with RETURNING columns - execute() returns list[dict]."""
-
-    def set(self, **kwargs: Any) -> UpdateQueryReturningDict[T]:
-        """Set values to update."""
-        self._set_values = kwargs
-        return self
-
-    def where(self, cond: Expression) -> UpdateQueryReturningDict[T]:
-        """Add WHERE clause. Multiple calls combine with AND."""
-        if self._where_clause is not None:
-            self._where_clause = self._where_clause & cond
-        else:
-            self._where_clause = cond
-        return self
-
-    def build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
-        return self._build()
-
-    async def execute(self) -> list[dict[str, Any]]:
-        """Execute the update and return dicts."""
-        if not self._pool:
-            raise RuntimeError("No database connection. Call db.connect() first.")
-
-        sql, params = self.build()
-        async with _acquire(self._pool) as conn:
-            rows = await conn.fetch(sql, *params)
-            result = [_deserialize_row(self._table, row) for row in rows]
-        if self._router is not None:
-            self._router.record_write()
-        return result
-
-
 # =============================================================================
-# DELETE Query with typed returning()
+# DELETE Query
 # =============================================================================
 
 
-class _DeleteQueryBase[T: Table](_WhereShorthandMixin):
-    """Base class for DELETE queries with shared implementation."""
+class DeleteQuery[T: Table](_WhereShorthandMixin, _ReturningManyMixin[T]):
+    """DELETE query — execute() returns None, returning() for results."""
 
     def __init__(
         self,
@@ -1261,8 +1494,15 @@ class _DeleteQueryBase[T: Table](_WhereShorthandMixin):
         self._returning: tuple[type[Table] | Column[Any], ...] | None = None
         self._router: ReplicaRouter | None = router
 
+    def where(self, cond: Expression) -> DeleteQuery[T]:
+        """Add WHERE clause. Multiple calls combine with AND."""
+        if self._where_clause is not None:
+            self._where_clause = self._where_clause & cond
+        else:
+            self._where_clause = cond
+        return self
+
     def _build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
         table_name = self._table.get_table_name()
         params: list[Any] = []
 
@@ -1283,49 +1523,7 @@ class _DeleteQueryBase[T: Table](_WhereShorthandMixin):
 
         return sql, params
 
-
-class DeleteQuery[T: Table](_DeleteQueryBase[T]):
-    """DELETE query without RETURNING - execute() returns None."""
-
-    def where(self, cond: Expression) -> DeleteQuery[T]:
-        """Add WHERE clause. Multiple calls combine with AND."""
-        if self._where_clause is not None:
-            self._where_clause = self._where_clause & cond
-        else:
-            self._where_clause = cond
-        return self
-
-    @overload
-    def returning(self, table: type[T], /) -> DeleteQueryReturning[T]: ...
-
-    @overload
-    def returning(self, *columns: Column[Any]) -> DeleteQueryReturningDict[T]: ...
-
-    def returning(
-        self, *columns: type[Table] | Column[Any]
-    ) -> DeleteQueryReturning[T] | DeleteQueryReturningDict[T]:
-        """Add RETURNING clause."""
-        if (
-            len(columns) == 1
-            and isinstance(columns[0], type)
-            and issubclass(columns[0], Table)
-        ):
-            query: DeleteQueryReturning[T] = DeleteQueryReturning(
-                self._pool, self._table, router=self._router
-            )
-            query._where_clause = self._where_clause
-            query._returning = columns
-            return query
-        else:
-            query_dict: DeleteQueryReturningDict[T] = DeleteQueryReturningDict(
-                self._pool, self._table, router=self._router
-            )
-            query_dict._where_clause = self._where_clause
-            query_dict._returning = columns
-            return query_dict
-
     def build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
         return self._build()
 
     async def execute(self) -> None:
@@ -1338,67 +1536,6 @@ class DeleteQuery[T: Table](_DeleteQueryBase[T]):
             await conn.execute(sql, *params)
         if self._router is not None:
             self._router.record_write()
-
-
-class DeleteQueryReturning[T: Table](_DeleteQueryBase[T]):
-    """DELETE query with RETURNING table - execute() returns list[T]."""
-
-    def where(self, cond: Expression) -> DeleteQueryReturning[T]:
-        """Add WHERE clause. Multiple calls combine with AND."""
-        if self._where_clause is not None:
-            self._where_clause = self._where_clause & cond
-        else:
-            self._where_clause = cond
-        return self
-
-    def build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
-        return self._build()
-
-    async def execute(self) -> list[T]:
-        """Execute the delete and return model instances."""
-        if not self._pool:
-            raise RuntimeError("No database connection. Call db.connect() first.")
-
-        sql, params = self.build()
-        async with _acquire(self._pool) as conn:
-            rows = await conn.fetch(sql, *params)
-            result = [
-                self._table._from_row(_deserialize_row(self._table, row))
-                for row in rows
-            ]
-        if self._router is not None:
-            self._router.record_write()
-        return result
-
-
-class DeleteQueryReturningDict[T: Table](_DeleteQueryBase[T]):
-    """DELETE query with RETURNING columns - execute() returns list[dict]."""
-
-    def where(self, cond: Expression) -> DeleteQueryReturningDict[T]:
-        """Add WHERE clause. Multiple calls combine with AND."""
-        if self._where_clause is not None:
-            self._where_clause = self._where_clause & cond
-        else:
-            self._where_clause = cond
-        return self
-
-    def build(self) -> tuple[str, list[Any]]:
-        """Build the SQL query and parameters."""
-        return self._build()
-
-    async def execute(self) -> list[dict[str, Any]]:
-        """Execute the delete and return dicts."""
-        if not self._pool:
-            raise RuntimeError("No database connection. Call db.connect() first.")
-
-        sql, params = self.build()
-        async with _acquire(self._pool) as conn:
-            rows = await conn.fetch(sql, *params)
-            result = [_deserialize_row(self._table, row) for row in rows]
-        if self._router is not None:
-            self._router.record_write()
-        return result
 
 
 # =============================================================================

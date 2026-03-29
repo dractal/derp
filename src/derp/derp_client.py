@@ -8,8 +8,10 @@ from typing import Self
 
 from derp.auth.base import BaseAuthClient
 from derp.auth.clerk_client import ClerkAuthClient
+from derp.auth.cognito_client import CognitoAuthClient
 from derp.auth.email import EmailClient
 from derp.auth.native_client import NativeAuthClient
+from derp.auth.supabase_client import SupabaseAuthClient
 from derp.config import DerpConfig
 from derp.kv.base import KVClient
 from derp.kv.valkey import ValkeyClient
@@ -64,9 +66,9 @@ class DerpClient:
             elif self._config.auth.clerk is not None:
                 self._auth = ClerkAuthClient(self._config.auth.clerk)
             elif self._config.auth.cognito is not None:
-                from derp.auth.cognito_client import CognitoAuthClient
-
                 self._auth = CognitoAuthClient(self._config.auth.cognito)
+            elif self._config.auth.supabase is not None:
+                self._auth = SupabaseAuthClient(self._config.auth.supabase)
         self._kv: KVClient | None = (
             ValkeyClient(self._config.kv.valkey)
             if self._config.kv is not None and self._config.kv.valkey is not None

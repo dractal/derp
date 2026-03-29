@@ -95,5 +95,9 @@ line-length = 88
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+"src/derp/orm/query/builder.py" = ["E501"]
+"src/derp/orm/query/returning.py" = ["E501"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

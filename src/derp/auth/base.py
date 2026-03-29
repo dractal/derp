@@ -249,14 +249,12 @@ class BaseAuthClient(abc.ABC):
     # ------------------------------------------------------------------
 
     async def create_org(
-        self,
-        *,
-        name: str,
-        slug: str,
-        creator_id: str | uuid.UUID,
-        **kwargs: Any,
-    ) -> OrgInfo:
-        """Create an organization. The creator is added as owner."""
+        self, *, name: str, slug: str, creator_id: str | uuid.UUID, **kwargs: Any
+    ) -> OrgInfo | None:
+        """Create an organization. The creator is added as owner.
+
+        Returns ``None`` if the slug is already taken.
+        """
         raise NotImplementedError
 
     async def get_org(self, org_id: str | uuid.UUID) -> OrgInfo | None:
@@ -305,8 +303,11 @@ class BaseAuthClient(abc.ABC):
         org_id: str | uuid.UUID,
         user_id: str | uuid.UUID,
         role: str = "member",
-    ) -> OrgMemberInfo:
-        """Add a user to an organization."""
+    ) -> OrgMemberInfo | None:
+        """Add a user to an organization.
+
+        Returns ``None`` if the user is already a member.
+        """
         raise NotImplementedError
 
     async def update_org_member(

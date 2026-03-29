@@ -213,22 +213,33 @@ class CognitoConfig(BaseModel):
     redirect_uri: str | None = None
 
 
+class SupabaseConfig(BaseModel):
+    """Configuration for Supabase GoTrue authentication."""
+
+    url: str
+    anon_key: str
+    service_role_key: str
+    jwt_secret: str
+    redirect_uri: str | None = None
+
+
 class AuthConfig(BaseModel):
     """Auth configuration — exactly one backend must be set."""
 
     native: NativeAuthConfig | None = None
     clerk: ClerkConfig | None = None
     cognito: CognitoConfig | None = None
+    supabase: SupabaseConfig | None = None
 
     @model_validator(mode="after")
     def _check_single_backend(self) -> AuthConfig:
-        backends = [self.native, self.clerk, self.cognito]
+        backends = [self.native, self.clerk, self.cognito, self.supabase]
         configured = sum(1 for b in backends if b is not None)
         if configured > 1:
             raise ValueError(
                 "Only one auth backend can be configured at a time. "
                 "Set exactly one of [auth.native], [auth.clerk], "
-                "or [auth.cognito]."
+                "[auth.cognito], or [auth.supabase]."
             )
         if configured == 0:
             raise ValueError("At least one auth backend must be configured.")

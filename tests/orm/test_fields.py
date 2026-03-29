@@ -13,7 +13,6 @@ from derp.orm import (
     Field,
     Integer,
     Interval,
-    L,
     Numeric,
     Real,
     Serial,
@@ -62,8 +61,8 @@ def test_temporal_types():
 def test_numeric_types():
     """Test numeric type SQL generation."""
     assert Numeric(Field()).sql_type() == "NUMERIC"
-    assert Numeric[L[10]](Field()).sql_type() == "NUMERIC(10)"
-    assert Numeric[L[10], L[2]](Field()).sql_type() == "NUMERIC(10, 2)"
+    assert Numeric[10](Field()).sql_type() == "NUMERIC(10)"
+    assert Numeric[10, 2](Field()).sql_type() == "NUMERIC(10, 2)"
     assert Real(Field()).sql_type() == "REAL"
     assert DoublePrecision(Field()).sql_type() == "DOUBLE PRECISION"
 
@@ -81,5 +80,5 @@ def test_json_types():
 
 def test_vector_type():
     """Test vector type SQL generation."""
-    assert Vector[L[1536]](Field()).sql_type() == "VECTOR(1536)"
+    assert Vector[1536](Field()).sql_type() == "VECTOR(1536)"
     assert Vector(Field()).sql_type() == "VECTOR"

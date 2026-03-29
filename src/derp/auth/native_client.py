@@ -7,14 +7,10 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-import asyncpg
-
 from derp.auth.base import BaseAuthClient
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     ConfirmationURLMissingError,
-    OrgAlreadyExistsError,
-    OrgMemberExistsError,
     PasswordValidationError,
     SignupDisabledError,
 )
@@ -500,13 +496,15 @@ class NativeAuthClient(BaseAuthClient):
 
         user = await self._get_user_by_email(email=email.lower())
 
-        if not user:
+        if user:
+            user_id = user.id
+        else:
             if not self._config.enable_signup:
                 raise SignupDisabledError()
 
             # Create user for magic link
             now = datetime.now(UTC)
-            user = await (
+            user_id = await (
                 self._db()
                 .insert(AuthUser)
                 .values(
@@ -516,7 +514,7 @@ class NativeAuthClient(BaseAuthClient):
                     created_at=now,
                     updated_at=now,
                 )
-                .returning(AuthUser)
+                .returning(AuthUser.id)
                 .execute()
             )
 
@@ -525,7 +523,7 @@ class NativeAuthClient(BaseAuthClient):
         ttl = self._config.magic_link_expire_minutes * 60
         await self._kv().set(
             f"{self._config.cache_prefix}:magic_link:{token}".encode(),
-            str(user.id).encode(),
+            str(user_id).encode(),
             ttl=ttl,
         )
 
@@ -732,7 +730,7 @@ class NativeAuthClient(BaseAuthClient):
         not_after = now + timedelta(days=self._config.session_expire_days)
         refresh_token = generate_secure_token()
 
-        session = await (
+        session_id = await (
             self._db()
             .insert(AuthSession)
             .values(
@@ -744,14 +742,14 @@ class NativeAuthClient(BaseAuthClient):
                 not_after=not_after,
                 created_at=now,
             )
-            .returning(AuthSession)
+            .returning(AuthSession.session_id)
             .execute()
         )
 
         return create_token_pair(
             self._config.jwt,
             user_id,
-            session.session_id,
+            session_id,
             refresh_token,
             extra_claims={"role": role},
         )
@@ -906,19 +904,19 @@ class NativeAuthClient(BaseAuthClient):
 
     async def sign_out_all(self, user_id: str | uuid.UUID) -> None:
         """Sign out all sessions for a user by deleting all tokens."""
-        deleted = await (
+        session_ids = await (
             self._db()
             .delete(AuthSession)
             .where(AuthSession.user_id == str(user_id))
-            .returning(AuthSession)
+            .returning(AuthSession.session_id)
             .execute()
         )
 
         # Invalidate all session caches
-        if deleted and self._kv_client is not None:
+        if session_ids and self._kv_client is not None:
             cache_keys = [
-                f"{self._config.cache_prefix}:session:{s.session_id}".encode()
-                for s in deleted
+                f"{self._config.cache_prefix}:session:{sid}".encode()
+                for sid in session_ids
             ]
             await self._kv_client.delete_many(cache_keys)
 
@@ -1130,19 +1128,19 @@ class NativeAuthClient(BaseAuthClient):
         slug: str,
         creator_id: str | uuid.UUID,
         **kwargs: Any,
-    ) -> OrgInfo:
+    ) -> OrgInfo | None:
         """Create an organization. The creator is added as owner."""
         now = datetime.now(UTC)
-        try:
-            org = await (
-                self._db()
-                .insert(AuthOrganization)
-                .values(name=name, slug=slug, created_at=now, updated_at=now)
-                .returning(AuthOrganization)
-                .execute()
-            )
-        except asyncpg.UniqueViolationError as exc:
-            raise OrgAlreadyExistsError() from exc
+        org = await (
+            self._db()
+            .insert(AuthOrganization)
+            .values(name=name, slug=slug, created_at=now, updated_at=now)
+            .ignore_conflicts(target=AuthOrganization.slug)
+            .returning(AuthOrganization)
+            .execute()
+        )
+        if org is None:
+            return None
 
         # Add creator as owner
         await (
@@ -1270,25 +1268,25 @@ class NativeAuthClient(BaseAuthClient):
         org_id: str | uuid.UUID,
         user_id: str | uuid.UUID,
         role: str = "member",
-    ) -> OrgMemberInfo:
+    ) -> OrgMemberInfo | None:
         """Add a user to an organization."""
         now = datetime.now(UTC)
-        try:
-            member = await (
-                self._db()
-                .insert(AuthOrgMember)
-                .values(
-                    org_id=str(org_id),
-                    user_id=str(user_id),
-                    role=role,
-                    created_at=now,
-                    updated_at=now,
-                )
-                .returning(AuthOrgMember)
-                .execute()
+        member = await (
+            self._db()
+            .insert(AuthOrgMember)
+            .values(
+                org_id=str(org_id),
+                user_id=str(user_id),
+                role=role,
+                created_at=now,
+                updated_at=now,
             )
-        except asyncpg.UniqueViolationError as exc:
-            raise OrgMemberExistsError() from exc
+            .ignore_conflicts(target=(AuthOrgMember.org_id, AuthOrgMember.user_id))
+            .returning(AuthOrgMember)
+            .execute()
+        )
+        if member is None:
+            return None
 
         return self._to_org_member_info(member)
 

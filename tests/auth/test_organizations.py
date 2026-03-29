@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock
 
-import pytest
-
-from derp.auth.exceptions import OrgAlreadyExistsError, OrgMemberExistsError
 from derp.auth.jwt import decode_token
 from derp.derp_client import DerpClient
 from tests.conftest import bearer_request
@@ -34,6 +31,7 @@ class TestCreateOrg:
             slug="acme-corp",
             creator_id=user_id,
         )
+        assert org is not None
 
         assert org.name == "Acme Corp"
         assert org.slug == "acme-corp"
@@ -51,6 +49,7 @@ class TestCreateOrg:
             slug="acme-corp",
             creator_id=user_id,
         )
+        assert org is not None
 
         member = await derp.auth.get_org_member(org_id=org.id, user_id=user_id)
         assert member is not None
@@ -67,12 +66,12 @@ class TestCreateOrg:
             creator_id=user_id,
         )
 
-        with pytest.raises(OrgAlreadyExistsError):
-            await derp.auth.create_org(
-                name="Different Name",
-                slug="acme",
-                creator_id=user_id,
-            )
+        result = await derp.auth.create_org(
+            name="Different Name",
+            slug="acme",
+            creator_id=user_id,
+        )
+        assert result is None
 
 
 class TestGetOrg:
@@ -83,6 +82,7 @@ class TestGetOrg:
         org = await derp.auth.create_org(
             name="Acme Corp", slug="acme", creator_id=user_id
         )
+        assert org is not None
 
         fetched = await derp.auth.get_org(org.id)
         assert fetched is not None
@@ -101,6 +101,7 @@ class TestGetOrg:
         org = await derp.auth.create_org(
             name="Acme Corp", slug="acme", creator_id=user_id
         )
+        assert org is not None
 
         fetched = await derp.auth.get_org_by_slug("acme")
         assert fetched is not None
@@ -121,6 +122,7 @@ class TestUpdateOrg:
         org = await derp.auth.create_org(
             name="Acme Corp", slug="acme", creator_id=user_id
         )
+        assert org is not None
 
         updated = await derp.auth.update_org(org_id=org.id, name="New Name")
         assert updated is not None
@@ -134,6 +136,7 @@ class TestUpdateOrg:
         org = await derp.auth.create_org(
             name="Acme Corp", slug="acme", creator_id=user_id
         )
+        assert org is not None
 
         updated = await derp.auth.update_org(org_id=org.id, slug="new-slug")
         assert updated is not None
@@ -156,6 +159,7 @@ class TestDeleteOrg:
         org = await derp.auth.create_org(
             name="Acme Corp", slug="acme", creator_id=user_id
         )
+        assert org is not None
 
         await derp.auth.delete_org(org.id)
 
@@ -169,6 +173,7 @@ class TestDeleteOrg:
         org = await derp.auth.create_org(
             name="Acme Corp", slug="acme", creator_id=user_id
         )
+        assert org is not None
 
         await derp.auth.delete_org(org.id)
 
@@ -222,8 +227,10 @@ class TestOrgMembers:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         user_id = await _create_user(derp, "user@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         member = await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
+        assert member is not None
         assert member.role == "member"
         assert member.user_id == user_id
         assert member.org_id == org.id
@@ -234,10 +241,12 @@ class TestOrgMembers:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         user_id = await _create_user(derp, "user@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         member = await derp.auth.add_org_member(
             org_id=org.id, user_id=user_id, role="admin"
         )
+        assert member is not None
         assert member.role == "admin"
 
     async def test_add_member_already_exists(
@@ -246,10 +255,11 @@ class TestOrgMembers:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         user_id = await _create_user(derp, "user@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
-        with pytest.raises(OrgMemberExistsError):
-            await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
+        result = await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
+        assert result is None
 
     async def test_update_member_role(
         self, derp: DerpClient, mock_smtp: AsyncMock
@@ -257,6 +267,7 @@ class TestOrgMembers:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         user_id = await _create_user(derp, "user@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
         updated = await derp.auth.update_org_member(
@@ -270,6 +281,7 @@ class TestOrgMembers:
     ) -> None:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         result = await derp.auth.update_org_member(
             org_id=org.id,
@@ -282,6 +294,7 @@ class TestOrgMembers:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         user_id = await _create_user(derp, "user@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
         await derp.auth.remove_org_member(org_id=org.id, user_id=user_id)
@@ -294,6 +307,7 @@ class TestOrgMembers:
     ) -> None:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         result = await derp.auth.remove_org_member(org_id=org.id, user_id=owner_id)
         assert result is False
@@ -302,6 +316,7 @@ class TestOrgMembers:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         user_id = await _create_user(derp, "user@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
 
@@ -311,6 +326,7 @@ class TestOrgMembers:
     async def test_get_member(self, derp: DerpClient, mock_smtp: AsyncMock) -> None:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         member = await derp.auth.get_org_member(org_id=org.id, user_id=owner_id)
         assert member is not None
@@ -321,6 +337,7 @@ class TestOrgMembers:
     ) -> None:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
+        assert org is not None
 
         member = await derp.auth.get_org_member(
             org_id=org.id,
@@ -342,6 +359,7 @@ class TestOrgSessionContext:
         org = await derp.auth.create_org(
             name="Acme", slug="acme", creator_id=result.user.id
         )
+        assert org is not None
 
         session = await derp.auth.authenticate(
             bearer_request(result.tokens.access_token)
@@ -377,6 +395,7 @@ class TestOrgSessionContext:
         # Create org as a different user
         other_id = await _create_user(derp, "other@example.com", mock_smtp)
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=other_id)
+        assert org is not None
 
         session = await derp.auth.authenticate(
             bearer_request(sign_up_result.tokens.access_token)
@@ -400,6 +419,7 @@ class TestOrgSessionContext:
         org = await derp.auth.create_org(
             name="Acme", slug="acme", creator_id=result.user.id
         )
+        assert org is not None
 
         session = await derp.auth.authenticate(
             bearer_request(result.tokens.access_token)
@@ -436,6 +456,7 @@ class TestOrgSessionContext:
         org = await derp.auth.create_org(
             name="Acme", slug="acme", creator_id=result.user.id
         )
+        assert org is not None
 
         session = await derp.auth.authenticate(
             bearer_request(result.tokens.access_token)
@@ -488,6 +509,7 @@ class TestOrgAuthorization:
         org = await derp.auth.create_org(
             name="Acme", slug="acme", creator_id=result.user.id
         )
+        assert org is not None
 
         session = await derp.auth.authenticate(
             bearer_request(result.tokens.access_token)
@@ -517,6 +539,7 @@ class TestOrgAuthorization:
         org = await derp.auth.create_org(
             name="Acme", slug="acme", creator_id=result.user.id
         )
+        assert org is not None
 
         session = await derp.auth.authenticate(
             bearer_request(result.tokens.access_token)
@@ -547,6 +570,7 @@ class TestOrgAuthorization:
         org = await derp.auth.create_org(
             name="Acme", slug="acme", creator_id=result.user.id
         )
+        assert org is not None
 
         session = await derp.auth.authenticate(
             bearer_request(result.tokens.access_token)

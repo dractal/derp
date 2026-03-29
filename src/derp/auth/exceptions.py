@@ -45,24 +45,3 @@ class EmailSendError(AuthError):
 
     def __init__(self, message: str = "Failed to send email"):
         super().__init__(message, code="email_send_error")
-
-
-class OrgAlreadyExistsError(AuthError):
-    """Raised when an organization with the same slug already exists."""
-
-    def __init__(self, message: str = "Organization with this slug already exists"):
-        super().__init__(message, code="org_already_exists")
-
-
-class OrgMemberExistsError(AuthError):
-    """Raised when a user is already a member of the organization."""
-
-    def __init__(self, message: str = "User is already a member of this organization"):
-        super().__init__(message, code="org_member_exists")
-
-
-class OrgLastOwnerError(AuthError):
-    """Raised when attempting to remove or demote the last owner."""
-
-    def __init__(self, message: str = "Cannot remove or demote the last owner"):
-        super().__init__(message, code="org_last_owner")

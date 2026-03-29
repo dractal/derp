@@ -12,19 +12,13 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-import asyncpg
 import httpx
 import jwt as pyjwt
 from etils import epy
 from jwt.algorithms import RSAAlgorithm
 
 from derp.auth.base import BaseAuthClient
-from derp.auth.exceptions import (
-    AuthNotConnectedError,
-    OrgAlreadyExistsError,
-    OrgMemberExistsError,
-    PasswordValidationError,
-)
+from derp.auth.exceptions import AuthNotConnectedError, PasswordValidationError
 from derp.auth.jwt import TokenPair
 from derp.auth.models import (
     AuthOrganization,
@@ -778,18 +772,18 @@ class CognitoAuthClient(BaseAuthClient):
         slug: str,
         creator_id: str | uuid.UUID,
         **kwargs: Any,
-    ) -> OrgInfo:
+    ) -> OrgInfo | None:
         now = datetime.now(UTC)
-        try:
-            org = await (
-                self._db()
-                .insert(AuthOrganization)
-                .values(name=name, slug=slug, created_at=now, updated_at=now)
-                .returning(AuthOrganization)
-                .execute()
-            )
-        except asyncpg.UniqueViolationError as exc:
-            raise OrgAlreadyExistsError() from exc
+        org = await (
+            self._db()
+            .insert(AuthOrganization)
+            .values(name=name, slug=slug, created_at=now, updated_at=now)
+            .ignore_conflicts(target=AuthOrganization.slug)
+            .returning(AuthOrganization)
+            .execute()
+        )
+        if org is None:
+            return None
 
         await (
             self._db()
@@ -903,24 +897,26 @@ class CognitoAuthClient(BaseAuthClient):
         org_id: str | uuid.UUID,
         user_id: str | uuid.UUID,
         role: str = "member",
-    ) -> OrgMemberInfo:
+    ) -> OrgMemberInfo | None:
         now = datetime.now(UTC)
-        try:
-            member = await (
-                self._db()
-                .insert(CognitoOrgMember)
-                .values(
-                    org_id=str(org_id),
-                    user_id=str(user_id),
-                    role=role,
-                    created_at=now,
-                    updated_at=now,
-                )
-                .returning(CognitoOrgMember)
-                .execute()
+        member = await (
+            self._db()
+            .insert(CognitoOrgMember)
+            .values(
+                org_id=str(org_id),
+                user_id=str(user_id),
+                role=role,
+                created_at=now,
+                updated_at=now,
             )
-        except asyncpg.UniqueViolationError as exc:
-            raise OrgMemberExistsError() from exc
+            .ignore_conflicts(
+                target=(CognitoOrgMember.org_id, CognitoOrgMember.user_id),
+            )
+            .returning(CognitoOrgMember)
+            .execute()
+        )
+        if member is None:
+            return None
         return self._to_org_member_info(member)
 
     async def update_org_member(

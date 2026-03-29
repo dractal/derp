@@ -220,3 +220,22 @@ class CognitoOrgMember(Table, table="org_members"):
             Index(cls.org_id),
             Index(cls.user_id),
         ]
+
+
+class SupabaseOrgMember(Table, table="org_members"):
+    """Organization membership table (Supabase — no FK to users table)."""
+
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
+    org_id: UUID = Field(foreign_key=AuthOrganization.id, on_delete=FK.CASCADE)
+    user_id: UUID = Field()
+    role: Varchar[L[50]] = Field(default="member")
+    created_at: TimestampTZ = Field(default=Fn.now())
+    updated_at: TimestampTZ = Field(default=Fn.now())
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [
+            Index(cls.org_id, cls.user_id, unique=True),
+            Index(cls.org_id),
+            Index(cls.user_id),
+        ]

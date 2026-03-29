@@ -10,9 +10,6 @@ from derp.auth.exceptions import (
     AuthError,
     ConfirmationURLMissingError,
     EmailSendError,
-    OrgAlreadyExistsError,
-    OrgLastOwnerError,
-    OrgMemberExistsError,
     PasswordValidationError,
     SignupDisabledError,
 )
@@ -28,6 +25,7 @@ from derp.auth.models import (
     OrgInfo,
     OrgMemberInfo,
     SessionInfo,
+    SupabaseOrgMember,
     UserInfo,
 )
 from derp.auth.native_client import NativeAuthClient
@@ -43,6 +41,7 @@ from derp.auth.providers import (
     GoogleProvider,
     OAuthUserInfo,
 )
+from derp.auth.supabase_client import SupabaseAuthClient
 from derp.config import (
     AuthConfig,
     ClerkConfig,
@@ -53,6 +52,7 @@ from derp.config import (
     JWTConfig,
     NativeAuthConfig,
     PasswordConfig,
+    SupabaseConfig,
 )
 
 __all__ = [
@@ -66,13 +66,11 @@ __all__ = [
     "JWTConfig",
     "NativeAuthConfig",
     "PasswordConfig",
+    "SupabaseConfig",
     # Exceptions
     "AuthError",
     "ConfirmationURLMissingError",
     "EmailSendError",
-    "OrgAlreadyExistsError",
-    "OrgLastOwnerError",
-    "OrgMemberExistsError",
     "PasswordValidationError",
     "SignupDisabledError",
     # JWT
@@ -107,4 +105,6 @@ __all__ = [
     "ClerkAuthClient",
     "CognitoAuthClient",
     "NativeAuthClient",
+    "SupabaseAuthClient",
+    "SupabaseOrgMember",
 ]

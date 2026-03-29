@@ -798,51 +798,51 @@ async def test_acquire_yields_connection_directly():
 
 
 def test_insert_returning_preserves_connection():
-    """returning() propagates the pool/connection to the new builder."""
+    """returning() propagates the pool/connection via the parent query."""
     sentinel = object()
     query = InsertQuery(sentinel, User).values(name="Alice")  # type: ignore[arg-type]
     returning_query = query.returning(User)
-    assert returning_query._pool is sentinel
+    assert returning_query._parent._pool is sentinel
 
 
-def test_insert_returning_dict_preserves_connection():
+def test_insert_returning_tuple_preserves_connection():
     """returning() with columns propagates the pool/connection."""
     sentinel = object()
     query = InsertQuery(sentinel, User).values(name="Alice")  # type: ignore[arg-type]
     returning_query = query.returning(User.id)
-    assert returning_query._pool is sentinel
+    assert returning_query._parent._pool is sentinel
 
 
 def test_update_returning_preserves_connection():
-    """returning() propagates the pool/connection to the new builder."""
+    """returning() propagates the pool/connection via the parent query."""
     sentinel = object()
     query = UpdateQuery(sentinel, User).set(name="Bob")  # type: ignore[arg-type]
     returning_query = query.returning(User)
-    assert returning_query._pool is sentinel
+    assert returning_query._parent._pool is sentinel
 
 
-def test_update_returning_dict_preserves_connection():
+def test_update_returning_tuple_preserves_connection():
     """returning() with columns propagates the pool/connection."""
     sentinel = object()
     query = UpdateQuery(sentinel, User).set(name="Bob")  # type: ignore[arg-type]
     returning_query = query.returning(User.id)
-    assert returning_query._pool is sentinel
+    assert returning_query._parent._pool is sentinel
 
 
 def test_delete_returning_preserves_connection():
-    """returning() propagates the pool/connection to the new builder."""
+    """returning() propagates the pool/connection via the parent query."""
     sentinel = object()
     query = DeleteQuery(sentinel, User).where(User.id == 1)  # type: ignore[arg-type]
     returning_query = query.returning(User)
-    assert returning_query._pool is sentinel
+    assert returning_query._parent._pool is sentinel
 
 
-def test_delete_returning_dict_preserves_connection():
+def test_delete_returning_tuple_preserves_connection():
     """returning() with columns propagates the pool/connection."""
     sentinel = object()
     query = DeleteQuery(sentinel, User).where(User.id == 1)  # type: ignore[arg-type]
     returning_query = query.returning(User.id)
-    assert returning_query._pool is sentinel
+    assert returning_query._parent._pool is sentinel
 
 
 def test_select_builds_with_connection():
@@ -1108,3 +1108,329 @@ async def test_execute_returns_tuples_for_columns():
     result = await query.execute()
     assert result == [(1, "Alice"), (2, "Bob")]
     assert all(isinstance(r, tuple) for r in result)
+
+
+# =============================================================================
+# Returning executor tests
+# =============================================================================
+
+
+def _mock_record(**kwargs: Any) -> MagicMock:
+    """Create a mock asyncpg Record that behaves like a dict."""
+    record = MagicMock()
+    record.items.return_value = list(kwargs.items())
+    record.keys.return_value = list(kwargs.keys())
+    record.__getitem__ = lambda self, k: kwargs[k]
+    record.__contains__ = lambda self, k: k in kwargs
+    record.__iter__ = lambda self: iter(kwargs)
+    return record
+
+
+def _mock_conn_fetchrow(return_value: Any) -> AsyncMock:
+    """Create a mock connection that returns a single row."""
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value=return_value)
+    return conn
+
+
+def _mock_conn_fetch(return_value: list[Any]) -> AsyncMock:
+    """Create a mock connection that returns multiple rows."""
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=return_value)
+    return conn
+
+
+# -- INSERT returning table ---------------------------------------------------
+
+
+class TestInsertReturningTable:
+    async def test_returns_model(self) -> None:
+        record = _mock_record(
+            id=1, name="Alice", email="a@b.com", age=30, created_at="now"
+        )
+        conn = _mock_conn_fetchrow(record)
+        query = InsertQuery(conn, User).values(name="Alice", email="a@b.com")
+        result = await query.returning(User).execute()
+        assert isinstance(result, User)
+        assert result.name == "Alice"
+
+    async def test_raises_on_no_rows(self) -> None:
+        conn = _mock_conn_fetchrow(None)
+        query = InsertQuery(conn, User).values(name="Alice", email="a@b.com")
+        with pytest.raises(RuntimeError, match="no rows"):
+            await query.returning(User).execute()
+
+
+# -- INSERT returning scalar (1 column) ---------------------------------------
+
+
+class TestInsertReturningScalar:
+    async def test_returns_scalar(self) -> None:
+        record = _mock_record(id=42)
+        conn = _mock_conn_fetchrow(record)
+        query = InsertQuery(conn, User).values(name="Alice", email="a@b.com")
+        result = await query.returning(User.id).execute()
+        assert result == 42
+
+    async def test_raises_on_no_rows(self) -> None:
+        conn = _mock_conn_fetchrow(None)
+        query = InsertQuery(conn, User).values(name="Alice", email="a@b.com")
+        with pytest.raises(RuntimeError, match="no rows"):
+            await query.returning(User.id).execute()
+
+
+# -- INSERT returning tuple (2+ columns) -------------------------------------
+
+
+class TestInsertReturningTuple:
+    async def test_returns_tuple(self) -> None:
+        record = _mock_record(id=1, name="Alice")
+        conn = _mock_conn_fetchrow(record)
+        query = InsertQuery(conn, User).values(name="Alice", email="a@b.com")
+        result = await query.returning(User.id, User.name).execute()
+        assert result == (1, "Alice")
+        assert isinstance(result, tuple)
+
+    async def test_three_columns(self) -> None:
+        record = _mock_record(id=1, name="Alice", email="a@b.com")
+        conn = _mock_conn_fetchrow(record)
+        query = InsertQuery(conn, User).values(name="Alice", email="a@b.com")
+        result = await query.returning(User.id, User.name, User.email).execute()
+        assert result == (1, "Alice", "a@b.com")
+
+
+# -- INSERT ignore_conflicts returning table ----------------------------------
+
+
+class TestInsertIgnoreConflictsReturningTable:
+    async def test_returns_model_on_insert(self) -> None:
+        record = _mock_record(
+            id=1, name="Alice", email="a@b.com", age=30, created_at="now"
+        )
+        conn = _mock_conn_fetchrow(record)
+        query = (
+            InsertQuery(conn, User)
+            .values(name="Alice", email="a@b.com")
+            .ignore_conflicts(target=User.email)
+        )
+        result = await query.returning(User).execute()
+        assert isinstance(result, User)
+        assert result.name == "Alice"
+
+    async def test_returns_none_on_conflict(self) -> None:
+        conn = _mock_conn_fetchrow(None)
+        query = (
+            InsertQuery(conn, User)
+            .values(name="Alice", email="a@b.com")
+            .ignore_conflicts(target=User.email)
+        )
+        result = await query.returning(User).execute()
+        assert result is None
+
+
+# -- INSERT ignore_conflicts returning scalar ---------------------------------
+
+
+class TestInsertIgnoreConflictsReturningScalar:
+    async def test_returns_scalar_on_insert(self) -> None:
+        record = _mock_record(id=42)
+        conn = _mock_conn_fetchrow(record)
+        query = (
+            InsertQuery(conn, User)
+            .values(name="Alice", email="a@b.com")
+            .ignore_conflicts(target=User.email)
+        )
+        result = await query.returning(User.id).execute()
+        assert result == 42
+
+    async def test_returns_none_on_conflict(self) -> None:
+        conn = _mock_conn_fetchrow(None)
+        query = (
+            InsertQuery(conn, User)
+            .values(name="Alice", email="a@b.com")
+            .ignore_conflicts(target=User.email)
+        )
+        result = await query.returning(User.id).execute()
+        assert result is None
+
+
+# -- INSERT ignore_conflicts returning tuple ----------------------------------
+
+
+class TestInsertIgnoreConflictsReturningTuple:
+    async def test_returns_tuple_on_insert(self) -> None:
+        record = _mock_record(id=1, name="Alice")
+        conn = _mock_conn_fetchrow(record)
+        query = (
+            InsertQuery(conn, User)
+            .values(name="Alice", email="a@b.com")
+            .ignore_conflicts(target=User.email)
+        )
+        result = await query.returning(User.id, User.name).execute()
+        assert result == (1, "Alice")
+
+    async def test_returns_none_on_conflict(self) -> None:
+        conn = _mock_conn_fetchrow(None)
+        query = (
+            InsertQuery(conn, User)
+            .values(name="Alice", email="a@b.com")
+            .ignore_conflicts(target=User.email)
+        )
+        result = await query.returning(User.id, User.name).execute()
+        assert result is None
+
+
+# -- UPDATE returning table ---------------------------------------------------
+
+
+class TestUpdateReturningTable:
+    async def test_returns_list_of_models(self) -> None:
+        records = [
+            _mock_record(id=1, name="Bob", email="a@b.com", age=30, created_at="now"),
+            _mock_record(id=2, name="Bob", email="b@c.com", age=25, created_at="now"),
+        ]
+        conn = _mock_conn_fetch(records)
+        query = UpdateQuery(conn, User).set(name="Bob").where(User.age > 20)
+        result = await query.returning(User).execute()
+        assert len(result) == 2
+        assert all(isinstance(r, User) for r in result)
+        assert result[0].name == "Bob"
+
+    async def test_returns_empty_list(self) -> None:
+        conn = _mock_conn_fetch([])
+        query = UpdateQuery(conn, User).set(name="Bob").where(User.id == 999)
+        result = await query.returning(User).execute()
+        assert result == []
+
+
+# -- UPDATE returning scalar --------------------------------------------------
+
+
+class TestUpdateReturningScalar:
+    async def test_returns_list_of_scalars(self) -> None:
+        records = [_mock_record(id=1), _mock_record(id=2), _mock_record(id=3)]
+        conn = _mock_conn_fetch(records)
+        query = UpdateQuery(conn, User).set(name="Bob").where(User.age > 20)
+        result = await query.returning(User.id).execute()
+        assert result == [1, 2, 3]
+
+    async def test_returns_empty_list(self) -> None:
+        conn = _mock_conn_fetch([])
+        query = UpdateQuery(conn, User).set(name="Bob").where(User.id == 999)
+        result = await query.returning(User.id).execute()
+        assert result == []
+
+
+# -- UPDATE returning tuple ---------------------------------------------------
+
+
+class TestUpdateReturningTuple:
+    async def test_returns_list_of_tuples(self) -> None:
+        records = [
+            _mock_record(id=1, name="Bob"),
+            _mock_record(id=2, name="Bob"),
+        ]
+        conn = _mock_conn_fetch(records)
+        query = UpdateQuery(conn, User).set(name="Bob").where(User.age > 20)
+        result = await query.returning(User.id, User.name).execute()
+        assert result == [(1, "Bob"), (2, "Bob")]
+        assert all(isinstance(r, tuple) for r in result)
+
+
+# -- DELETE returning table ---------------------------------------------------
+
+
+class TestDeleteReturningTable:
+    async def test_returns_list_of_models(self) -> None:
+        records = [
+            _mock_record(id=1, name="Alice", email="a@b.com", age=30, created_at="now"),
+        ]
+        conn = _mock_conn_fetch(records)
+        query = DeleteQuery(conn, User).where(User.id == 1)
+        result = await query.returning(User).execute()
+        assert len(result) == 1
+        assert isinstance(result[0], User)
+
+    async def test_returns_empty_list(self) -> None:
+        conn = _mock_conn_fetch([])
+        query = DeleteQuery(conn, User).where(User.id == 999)
+        result = await query.returning(User).execute()
+        assert result == []
+
+
+# -- DELETE returning scalar --------------------------------------------------
+
+
+class TestDeleteReturningScalar:
+    async def test_returns_list_of_scalars(self) -> None:
+        records = [_mock_record(id=1), _mock_record(id=2)]
+        conn = _mock_conn_fetch(records)
+        query = DeleteQuery(conn, User).where(User.age < 18)
+        result = await query.returning(User.id).execute()
+        assert result == [1, 2]
+
+
+# -- DELETE returning tuple ---------------------------------------------------
+
+
+class TestDeleteReturningTuple:
+    async def test_returns_list_of_tuples(self) -> None:
+        records = [
+            _mock_record(id=1, email="a@b.com"),
+            _mock_record(id=2, email="b@c.com"),
+        ]
+        conn = _mock_conn_fetch(records)
+        query = DeleteQuery(conn, User).where(User.age < 18)
+        result = await query.returning(User.id, User.email).execute()
+        assert result == [(1, "a@b.com"), (2, "b@c.com")]
+        assert all(isinstance(r, tuple) for r in result)
+
+
+# -- SQL generation tests for RETURNING clause --------------------------------
+
+
+class TestReturningSQLGeneration:
+    def test_insert_returning_table_sql(self) -> None:
+        query = InsertQuery(None, User).values(name="Alice", email="a@b.com")
+        sql, _ = query.returning(User).build()
+        assert "RETURNING *" in sql
+
+    def test_insert_returning_single_column_sql(self) -> None:
+        query = InsertQuery(None, User).values(name="Alice", email="a@b.com")
+        sql, _ = query.returning(User.id).build()
+        assert "RETURNING id" in sql
+
+    def test_insert_returning_multi_column_sql(self) -> None:
+        query = InsertQuery(None, User).values(name="Alice", email="a@b.com")
+        sql, _ = query.returning(User.id, User.name).build()
+        assert "RETURNING id, name" in sql
+
+    def test_insert_ignore_conflicts_returning_sql(self) -> None:
+        query = (
+            InsertQuery(None, User)
+            .values(name="Alice", email="a@b.com")
+            .ignore_conflicts(target=User.email)
+        )
+        sql, _ = query.returning(User.id).build()
+        assert "ON CONFLICT (email) DO NOTHING" in sql
+        assert "RETURNING id" in sql
+
+    def test_update_returning_table_sql(self) -> None:
+        query = UpdateQuery(None, User).set(name="Bob").where(User.id == 1)
+        sql, _ = query.returning(User).build()
+        assert "RETURNING *" in sql
+
+    def test_update_returning_columns_sql(self) -> None:
+        query = UpdateQuery(None, User).set(name="Bob").where(User.id == 1)
+        sql, _ = query.returning(User.id, User.name).build()
+        assert "RETURNING id, name" in sql
+
+    def test_delete_returning_table_sql(self) -> None:
+        query = DeleteQuery(None, User).where(User.id == 1)
+        sql, _ = query.returning(User).build()
+        assert "RETURNING *" in sql
+
+    def test_delete_returning_columns_sql(self) -> None:
+        query = DeleteQuery(None, User).where(User.id == 1)
+        sql, _ = query.returning(User.id, User.email).build()
+        assert "RETURNING id, email" in sql

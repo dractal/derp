@@ -191,6 +191,7 @@ def discover_tables(
     if auth_config is not None:
         native = getattr(auth_config, "native", None)
         cognito = getattr(auth_config, "cognito", None)
+        supabase = getattr(auth_config, "supabase", None)
 
         auth_tables: list[type[Table]] = []
 
@@ -213,6 +214,11 @@ def discover_tables(
             from derp.auth.models import AuthOrganization, CognitoOrgMember
 
             auth_tables = [AuthOrganization, CognitoOrgMember]
+        
+        elif supabase is not None:
+            from derp.auth.models import AuthOrganization, SupabaseOrgMember
+
+            auth_tables = [AuthOrganization, SupabaseOrgMember]
 
         for auth_table in auth_tables:
             if not any(issubclass(t, auth_table) for t in tables):
