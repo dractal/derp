@@ -54,77 +54,80 @@ Use `schema_path = "app/*"` to load tables from all files in a directory.
 ```python
 from __future__ import annotations
 
-import uuid
-from datetime import datetime
-
 from derp.orm import (
-    Table, Field, UUID, Varchar, Text, Integer,
-    Boolean, Timestamp, ForeignKey, ForeignKeyAction,
+    Table, Field, Nullable, UUID, Varchar, Text, Integer,
+    Boolean, TimestampTZ,
 )
 
 
 class User(Table, table="users"):
-    id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-    name: str = Field(Varchar(255))
-    email: str = Field(Varchar(255), unique=True)
-    age: int | None = Field(Integer(), nullable=True)
-    is_active: bool = Field(Boolean(), default="true")
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
+    id: UUID = Field(primary=True, default="gen_random_uuid()")
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field(unique=True)
+    age: Nullable[Integer] = Field()
+    is_active: Boolean = Field(default="true")
+    created_at: TimestampTZ = Field(default="now()")
 
 
 class Post(Table, table="posts"):
-    id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-    author_id: uuid.UUID = Field(
-        UUID(),
-        foreign_key=ForeignKey(User, on_delete=ForeignKeyAction.CASCADE),
-        index=True,
-    )
-    title: str = Field(Varchar(255))
-    content: str = Field(Text())
-    published: bool = Field(Boolean(), default="false")
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
+    id: UUID = Field(primary=True, default="gen_random_uuid()")
+    author_id: UUID = Field(foreign_key=User.id, on_delete="cascade")
+    title: Varchar[255] = Field()
+    content: Text = Field()
+    published: Boolean = Field(default="false")
+    created_at: TimestampTZ = Field(default="now()")
 ```
 
 ### Key rules
 
 1. **Always use `from __future__ import annotations`**.
-2. **Fields default to NOT NULL**. Use `nullable=True` for optional columns.
-3. **Use `Table.c.column`** for queries, not `Table.column`.
-4. **Foreign keys** accept table classes (`ForeignKey(User)`) or strings (`ForeignKey("users.id")`).
+2. **Column type is the annotation**, not a `Field()` argument: `name: Varchar[255] = Field()`.
+3. **Fields default to NOT NULL**. Use `Nullable[Type]` for optional columns.
+4. **Foreign keys**: `Field(foreign_key=User.id, on_delete="cascade")` or `Field(foreign_key="users.id")`.
 5. **Defaults can be SQL expressions**: `default="now()"`, `default="gen_random_uuid()"`.
 
 ### Field types
 
-| Type                            | Python Type | Description                       |
-| ------------------------------- | ----------- | --------------------------------- |
-| `UUID()`                        | `uuid.UUID` | UUID                              |
-| `Serial()`                      | `int`       | Auto-incrementing 4-byte integer  |
-| `Integer()`                     | `int`       | 4-byte integer                    |
-| `BigInt()`                      | `int`       | 8-byte integer                    |
-| `SmallInt()`                    | `int`       | 2-byte integer                    |
-| `Varchar(n)`                    | `str`       | Variable-length string with limit |
-| `Text()`                        | `str`       | Unlimited length string           |
-| `Boolean()`                     | `bool`      | Boolean                           |
-| `Timestamp(with_timezone=True)` | `datetime`  | Timestamp                         |
-| `Date()`                        | `date`      | Date                              |
-| `Numeric(precision, scale)`     | `Decimal`   | Exact numeric                     |
-| `JSON()`                        | `Any`       | JSON                              |
-| `JSONB()`                       | `Any`       | Binary JSON (prefer over JSON)    |
-| `Array(Integer())`              | `list[int]` | Array of another type             |
-| `Enum(MyEnum)`                  | `StrEnum`   | PostgreSQL enum                   |
+| Annotation          | SQL Type       | Description                       |
+| ------------------- | -------------- | --------------------------------- |
+| `UUID`              | UUID           | UUID                              |
+| `Serial`            | SERIAL         | Auto-incrementing 4-byte integer  |
+| `Integer`           | INTEGER        | 4-byte integer                    |
+| `BigInt`            | BIGINT         | 8-byte integer                    |
+| `SmallInt`          | SMALLINT       | 2-byte integer                    |
+| `Varchar[255]`      | VARCHAR(255)   | Variable-length string with limit |
+| `Text`              | TEXT           | Unlimited length string           |
+| `Boolean`           | BOOLEAN        | Boolean                           |
+| `TimestampTZ`       | TIMESTAMPTZ    | Timestamp with time zone          |
+| `Timestamp`         | TIMESTAMP      | Timestamp without time zone       |
+| `Date`              | DATE           | Date                              |
+| `Numeric`           | NUMERIC        | Exact numeric                     |
+| `JSON`              | JSON           | JSON                              |
+| `JSONB`             | JSONB          | Binary JSON (prefer over JSON)    |
+| `Enum[MyEnum]`      | (derived)      | PostgreSQL enum from StrEnum      |
+| `Nullable[Type]`    | (adds NULL)    | Nullable wrapper for any type     |
 
 ### Field options
 
 ```python
 Field(
-    field_type,           # Required: UUID(), Varchar(255), etc.
-    primary_key=False,
+    primary=False,
     unique=False,
-    nullable=False,       # Default: NOT NULL
     default=None,         # SQL expression as string
-    foreign_key=None,
-    index=False,
+    generated=None,       # SQL expression for GENERATED ALWAYS AS ... STORED
+    foreign_key=None,     # Column reference or "table.column" string
+    on_delete=None,       # "cascade", "set null", "restrict", etc.
+    on_update=None,
 )
+```
+
+`generated` and `default` are mutually exclusive. Generated columns are computed by PostgreSQL on every write:
+
+```python
+class OrderLine(Table, table="order_lines"):
+    price: Integer = Field()
+    quantity: Integer = Field()
+    amount: Integer = Field(generated="price * quantity")
 ```
 
 Foreign key actions: `CASCADE`, `SET_NULL`, `SET_DEFAULT`, `RESTRICT`, `NO_ACTION`.
@@ -206,8 +209,8 @@ router = APIRouter(prefix="/posts", tags=["posts"])
 async def list_posts(derp: DerpClient = Depends(get_derp)):
     return await (
         derp.db.select(Post)
-        .where(Post.c.published == True)
-        .order_by(Post.c.created_at, asc=False)
+        .where(Post.published)
+        .order_by(Post.created_at, asc=False)
         .execute()
     )
 
@@ -233,14 +236,14 @@ db = derp.db
 
 products = await db.select(Product).execute()
 
-product = await db.select(Product).where(Product.c.id == pid).first_or_none()
+product = await db.select(Product).where(Product.id == pid).first_or_none()
 
 results = await (
     db.select(Product)
-    .where(Product.c.price > 1000)
-    .where(Product.c.name.ilike("%phone%"))
-    .where(Product.c.seller_id.in_([id1, id2]))
-    .order_by(Product.c.price, asc=False)
+    .where(Product.price > 1000)
+    .where(Product.name.ilike("%phone%"))
+    .where(Product.seller_id.in_([id1, id2]))
+    .order_by(Product.price, asc=False)
     .limit(20)
     .offset(40)
     .execute()
@@ -250,18 +253,18 @@ results = await (
 ### Operators
 
 ```python
-User.c.id == 1                          # =
-User.c.id != 1                          # !=
-User.c.age > 18                         # >
-User.c.age >= 18                        # >=
-User.c.id.in_([1, 2, 3])               # IN
-User.c.name.like("%Alice%")             # LIKE
-User.c.name.ilike("%alice%")            # ILIKE
-User.c.age.is_null()                    # IS NULL
-User.c.age.between(18, 65)             # BETWEEN
-(User.c.age > 18) & (User.c.age < 65)  # AND
+User.id == 1                          # =
+User.id != 1                          # !=
+User.age > 18                         # >
+User.age >= 18                        # >=
+User.id.in_([1, 2, 3])               # IN
+User.name.like("%Alice%")             # LIKE
+User.name.ilike("%alice%")            # ILIKE
+User.age.is_null()                    # IS NULL
+User.age.between(18, 65)             # BETWEEN
+(User.age > 18) & (User.age < 65)  # AND
 (expr1) | (expr2)                       # OR
-~(User.c.age > 18)                      # NOT
+~(User.age > 18)                      # NOT
 ```
 
 ### INSERT
@@ -288,7 +291,7 @@ await (
 await (
     db.insert(User)
     .values(email="bob@example.com", name="Bob")
-    .upsert(target=User.c.email, set={"name": "Bob Updated"})
+    .upsert(target=User.email, set={"name": "Bob Updated"})
     .execute()
 )
 ```
@@ -299,7 +302,7 @@ await (
 updated = await (
     db.update(User)
     .set(name="Robert", age=30)
-    .where(User.c.id == user_id)
+    .where(User.id == user_id)
     .returning(User)
     .execute()
 )
@@ -308,17 +311,17 @@ updated = await (
 ### DELETE
 
 ```python
-await db.delete(User).where(User.c.id == user_id).execute()
+await db.delete(User).where(User.id == user_id).execute()
 ```
 
 ### JOINs
 
 ```python
 results = await (
-    db.select(User.c.name, Post.c.title)
+    db.select(User.name, Post.title)
     .from_(User)
-    .inner_join(Post, User.c.id == Post.c.author_id)
-    .where(Post.c.published == True)
+    .inner_join(Post, User.id == Post.author_id)
+    .where(Post.published)
     .execute()
 )
 ```
@@ -330,9 +333,9 @@ Join methods: `inner_join`, `left_join`, `right_join`, `full_join`, `cross_join`
 ```python
 stats = await (
     db.select(
-        Product.c.price.sum().as_("total"),
-        Product.c.price.avg().as_("average"),
-        Product.c.id.count().as_("count"),
+        Product.price.sum().as_("total"),
+        Product.price.avg().as_("average"),
+        Product.id.count().as_("count"),
     )
     .from_(Product)
     .execute()
@@ -340,10 +343,10 @@ stats = await (
 
 # Group by + having
 sales = await (
-    db.select(Product.c.seller_id, Product.c.price.sum().as_("revenue"))
+    db.select(Product.seller_id, Product.price.sum().as_("revenue"))
     .from_(Product)
-    .group_by(Product.c.seller_id)
-    .having(Product.c.price.sum() > 100000)
+    .group_by(Product.seller_id)
+    .having(Product.price.sum() > 100000)
     .execute()
 )
 ```
@@ -351,14 +354,14 @@ sales = await (
 ### Subqueries and EXISTS
 
 ```python
-active_sellers = db.select(User.c.id).where(User.c.is_active == True)
+active_sellers = db.select(User.id).where(User.is_active)
 products = await (
     db.select(Product)
-    .where(Product.c.seller_id.in_(active_sellers))
+    .where(Productseller_id.in_(active_sellers))
     .execute()
 )
 
-has_orders = db.select(Order).where(Order.c.user_id == User.c.id)
+has_orders = db.select(Order).where(Orderuser_id == Userid)
 users = await db.select(User).where(has_orders.exists()).execute()
 ```
 
@@ -395,7 +398,7 @@ from derp.orm import sql
 
 # SQL expression in queries
 results = await (
-    db.select(Product.c.name, sql("UPPER(name)").as_("upper_name"))
+    db.select(Product.name, sql("UPPER(name)").as_("upper_name"))
     .from_(Product)
     .execute()
 )
@@ -506,7 +509,14 @@ user, tokens = await derp.auth.verify_magic_link(token)
 
 ```python
 org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=user.id)
+# Raises OrgAlreadyExistsError if slug is taken
+
 await derp.auth.add_org_member(org_id=org.id, user_id=other_id, role="member")
+# Raises OrgMemberExistsError if already a member
+
+removed = await derp.auth.remove_org_member(org_id=org.id, user_id=other_id)
+# Returns False if not found or if removing the last owner
+
 new_tokens = await derp.auth.set_active_org(
     session_id=session.session_id, org_id=org.id
 )
@@ -684,7 +694,7 @@ celery -A 'derp.queue.celery:app' beat --loglevel=info
 
 ```python
 # Correct
-await db.select(User).where(User.c.id == 1).execute()
+await db.select(User).where(User.id == 1).execute()
 
 # Wrong — will not work
 await db.select(User).where(User.id == 1).execute()
@@ -693,7 +703,7 @@ await db.select(User).where(User.id == 1).execute()
 ### UUID columns compared as strings
 
 ```python
-user = await db.select(User).where(User.c.id == str(user_id)).first_or_none()
+user = await db.select(User).where(User.id == str(user_id)).first_or_none()
 ```
 
 ### No lazy-loading relationships
@@ -701,7 +711,7 @@ user = await db.select(User).where(User.c.id == str(user_id)).first_or_none()
 Fetch related data explicitly with queries or joins:
 
 ```python
-posts = await db.select(Post).where(Post.c.author_id == user.id).execute()
+posts = await db.select(Post).where(Post.author_id == user.id).execute()
 ```
 
 ### Prefer JSONB over JSON

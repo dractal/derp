@@ -200,24 +200,38 @@ class ClerkConfig(BaseModel):
     authorized_parties: Sequence[str] = ()
 
 
+class CognitoConfig(BaseModel):
+    """Configuration for AWS Cognito authentication."""
+
+    user_pool_id: str
+    client_id: str
+    region: str
+    client_secret: str
+    access_key_id: str | None = None
+    secret_access_key: str | None = None
+    domain: str | None = None
+    redirect_uri: str | None = None
+
+
 class AuthConfig(BaseModel):
     """Auth configuration — exactly one backend must be set."""
 
     native: NativeAuthConfig | None = None
     clerk: ClerkConfig | None = None
+    cognito: CognitoConfig | None = None
 
     @model_validator(mode="after")
     def _check_single_backend(self) -> AuthConfig:
-        if self.native is not None and self.clerk is not None:
+        backends = [self.native, self.clerk, self.cognito]
+        configured = sum(1 for b in backends if b is not None)
+        if configured > 1:
             raise ValueError(
                 "Only one auth backend can be configured at a time. "
-                "Set either [auth.native] or [auth.clerk], not both."
+                "Set exactly one of [auth.native], [auth.clerk], "
+                "or [auth.cognito]."
             )
-        if self.native is None and self.clerk is None:
-            raise ValueError(
-                "At least one auth backend must be configured. "
-                "Set either [auth.native] or [auth.clerk]."
-            )
+        if configured == 0:
+            raise ValueError("At least one auth backend must be configured.")
         return self
 
 

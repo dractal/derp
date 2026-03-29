@@ -133,9 +133,10 @@ class ClerkAuthClient(BaseAuthClient):
         )
         return self._to_user_info(user)
 
-    async def delete_user(self, user_id: str | uuid.UUID) -> None:
+    async def delete_user(self, user_id: str | uuid.UUID) -> bool:
         """Delete a Clerk user."""
-        await self._clerk.users.delete_async(user_id=str(user_id))
+        result = await self._clerk.users.delete_async(user_id=str(user_id))
+        return result.deleted
 
     async def count_users(self) -> int:
         """Return the total number of Clerk users."""
@@ -308,11 +309,12 @@ class ClerkAuthClient(BaseAuthClient):
         )
         return self._to_org_info(org)
 
-    async def delete_org(self, org_id: str | uuid.UUID) -> None:
+    async def delete_org(self, org_id: str | uuid.UUID) -> bool:
         """Delete a Clerk organization."""
-        await self._clerk.organizations.delete_async(
+        result = await self._clerk.organizations.delete_async(
             organization_id=str(org_id),
         )
+        return result.deleted
 
     async def list_orgs(
         self,
@@ -371,12 +373,13 @@ class ClerkAuthClient(BaseAuthClient):
         *,
         org_id: str | uuid.UUID,
         user_id: str | uuid.UUID,
-    ) -> None:
+    ) -> bool:
         """Remove a user from a Clerk organization."""
         await self._clerk.organization_memberships.delete_async(
             organization_id=str(org_id),
             user_id=str(user_id),
         )
+        return True
 
     async def list_org_members(
         self,

@@ -13,7 +13,7 @@ from typing import Any, Self, overload
 import asyncpg
 
 from derp.kv.base import KVClient
-from derp.orm.fields import JSON, JSONB, FieldInfo
+from derp.orm.column.base import Column
 from derp.orm.query.expressions import (
     ColumnRef,
     ExistsExpr,
@@ -36,6 +36,11 @@ async def _acquire(
             yield conn
     else:
         yield pool_or_conn
+
+
+# PostgreSQL supports max 65535 parameters per query.  Keep a safety
+# margin so callers never need to think about the limit.
+_PG_MAX_PARAMS = 65535
 
 
 class JoinType(StrEnum):
@@ -68,7 +73,7 @@ class JoinClause:
 class OrderByClause:
     """Represents an ORDER BY clause."""
 
-    column: FieldInfo[Any] | str
+    column: Column[Any] | str
     direction: SortOrder = SortOrder.ASC
 
 
@@ -100,17 +105,15 @@ class OnConflictClause:
 
 
 class _WhereShorthandMixin:
-    """Shorthand filter methods that accept string column names or FieldInfo."""
+    """Shorthand filter methods that accept string column names or Column."""
 
     def where(self, cond: Expression) -> Self:
         """Add WHERE clause. Implemented by subclasses."""
         raise NotImplementedError
 
-    def _resolve_column(
-        self, column: FieldInfo[Any] | str
-    ) -> FieldInfo[Any] | ColumnRef:
-        """Resolve a column reference from a string or FieldInfo."""
-        if isinstance(column, FieldInfo):
+    def _resolve_column(self, column: Column[Any] | str) -> Column[Any] | ColumnRef:
+        """Resolve a column reference from a string or Column."""
+        if isinstance(column, Column):
             return column
         table_name: str | None = None
         from_table = getattr(self, "_from_table", None)
@@ -133,59 +136,59 @@ class _WhereShorthandMixin:
             "Use 'table.column' format or set a FROM table."
         )
 
-    def not_(self, column: FieldInfo[Any] | str) -> Self:
+    def not_(self, column: Column[Any] | str) -> Self:
         """WHERE column == FALSE."""
         return self.where(~self._resolve_column(column))
 
-    def eq(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+    def eq(self, column: Column[Any] | str, value: Any) -> Self:
         """WHERE column = value."""
         return self.where(self._resolve_column(column) == value)
 
-    def neq(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+    def neq(self, column: Column[Any] | str, value: Any) -> Self:
         """WHERE column <> value."""
         return self.where(self._resolve_column(column) != value)
 
-    def gt(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+    def gt(self, column: Column[Any] | str, value: Any) -> Self:
         """WHERE column > value."""
         return self.where(self._resolve_column(column) > value)
 
-    def gte(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+    def gte(self, column: Column[Any] | str, value: Any) -> Self:
         """WHERE column >= value."""
         return self.where(self._resolve_column(column) >= value)
 
-    def lt(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+    def lt(self, column: Column[Any] | str, value: Any) -> Self:
         """WHERE column < value."""
         return self.where(self._resolve_column(column) < value)
 
-    def lte(self, column: FieldInfo[Any] | str, value: Any) -> Self:
+    def lte(self, column: Column[Any] | str, value: Any) -> Self:
         """WHERE column <= value."""
         return self.where(self._resolve_column(column) <= value)
 
-    def is_null(self, column: FieldInfo[Any] | str) -> Self:
+    def is_null(self, column: Column[Any] | str) -> Self:
         """WHERE column IS NULL."""
         return self.where(self._resolve_column(column).is_null())
 
-    def is_not_null(self, column: FieldInfo[Any] | str) -> Self:
+    def is_not_null(self, column: Column[Any] | str) -> Self:
         """WHERE column IS NOT NULL."""
         return self.where(self._resolve_column(column).is_not_null())
 
-    def in_(self, column: FieldInfo[Any] | str, values: Sequence[Any]) -> Self:
+    def in_(self, column: Column[Any] | str, values: Sequence[Any]) -> Self:
         """WHERE column IN (values)."""
         return self.where(self._resolve_column(column).in_(values))
 
-    def not_in(self, column: FieldInfo[Any] | str, values: Sequence[Any]) -> Self:
+    def not_in(self, column: Column[Any] | str, values: Sequence[Any]) -> Self:
         """WHERE column NOT IN (values)."""
         return self.where(self._resolve_column(column).not_in(values))
 
-    def like(self, column: FieldInfo[Any] | str, pattern: str) -> Self:
+    def like(self, column: Column[Any] | str, pattern: str) -> Self:
         """WHERE column LIKE pattern."""
         return self.where(self._resolve_column(column).like(pattern))
 
-    def ilike(self, column: FieldInfo[Any] | str, pattern: str) -> Self:
+    def ilike(self, column: Column[Any] | str, pattern: str) -> Self:
         """WHERE column ILIKE pattern."""
         return self.where(self._resolve_column(column).ilike(pattern))
 
-    def between(self, column: FieldInfo[Any] | str, low: Any, high: Any) -> Self:
+    def between(self, column: Column[Any] | str, low: Any, high: Any) -> Self:
         """WHERE column BETWEEN low AND high."""
         return self.where(self._resolve_column(column).between(low, high))
 
@@ -201,7 +204,7 @@ class SelectQuery[T](_WhereShorthandMixin):
     def __init__(
         self,
         pool: asyncpg.Pool | asyncpg.Connection | None,
-        columns: tuple[type[Table] | FieldInfo[Any] | Expression, ...],
+        columns: tuple[type[Table] | Column[Any] | Expression, ...],
         *,
         cache_store: KVClient | None = None,
         router: ReplicaRouter | None = None,
@@ -215,10 +218,10 @@ class SelectQuery[T](_WhereShorthandMixin):
         self._order_by: list[OrderByClause] = []
         self._limit_value: int | None = None
         self._offset_value: int | None = None
-        self._group_by: list[FieldInfo[Any] | str] = []
+        self._group_by: list[Column[Any] | str] = []
         self._having_clause: Expression | None = None
         self._distinct: bool = False
-        self._distinct_on: list[FieldInfo[Any]] = []
+        self._distinct_on: list[Column[Any]] = []
         self._lock: LockClause | None = None
         self._cache_store: KVClient | None = cache_store
         self._cache_ttl: float | None = None
@@ -269,7 +272,7 @@ class SelectQuery[T](_WhereShorthandMixin):
         self._joins.append(JoinClause(JoinType.CROSS, table, None))
         return self
 
-    def order_by(self, column: FieldInfo[Any] | str, *, asc: bool = True) -> Self:
+    def order_by(self, column: Column[Any] | str, *, asc: bool = True) -> Self:
         """Add ORDER BY clause."""
         self._order_by.append(
             OrderByClause(column, SortOrder.ASC if asc else SortOrder.DESC)
@@ -286,7 +289,7 @@ class SelectQuery[T](_WhereShorthandMixin):
         self._offset_value = n
         return self
 
-    def group_by(self, *columns: FieldInfo[Any] | str) -> Self:
+    def group_by(self, *columns: Column[Any] | str) -> Self:
         """Add GROUP BY clause."""
         self._group_by.extend(columns)
         return self
@@ -322,7 +325,7 @@ class SelectQuery[T](_WhereShorthandMixin):
         self._distinct = True
         return self
 
-    def distinct_on(self, *columns: FieldInfo[Any]) -> Self:
+    def distinct_on(self, *columns: Column[Any]) -> Self:
         """Add DISTINCT ON to SELECT (PostgreSQL-specific)."""
         self._distinct_on.extend(columns)
         return self
@@ -390,7 +393,7 @@ class SelectQuery[T](_WhereShorthandMixin):
                 select_parts.append(f"{table_name}.*")
             elif isinstance(col, Expression):
                 select_parts.append(col.to_sql(params))
-            elif isinstance(col, FieldInfo):
+            elif isinstance(col, Column):
                 if col._table_name and col._field_name:
                     select_parts.append(f"{col._table_name}.{col._field_name}")
                 elif col._field_name:
@@ -440,9 +443,9 @@ class SelectQuery[T](_WhereShorthandMixin):
         if self._group_by:
             group_parts = []
             for col in self._group_by:
-                if isinstance(col, FieldInfo) and col._table_name and col._field_name:
+                if isinstance(col, Column) and col._table_name and col._field_name:
                     group_parts.append(f"{col._table_name}.{col._field_name}")
-                elif isinstance(col, FieldInfo) and col._field_name:
+                elif isinstance(col, Column) and col._field_name:
                     group_parts.append(col._field_name)
                 else:
                     group_parts.append(str(col))
@@ -458,7 +461,7 @@ class SelectQuery[T](_WhereShorthandMixin):
             order_parts = []
             for ob in self._order_by:
                 if (
-                    isinstance(ob.column, FieldInfo)
+                    isinstance(ob.column, Column)
                     and ob.column._table_name
                     and ob.column._field_name
                 ):
@@ -466,7 +469,7 @@ class SelectQuery[T](_WhereShorthandMixin):
                         f"{ob.column._table_name}.{ob.column._field_name} "
                         f"{ob.direction}"
                     )
-                elif isinstance(ob.column, FieldInfo) and ob.column._field_name:
+                elif isinstance(ob.column, Column) and ob.column._field_name:
                     order_parts.append(f"{ob.column._field_name} {ob.direction}")
                 else:
                     order_parts.append(f"{ob.column} {ob.direction}")
@@ -560,32 +563,74 @@ class SelectQuery[T](_WhereShorthandMixin):
         async with _acquire(pool) as conn:
             rows = await conn.fetch(sql, *params)
 
+        # Fast path: single-Table select with no JSON columns — pass
+        # asyncpg Records straight to _from_row(), skipping the
+        # intermediate dict(row) conversion.
+        model_class = self._single_table_model()
+        if model_class is not None and not _json_columns(model_class):
+            return [  # type: ignore[return-value]
+                model_class._from_row(row) for row in rows
+            ]
+
         return self._hydrate(self._rows_to_dicts(rows))
+
+    def _single_table_model(self) -> type[Table] | None:
+        """Return the Table class when selecting a single table."""
+        if (
+            len(self._columns) == 1
+            and isinstance(self._columns[0], type)
+            and issubclass(self._columns[0], Table)
+        ):
+            return self._columns[0]
+        return None
 
     def _rows_to_dicts(self, rows: list[asyncpg.Record]) -> list[dict[str, Any]]:
         """Convert asyncpg Records to plain dicts with JSON deserialization."""
+        table = None
         if self._from_table is not None and not isinstance(
             self._from_table, str | SubqueryExpr
         ):
-            return [_deserialize_row(self._from_table, dict(row)) for row in rows]
-        if (
+            table = self._from_table
+        elif (
             len(self._columns) == 1
             and isinstance(self._columns[0], type)
             and issubclass(self._columns[0], Table)
         ):
-            return [_deserialize_row(self._columns[0], dict(row)) for row in rows]
+            table = self._columns[0]
+
+        if table is not None:
+            json_cols = _json_columns(table)
+            if json_cols:
+                return [_deserialize_row(table, dict(row)) for row in rows]
+            return [dict(row) for row in rows]
         return [dict(row) for row in rows]
+
+    def _is_single_column(self) -> bool:
+        """True when selecting exactly one Column descriptor."""
+        return len(self._columns) == 1 and isinstance(
+            self._columns[0], Column
+        )
+
+    def _is_multi_column(self) -> bool:
+        """True when selecting multiple Column descriptors."""
+        return len(self._columns) > 1 and all(
+            isinstance(c, Column) for c in self._columns
+        )
 
     def _hydrate(self, rows_data: list[dict[str, Any]]) -> list[T]:
         """Hydrate dicts into model instances or return as-is."""
-        if (
-            len(self._columns) == 1
-            and isinstance(self._columns[0], type)
-            and issubclass(self._columns[0], Table)
-        ):
-            model_class = self._columns[0]
+        model_class = self._single_table_model()
+        if model_class is not None:
             return [  # type: ignore[return-value]
-                model_class.model_validate(row) for row in rows_data
+                model_class._from_row(row) for row in rows_data
+            ]
+        if self._is_single_column():
+            return [
+                next(iter(row.values())) for row in rows_data
+            ]
+        if self._is_multi_column():
+            return [  # type: ignore[return-value]
+                tuple(row.values()) for row in rows_data
             ]
         return rows_data  # type: ignore[return-value]
 
@@ -634,7 +679,7 @@ class SetOperationQuery[T]:
         self._limit_value: int | None = None
         self._offset_value: int | None = None
 
-    def order_by(self, column: FieldInfo[Any] | str, *, asc: bool = True) -> Self:
+    def order_by(self, column: Column[Any] | str, *, asc: bool = True) -> Self:
         """Add ORDER BY to the combined result."""
         self._order_by.append(
             OrderByClause(column, SortOrder.ASC if asc else SortOrder.DESC)
@@ -667,7 +712,7 @@ class SetOperationQuery[T]:
             order_parts = []
             for ob in self._order_by:
                 if (
-                    isinstance(ob.column, FieldInfo)
+                    isinstance(ob.column, Column)
                     and ob.column._table_name
                     and ob.column._field_name
                 ):
@@ -675,7 +720,7 @@ class SetOperationQuery[T]:
                         f"{ob.column._table_name}.{ob.column._field_name} "
                         f"{ob.direction}"
                     )
-                elif isinstance(ob.column, FieldInfo) and ob.column._field_name:
+                elif isinstance(ob.column, Column) and ob.column._field_name:
                     order_parts.append(f"{ob.column._field_name} {ob.direction}")
                 else:
                     order_parts.append(f"{ob.column} {ob.direction}")
@@ -711,8 +756,28 @@ class _InsertQueryBase[T: Table]:
         self._on_conflict: OnConflictClause | None = None
         self._insert_columns: list[str] | None = None
         self._from_select: SelectQuery[Any] | None = None
-        self._returning: tuple[type[Table] | FieldInfo[Any], ...] | None = None
+        self._returning: tuple[type[Table] | Column[Any], ...] | None = None
         self._router: ReplicaRouter | None = router
+
+    def _chunk_values_list(
+        self,
+    ) -> list[list[dict[str, Any]]] | None:
+        """Split ``_values_list`` into chunks that fit within PG's
+        parameter limit.  Returns ``None`` when no chunking is needed.
+        """
+        if self._values_list is None or not self._values_list:
+            return None
+        num_cols = len(self._values_list[0])
+        if num_cols == 0:
+            return None
+        total_params = num_cols * len(self._values_list)
+        if total_params <= _PG_MAX_PARAMS:
+            return None
+        rows_per_chunk = _PG_MAX_PARAMS // num_cols
+        return [
+            self._values_list[i : i + rows_per_chunk]
+            for i in range(0, len(self._values_list), rows_per_chunk)
+        ]
 
     def _build(self) -> tuple[str, list[Any]]:
         """Build the SQL query and parameters."""
@@ -731,7 +796,7 @@ class _InsertQueryBase[T: Table]:
                 for col in self._returning:
                     if isinstance(col, type) and issubclass(col, Table):
                         return_parts.append("*")
-                    elif isinstance(col, FieldInfo) and col._field_name:
+                    elif isinstance(col, Column) and col._field_name:
                         return_parts.append(col._field_name)
                 sql += f" RETURNING {', '.join(return_parts)}"
 
@@ -756,8 +821,12 @@ class _InsertQueryBase[T: Table]:
         else:
             # Single-row insert
             columns = list(self._values.keys())
-            for col, val in self._values.items():
-                params.append(_serialize_value(self._table, col, val))
+            json_cols = _json_columns(self._table)
+            if json_cols:
+                for col, val in self._values.items():
+                    params.append(_serialize_value(self._table, col, val))
+            else:
+                params.extend(self._values.values())
             placeholders = [f"${i + 1}" for i in range(len(params))]
             sql = (
                 f"INSERT INTO {table_name} ({', '.join(columns)}) "
@@ -782,7 +851,7 @@ class _InsertQueryBase[T: Table]:
             for col in self._returning:
                 if isinstance(col, type) and issubclass(col, Table):
                     return_parts.append("*")
-                elif isinstance(col, FieldInfo) and col._field_name:
+                elif isinstance(col, Column) and col._field_name:
                     return_parts.append(col._field_name)
             sql += f" RETURNING {', '.join(return_parts)}"
 
@@ -802,11 +871,11 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
         self._values_list = rows
         return self
 
-    def columns(self, *cols: FieldInfo[Any] | str) -> InsertQuery[T]:
+    def columns(self, *cols: Column[Any] | str) -> InsertQuery[T]:
         """Set column names for INSERT ... SELECT."""
         resolved: list[str] = []
         for c in cols:
-            if isinstance(c, FieldInfo) and c._field_name:
+            if isinstance(c, Column) and c._field_name:
                 resolved.append(c._field_name)
             else:
                 resolved.append(str(c))
@@ -820,17 +889,17 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
 
     def _resolve_target(
         self,
-        target: FieldInfo[Any] | tuple[FieldInfo[Any], ...],
+        target: Column[Any] | tuple[Column[Any], ...],
     ) -> tuple[str, ...]:
         """Resolve conflict target to column name strings."""
-        if isinstance(target, FieldInfo):
+        if isinstance(target, Column):
             return (target._field_name or "",)
         return tuple(f._field_name or "" for f in target)
 
     def ignore_conflicts(
         self,
         *,
-        target: FieldInfo[Any] | tuple[FieldInfo[Any], ...],
+        target: Column[Any] | tuple[Column[Any], ...],
     ) -> InsertQuery[T]:
         """Add ON CONFLICT DO NOTHING."""
         self._on_conflict = OnConflictClause(
@@ -842,14 +911,14 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
     def upsert(
         self,
         *,
-        target: FieldInfo[Any] | tuple[FieldInfo[Any], ...],
+        target: Column[Any] | tuple[Column[Any], ...],
         **kwargs: Any,
     ) -> InsertQuery[T]:
         """Add ON CONFLICT DO UPDATE SET (upsert).
 
         Pass the columns to update as keyword arguments::
 
-            .upsert(target=User.c.email, name="Updated")
+            .upsert(target=User.email, name="Updated")
         """
         self._on_conflict = OnConflictClause(
             target=self._resolve_target(target),
@@ -862,10 +931,10 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
     def returning(self, table: type[T], /) -> InsertQueryReturning[T]: ...
 
     @overload
-    def returning(self, *columns: FieldInfo[Any]) -> InsertQueryReturningDict[T]: ...
+    def returning(self, *columns: Column[Any]) -> InsertQueryReturningDict[T]: ...
 
     def returning(
-        self, *columns: type[Table] | FieldInfo[Any]
+        self, *columns: type[Table] | Column[Any]
     ) -> InsertQueryReturning[T] | InsertQueryReturningDict[T]:
         """Add RETURNING clause."""
         if (
@@ -900,13 +969,31 @@ class InsertQuery[T: Table](_InsertQueryBase[T]):
         return self._build()
 
     async def execute(self) -> None:
-        """Execute the insert."""
+        """Execute the insert.
+
+        For bulk inserts via ``values_list()``, rows are automatically
+        split into chunks when the total parameter count would exceed
+        PostgreSQL's 65 535 limit.  Chunks run inside a single
+        transaction so the operation is atomic.
+        """
         if not self._pool:
             raise RuntimeError("No database connection. Call db.connect() first.")
 
-        sql, params = self.build()
-        async with _acquire(self._pool) as conn:
-            await conn.execute(sql, *params)
+        chunks = self._chunk_values_list()
+        if chunks is not None:
+            saved = self._values_list
+            async with _acquire(self._pool) as conn:
+                async with conn.transaction():
+                    for chunk in chunks:
+                        self._values_list = chunk
+                        sql, params = self.build()
+                        await conn.execute(sql, *params)
+            self._values_list = saved
+        else:
+            sql, params = self.build()
+            async with _acquire(self._pool) as conn:
+                await conn.execute(sql, *params)
+
         if self._router is not None:
             self._router.record_write()
 
@@ -933,7 +1020,7 @@ class InsertQueryReturning[T: Table](_InsertQueryBase[T]):
             row = await conn.fetchrow(sql, *params)
             if row is None:
                 raise RuntimeError("INSERT RETURNING returned no rows")
-            result = self._table.model_validate(_deserialize_row(self._table, row))
+            result = self._table._from_row(_deserialize_row(self._table, row))
         if self._router is not None:
             self._router.record_write()
         return result
@@ -986,7 +1073,7 @@ class _UpdateQueryBase[T: Table](_WhereShorthandMixin):
         self._table = table
         self._set_values: dict[str, Any] = {}
         self._where_clause: Expression | None = None
-        self._returning: tuple[type[Table] | FieldInfo[Any], ...] | None = None
+        self._returning: tuple[type[Table] | Column[Any], ...] | None = None
         self._router: ReplicaRouter | None = router
 
     def _build(self) -> tuple[str, list[Any]]:
@@ -995,11 +1082,14 @@ class _UpdateQueryBase[T: Table](_WhereShorthandMixin):
         params: list[Any] = []
 
         set_parts = []
+        json_cols = _json_columns(self._table)
         for col, val in self._set_values.items():
             if isinstance(val, RawSQL):
                 set_parts.append(f"{col} = {val.to_sql(params)}")
             else:
-                params.append(_serialize_value(self._table, col, val))
+                if json_cols and col in json_cols:
+                    val = _serialize_value(self._table, col, val)
+                params.append(val)
                 set_parts.append(f"{col} = ${len(params)}")
 
         sql = f"UPDATE {table_name} SET {', '.join(set_parts)}"
@@ -1013,7 +1103,7 @@ class _UpdateQueryBase[T: Table](_WhereShorthandMixin):
             for col in self._returning:
                 if isinstance(col, type) and issubclass(col, Table):
                     return_parts.append("*")
-                elif isinstance(col, FieldInfo) and col._field_name:
+                elif isinstance(col, Column) and col._field_name:
                     return_parts.append(col._field_name)
             sql += f" RETURNING {', '.join(return_parts)}"
 
@@ -1040,10 +1130,10 @@ class UpdateQuery[T: Table](_UpdateQueryBase[T]):
     def returning(self, table: type[T], /) -> UpdateQueryReturning[T]: ...
 
     @overload
-    def returning(self, *columns: FieldInfo[Any]) -> UpdateQueryReturningDict[T]: ...
+    def returning(self, *columns: Column[Any]) -> UpdateQueryReturningDict[T]: ...
 
     def returning(
-        self, *columns: type[Table] | FieldInfo[Any]
+        self, *columns: type[Table] | Column[Any]
     ) -> UpdateQueryReturning[T] | UpdateQueryReturningDict[T]:
         """Add RETURNING clause."""
         if (
@@ -1112,7 +1202,7 @@ class UpdateQueryReturning[T: Table](_UpdateQueryBase[T]):
         async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
             result = [
-                self._table.model_validate(_deserialize_row(self._table, row))
+                self._table._from_row(_deserialize_row(self._table, row))
                 for row in rows
             ]
         if self._router is not None:
@@ -1172,7 +1262,7 @@ class _DeleteQueryBase[T: Table](_WhereShorthandMixin):
         self._pool = pool
         self._table = table
         self._where_clause: Expression | None = None
-        self._returning: tuple[type[Table] | FieldInfo[Any], ...] | None = None
+        self._returning: tuple[type[Table] | Column[Any], ...] | None = None
         self._router: ReplicaRouter | None = router
 
     def _build(self) -> tuple[str, list[Any]]:
@@ -1191,7 +1281,7 @@ class _DeleteQueryBase[T: Table](_WhereShorthandMixin):
             for col in self._returning:
                 if isinstance(col, type) and issubclass(col, Table):
                     return_parts.append("*")
-                elif isinstance(col, FieldInfo) and col._field_name:
+                elif isinstance(col, Column) and col._field_name:
                     return_parts.append(col._field_name)
             sql += f" RETURNING {', '.join(return_parts)}"
 
@@ -1213,10 +1303,10 @@ class DeleteQuery[T: Table](_DeleteQueryBase[T]):
     def returning(self, table: type[T], /) -> DeleteQueryReturning[T]: ...
 
     @overload
-    def returning(self, *columns: FieldInfo[Any]) -> DeleteQueryReturningDict[T]: ...
+    def returning(self, *columns: Column[Any]) -> DeleteQueryReturningDict[T]: ...
 
     def returning(
-        self, *columns: type[Table] | FieldInfo[Any]
+        self, *columns: type[Table] | Column[Any]
     ) -> DeleteQueryReturning[T] | DeleteQueryReturningDict[T]:
         """Add RETURNING clause."""
         if (
@@ -1278,7 +1368,7 @@ class DeleteQueryReturning[T: Table](_DeleteQueryBase[T]):
         async with _acquire(self._pool) as conn:
             rows = await conn.fetch(sql, *params)
             result = [
-                self._table.model_validate(_deserialize_row(self._table, row))
+                self._table._from_row(_deserialize_row(self._table, row))
                 for row in rows
             ]
         if self._router is not None:
@@ -1322,23 +1412,35 @@ class DeleteQueryReturningDict[T: Table](_DeleteQueryBase[T]):
 
 def _serialize_value(table: type[Table], column: str, value: Any) -> Any:
     """Serialize value for database insertion (handles JSONB)."""
-    columns = table.get_columns()
-    if column in columns:
-        field_info = columns[column]
-        if isinstance(field_info.field_type, (JSON, JSONB)):
-            if isinstance(value, (dict, list)):
-                return json.dumps(value)
+    if column in _json_columns(table):
+        if isinstance(value, dict | list):
+            return json.dumps(value)
     return value
+
+
+_JSON_COLUMNS_CACHE: dict[type, frozenset[str]] = {}
+
+
+def _json_columns(table: type[Table]) -> frozenset[str]:
+    """Get the set of JSON/JSONB column names for a table (cached)."""
+    if table not in _JSON_COLUMNS_CACHE:
+        cols = frozenset(
+            name
+            for name, col in table.get_columns().items()
+            if col.sql_type() in ("JSON", "JSONB")
+        )
+        _JSON_COLUMNS_CACHE[table] = cols
+    return _JSON_COLUMNS_CACHE[table]
 
 
 def _deserialize_row(table: type[Table], row: dict[str, Any]) -> dict[str, Any]:
     """Deserialize row data from database (handles JSONB)."""
-    columns = table.get_columns()
+    json_cols = _json_columns(table)
+    if not json_cols:
+        return row  # fast path: no JSON columns, skip entirely
     result = dict(row)
-    for col, val in result.items():
-        if col in columns:
-            field_info = columns[col]
-            if isinstance(field_info.field_type, (JSON, JSONB)):
-                if isinstance(val, str):
-                    result[col] = json.loads(val)
+    for col_name in json_cols:
+        val = result.get(col_name)
+        if isinstance(val, str):
+            result[col_name] = json.loads(val)
     return result

@@ -10,7 +10,7 @@ from typing import Any, overload
 import asyncpg
 
 from derp.kv.base import KVClient
-from derp.orm.fields import FieldInfo
+from derp.orm.column.base import Column
 from derp.orm.query.builder import DeleteQuery, InsertQuery, SelectQuery, UpdateQuery
 from derp.orm.query.expressions import Expression
 from derp.orm.query.table_ref import TableRef
@@ -18,7 +18,135 @@ from derp.orm.router import ReplicaRouter
 from derp.orm.table import Table
 
 
-class Transaction:
+class _QueryBase:
+    """Shared typed query methods for Transaction and DatabaseEngine.
+
+    Subclasses must set ``_pool`` and may set ``_cache_store`` / ``_router``.
+    """
+
+    _pool: asyncpg.Pool | asyncpg.Connection | None
+    _cache_store: KVClient | None
+    _router: ReplicaRouter | None
+
+    # -- select overloads (1 table, 1–10 columns, fallback) --------
+
+    @overload
+    def select[T: Table](self, table: type[T], /) -> SelectQuery[T]: ...
+
+    @overload
+    def select[A](self, c1: Column[A], /) -> SelectQuery[A]: ...
+
+    @overload
+    def select[A, B](
+        self, c1: Column[A], c2: Column[B], /,
+    ) -> SelectQuery[tuple[A, B]]: ...
+
+    @overload
+    def select[A, B, C](
+        self, c1: Column[A], c2: Column[B], c3: Column[C], /,
+    ) -> SelectQuery[tuple[A, B, C]]: ...
+
+    @overload
+    def select[A, B, C, D](
+        self, c1: Column[A], c2: Column[B], c3: Column[C],
+        c4: Column[D], /,
+    ) -> SelectQuery[tuple[A, B, C, D]]: ...
+
+    @overload
+    def select[A, B, C, D, E](
+        self, c1: Column[A], c2: Column[B], c3: Column[C],
+        c4: Column[D], c5: Column[E], /,
+    ) -> SelectQuery[tuple[A, B, C, D, E]]: ...
+
+    @overload
+    def select[A, B, C, D, E, F](
+        self, c1: Column[A], c2: Column[B], c3: Column[C],
+        c4: Column[D], c5: Column[E], c6: Column[F], /,
+    ) -> SelectQuery[tuple[A, B, C, D, E, F]]: ...
+
+    @overload
+    def select[A, B, C, D, E, F, G](
+        self, c1: Column[A], c2: Column[B], c3: Column[C],
+        c4: Column[D], c5: Column[E], c6: Column[F],
+        c7: Column[G], /,
+    ) -> SelectQuery[tuple[A, B, C, D, E, F, G]]: ...
+
+    @overload
+    def select[A, B, C, D, E, F, G, H](
+        self, c1: Column[A], c2: Column[B], c3: Column[C],
+        c4: Column[D], c5: Column[E], c6: Column[F],
+        c7: Column[G], c8: Column[H], /,
+    ) -> SelectQuery[tuple[A, B, C, D, E, F, G, H]]: ...
+
+    @overload
+    def select[A, B, C, D, E, F, G, H, I](
+        self, c1: Column[A], c2: Column[B], c3: Column[C],
+        c4: Column[D], c5: Column[E], c6: Column[F],
+        c7: Column[G], c8: Column[H], c9: Column[I], /,
+    ) -> SelectQuery[tuple[A, B, C, D, E, F, G, H, I]]: ...
+
+    @overload
+    def select[A, B, C, D, E, F, G, H, I, J](
+        self, c1: Column[A], c2: Column[B], c3: Column[C],
+        c4: Column[D], c5: Column[E], c6: Column[F],
+        c7: Column[G], c8: Column[H], c9: Column[I],
+        c10: Column[J], /,
+    ) -> SelectQuery[tuple[A, B, C, D, E, F, G, H, I, J]]: ...
+
+    @overload
+    def select(
+        self, *columns: type[Table] | Column[Any] | Expression
+    ) -> SelectQuery[dict[str, Any]]: ...
+
+    def select(
+        self, *columns: type[Table] | Column[Any] | Expression
+    ) -> SelectQuery[Any]:
+        """Start a SELECT query.
+
+        Args:
+            *columns: Table classes, Column columns, or Expressions to select
+
+        Returns:
+            Typed SelectQuery builder:
+            - ``SelectQuery[T]`` for a single Table class
+            - ``SelectQuery[A]`` for a single Column
+            - ``SelectQuery[tuple[A, B, ...]]`` for multiple Columns
+            - ``SelectQuery[dict]`` for mixed/untyped selections
+        """
+        return SelectQuery(
+            self._pool,
+            columns,
+            cache_store=getattr(self, "_cache_store", None),
+            router=getattr(self, "_router", None),
+        )
+
+    def insert[T: Table](self, table: type[T]) -> InsertQuery[T]:
+        """Start an INSERT query."""
+        return InsertQuery(
+            self._pool, table,
+            router=getattr(self, "_router", None),
+        )
+
+    def update[T: Table](self, table: type[T]) -> UpdateQuery[T]:
+        """Start an UPDATE query."""
+        return UpdateQuery(
+            self._pool, table,
+            router=getattr(self, "_router", None),
+        )
+
+    def delete[T: Table](self, table: type[T]) -> DeleteQuery[T]:
+        """Start a DELETE query."""
+        return DeleteQuery(
+            self._pool, table,
+            router=getattr(self, "_router", None),
+        )
+
+    def table(self, table_name: str) -> TableRef:
+        """Start a non-ORM query from a string table name."""
+        return TableRef(table_name, self._pool)
+
+
+class Transaction(_QueryBase):
     """Transaction context manager with query builder support.
 
     Queries created via this transaction's ``select``, ``insert``,
@@ -33,12 +161,14 @@ class Transaction:
     """
 
     def __init__(self, connection: asyncpg.Connection):
-        self._connection = connection
-        self._transaction: asyncpg.connection.transaction.Transaction | None = None
+        self._pool: asyncpg.Connection = connection
+        self._cache_store: KVClient | None = None
+        self._router: ReplicaRouter | None = None
+        self._txn: asyncpg.connection.transaction.Transaction | None = None
 
     async def __aenter__(self) -> Transaction:
-        self._transaction = self._connection.transaction()
-        await self._transaction.start()
+        self._txn = self._pool.transaction()  # type: ignore[union-attr]
+        await self._txn.start()
         return self
 
     async def __aexit__(
@@ -47,47 +177,15 @@ class Transaction:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if self._transaction is None:
+        if self._txn is None:
             return
         if exc_type is not None:
-            await self._transaction.rollback()
+            await self._txn.rollback()
         else:
-            await self._transaction.commit()
-
-    # Single table selection - returns model instances
-    @overload
-    def select[T: Table](self, table: type[T], /) -> SelectQuery[T]: ...
-
-    # Fallback for column selections and mixed cases - returns dicts
-    @overload
-    def select(
-        self, *columns: type[Table] | FieldInfo[Any] | Expression
-    ) -> SelectQuery[dict[str, Any]]: ...
-
-    def select(
-        self, *columns: type[Table] | FieldInfo[Any] | Expression
-    ) -> SelectQuery[Any]:
-        """Start a SELECT query bound to this transaction's connection."""
-        return SelectQuery(self._connection, columns)
-
-    def insert[T: Table](self, table: type[T]) -> InsertQuery[T]:
-        """Start an INSERT query bound to this transaction's connection."""
-        return InsertQuery(self._connection, table)
-
-    def update[T: Table](self, table: type[T]) -> UpdateQuery[T]:
-        """Start an UPDATE query bound to this transaction's connection."""
-        return UpdateQuery(self._connection, table)
-
-    def delete[T: Table](self, table: type[T]) -> DeleteQuery[T]:
-        """Start a DELETE query bound to this transaction's connection."""
-        return DeleteQuery(self._connection, table)
-
-    def table(self, table: str) -> TableRef:
-        """Start a non ORM query from a string table name."""
-        return TableRef(table, self._connection)
+            await self._txn.commit()
 
 
-class DatabaseEngine:
+class DatabaseEngine(_QueryBase):
     """Main async database engine for Derp ORM.
 
     Example:
@@ -174,112 +272,17 @@ class DatabaseEngine:
             raise RuntimeError(
                 "Database not connected. Call connect() or use async context manager."
             )
-        return self._pool
+        return self._pool  # type: ignore[return-value]
 
-    # Single table selection - returns model instances
-    @overload
-    def select[T: Table](self, table: type[T], /) -> SelectQuery[T]: ...
-
-    # Fallback for column selections and mixed cases - returns dicts
-    @overload
-    def select(
-        self, *columns: type[Table] | FieldInfo[Any] | Expression
-    ) -> SelectQuery[dict[str, Any]]: ...
-
-    def select(
-        self, *columns: type[Table] | FieldInfo[Any] | Expression
-    ) -> SelectQuery[Any]:
-        """Start a SELECT query.
-
-        Args:
-            *columns: Table classes, FieldInfo columns, or Expressions to select
-
-        Returns:
-            Typed SelectQuery builder:
-            - SelectQuery[T] when selecting a single Table class (returns list[T])
-            - SelectQuery[dict[str, Any]] for column selections (returns list[dict])
-
-        Examples:
-            # Select all columns from User - returns list[User]
-            db.select(User).where(User.c.id == 1)
-
-            # Select specific columns - returns list[dict[str, Any]]
-            db.select(User.c.id, User.c.name)
-
-            # Join queries
-            db.select(Post, User.c.name)
-              .from_(Post)
-              .inner_join(User, Post.c.author_id == User.c.id)
-
-            # Non ORM queries
-            db.table("users").select("*").eq("id", 1).execute()
-        """
-        return SelectQuery(
-            self._pool, columns, cache_store=self._cache_store, router=self._router
+    def table(self, table_name: Table | str) -> TableRef:
+        """Start a non ORM query from a table name or Table class."""
+        name = (
+            table_name
+            if isinstance(table_name, str)
+            else table_name.get_table_name()
         )
-
-    def insert[T: Table](self, table: type[T]) -> InsertQuery[T]:
-        """Start an INSERT query.
-
-        Args:
-            table: Table class to insert into
-
-        Returns:
-            InsertQuery builder
-
-        Example::
-
-            await (
-                db.insert(User)
-                .values(name="Bob", email="bob@example.com")
-                .returning(User)
-                .execute()
-            )
-        """
-        return InsertQuery(self._pool, table, router=self._router)
-
-    def update[T: Table](self, table: type[T]) -> UpdateQuery[T]:
-        """Start an UPDATE query.
-
-        Args:
-            table: Table class to update
-
-        Returns:
-            UpdateQuery builder
-
-        Example:
-            await db.update(User).set(name="Robert").where(User.id == 1).execute()
-        """
-        return UpdateQuery(self._pool, table, router=self._router)
-
-    def delete[T: Table](self, table: type[T]) -> DeleteQuery[T]:
-        """Start a DELETE query.
-
-        Args:
-            table: Table class to delete from
-
-        Returns:
-            DeleteQuery builder
-
-        Example:
-            await db.delete(User).where(User.id == 1).execute()
-        """
-        return DeleteQuery(self._pool, table, router=self._router)
-
-    def table(self, table: Table | str) -> TableRef:
-        """Start a non ORM query from a string table name.
-
-        Args:
-            table: SQL table name
-
-        Returns:
-            TableRef with select/insert/update/delete methods
-
-        Example:
-            await db.table("users").select("*").eq("id", 1).execute()
-        """
         return TableRef(
-            table if isinstance(table, str) else table.get_table_name(),
+            name,
             self._pool,
             cache_store=self._cache_store,
             router=self._router,

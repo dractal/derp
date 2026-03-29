@@ -6,101 +6,106 @@ Defining Tables
 
 .. code-block:: python
 
-   import uuid
-   from datetime import datetime
-
    from derp.orm import (
-       Table, Field, UUID, Varchar, Text, Integer, Boolean,
-       Timestamp, ForeignKey, ForeignKeyAction,
+       Table, Field, Nullable, UUID, Varchar, Text, Integer,
+       Boolean, TimestampTZ,
    )
 
    class Product(Table, table="products"):
-       id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-       name: str = Field(Varchar(255))
-       description: str | None = Field(Text(), nullable=True)
-       price: int = Field(Integer())
-       is_active: bool = Field(Boolean(), default=True)
-       seller_id: uuid.UUID = Field(
-           UUID(),
-           foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
-           index=True,
-       )
-       created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
+       id: UUID = Field(primary=True, default="gen_random_uuid()")
+       name: Varchar[255] = Field()
+       description: Nullable[Text] = Field()
+       price: Integer = Field()
+       is_active: Boolean = Field(default="true")
+       seller_id: UUID = Field(foreign_key="users.id", on_delete="cascade")
+       created_at: TimestampTZ = Field(default="now()")
 
-Access columns via ``Product.c.name``, ``Product.c.price``, etc.
+The column type is the **annotation** (e.g. ``Varchar[255]``), not a ``Field()``
+argument. Use ``Nullable[Type]`` for nullable columns. Access columns via
+``Product.name``, ``Product.price``, etc.
 
 Field Types
 -----------
 
 .. list-table::
    :header-rows: 1
-   :widths: 20 20 20
+   :widths: 20 20
 
-   * - Type Class
+   * - Annotation
      - SQL Type
-     - Python Type
-   * - ``UUID()``
+   * - ``UUID``
      - UUID
-     - ``uuid.UUID``
-   * - ``Varchar(n)``
-     - VARCHAR(n)
-     - ``str``
-   * - ``Text()``
+   * - ``Varchar[255]``
+     - VARCHAR(255)
+   * - ``Text``
      - TEXT
-     - ``str``
-   * - ``Integer()``
+   * - ``Integer``
      - INTEGER
-     - ``int``
-   * - ``BigInt()``
+   * - ``BigInt``
      - BIGINT
-     - ``int``
-   * - ``SmallInt()``
+   * - ``SmallInt``
      - SMALLINT
-     - ``int``
-   * - ``Serial()``
+   * - ``Serial``
      - SERIAL
-     - ``int``
-   * - ``Boolean()``
+   * - ``Boolean``
      - BOOLEAN
-     - ``bool``
-   * - ``Timestamp()``
-     - TIMESTAMP
-     - ``datetime``
-   * - ``Timestamp(with_timezone=True)``
+   * - ``TimestampTZ``
      - TIMESTAMPTZ
-     - ``datetime``
-   * - ``Date()``
+   * - ``Timestamp``
+     - TIMESTAMP
+   * - ``Date``
      - DATE
-     - ``date``
-   * - ``JSON()``
+   * - ``JSON``
      - JSON
-     - ``Any``
-   * - ``JSONB()``
+   * - ``JSONB``
      - JSONB
-     - ``Any``
-   * - ``Array(Integer())``
-     - INTEGER[]
-     - ``list[int]``
-   * - ``Enum(Status)``
-     - status
-     - ``Status``
-   * - ``Numeric(10, 2)``
-     - NUMERIC(10,2)
-     - ``Decimal``
+   * - ``Numeric``
+     - NUMERIC
+   * - ``Enum[MyEnum]``
+     - (derived from class name)
+   * - ``Nullable[Type]``
+     - (adds NULL)
 
 Foreign Keys
 ------------
 
 .. code-block:: python
 
-   from derp.orm import Field, UUID, ForeignKey, ForeignKeyAction
+   # Reference a column directly
+   seller_id: UUID = Field(foreign_key=User.id, on_delete="cascade")
 
-   seller_id: uuid.UUID = Field(
-       UUID(),
-       foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
-   )
+   # Or use a string
+   seller_id: UUID = Field(foreign_key="users.id", on_delete="cascade")
 
-Actions: ``CASCADE``, ``SET_NULL``, ``SET_DEFAULT``, ``RESTRICT``, ``NO_ACTION``.
+Actions: ``cascade``, ``set null``, ``set default``, ``restrict``.
+
+Generated Columns
+-----------------
+
+Use ``generated`` to create columns computed by PostgreSQL on every write.
+``generated`` and ``default`` are mutually exclusive.
+
+.. code-block:: python
+
+   class OrderLine(Table, table="order_lines"):
+       price: Integer = Field()
+       quantity: Integer = Field()
+       amount: Integer = Field(generated="price * quantity")
+
+This produces ``amount INTEGER GENERATED ALWAYS AS (price * quantity) STORED``.
+
+A common use case is full-text search vectors:
+
+.. code-block:: python
+
+   from derp.orm import Fn
+
+   class Article(Table, table="articles"):
+       title: Varchar[255] = Field()
+       body: Text = Field()
+       search_vector: TSVector = Field(
+           generated=Fn.to_tsvector("english", "title", "body")
+       )
 
 Select
 ------
@@ -115,17 +120,17 @@ Select
    # Filtering
    product = await (
        db.select(Product)
-       .where(Product.c.id == product_id)
+       .where(Product.id == product_id)
        .first_or_none()
    )
 
    # Operators
    results = await (
        db.select(Product)
-       .where(Product.c.price > 1000)
-       .where(Product.c.name.ilike("%phone%"))
-       .where(Product.c.seller_id.in_([id1, id2]))
-       .order_by(Product.c.price, asc=False)
+       .where(Product.price > 1000)
+       .where(Product.name.ilike("%phone%"))
+       .where(Product.seller_id.in_([id1, id2]))
+       .order_by(Product.price, asc=False)
        .limit(20)
        .offset(40)
        .execute()
@@ -141,10 +146,10 @@ Joins
 .. code-block:: python
 
    orders = await (
-       db.select(Order, User.c.email)
+       db.select(Order, User.email)
        .from_(Order)
-       .inner_join(User, Order.c.user_id == User.c.id)
-       .where(Order.c.total > 5000)
+       .inner_join(User, Order.user_id == User.id)
+       .where(Order.total > 5000)
        .execute()
    )
 
@@ -181,7 +186,7 @@ Update
    updated = await (
        db.update(Product)
        .set(price=89900, is_active=False)
-       .where(Product.c.id == product_id)
+       .where(Product.id == product_id)
        .returning(Product)
        .execute()
    )
@@ -193,7 +198,7 @@ Delete
 
    await (
        db.delete(Product)
-       .where(Product.c.id == product_id)
+       .where(Product.id == product_id)
        .execute()
    )
 
@@ -225,7 +230,7 @@ Raw SQL
    from derp.orm import sql
 
    results = await (
-       db.select(Product.c.name, sql("UPPER(name)").as_("upper_name"))
+       db.select(Product.name, sql("UPPER(name)").as_("upper_name"))
        .from_(Product)
        .execute()
    )
@@ -242,11 +247,11 @@ Aggregates
 
    stats = await (
        db.select(
-           Product.c.price.sum().as_("total"),
-           Product.c.price.avg().as_("average"),
-           Product.c.id.count().as_("count"),
-           Product.c.price.min().as_("cheapest"),
-           Product.c.price.max().as_("priciest"),
+           Product.price.sum().as_("total"),
+           Product.price.avg().as_("average"),
+           Product.id.count().as_("count"),
+           Product.price.min().as_("cheapest"),
+           Product.price.max().as_("priciest"),
        )
        .from_(Product)
        .execute()
@@ -258,10 +263,10 @@ Group By / Having
 .. code-block:: python
 
    sales = await (
-       db.select(Product.c.seller_id, Product.c.price.sum().as_("revenue"))
+       db.select(Product.seller_id, Product.price.sum().as_("revenue"))
        .from_(Product)
-       .group_by(Product.c.seller_id)
-       .having(Product.c.price.sum() > 100000)
+       .group_by(Product.seller_id)
+       .having(Product.price.sum() > 100000)
        .execute()
    )
 
@@ -271,16 +276,16 @@ Subqueries and EXISTS
 .. code-block:: python
 
    # Subquery in WHERE
-   active_sellers = db.select(User.c.id).where(User.c.is_active == True)
+   active_sellers = db.select(User.id).where(User.is_active)
 
    products = await (
        db.select(Product)
-       .where(Product.c.seller_id.in_(active_sellers))
+       .where(Product.seller_id.in_(active_sellers))
        .execute()
    )
 
    # EXISTS
-   has_orders = db.select(Order).where(Order.c.user_id == User.c.id)
+   has_orders = db.select(Order).where(Order.user_id == User.id)
 
    users = await (
        db.select(User)
@@ -293,8 +298,8 @@ Set Operations
 
 .. code-block:: python
 
-   recent = db.select(Product).where(Product.c.created_at > cutoff)
-   popular = db.select(Product).where(Product.c.sales > 100)
+   recent = db.select(Product).where(Product.created_at > cutoff)
+   popular = db.select(Product).where(Product.sales > 100)
 
    combined = await recent.union(popular).execute()
    overlap  = await recent.intersect(popular).execute()

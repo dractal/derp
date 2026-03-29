@@ -1,13 +1,20 @@
 """Tests for query builder."""
 
-from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from derp.orm import Table
-from derp.orm.fields import Boolean, Field, Integer, Serial, Timestamp, Varchar
+from derp.orm import (
+    Boolean,
+    Field,
+    Integer,
+    Nullable,
+    Serial,
+    Table,
+    Varchar,
+)
+from derp.orm.query import sql
 from derp.orm.query.builder import (
     DeleteQuery,
     InsertQuery,
@@ -18,19 +25,19 @@ from derp.orm.query.builder import (
 
 
 class User(Table, table="users"):
-    id: int = Field(Serial(), primary_key=True)
-    name: str = Field(Varchar(255))
-    email: str = Field(Varchar(255), unique=True)
-    age: int = Field(Integer(), nullable=True)
-    created_at: datetime = Field(Timestamp(), default="now()")
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field(unique=True)
+    age: Nullable[Integer] = Field()
+    created_at: Varchar[255] = Field(default="now()")
 
 
 class Post(Table, table="posts"):
-    id: int = Field(Serial(), primary_key=True)
-    user_id: int = Field(Integer())
-    title: str = Field(Varchar(255))
-    content: str = Field(Varchar(1000), nullable=True)
-    published: bool = Field(Boolean(), default=False)
+    id: Serial = Field(primary=True)
+    user_id: Integer = Field()
+    title: Varchar[255] = Field()
+    content: Nullable[Varchar[1000]] = Field()
+    published: Boolean = Field(default=False)
 
 
 def test_select_all():
@@ -44,7 +51,7 @@ def test_select_all():
 
 def test_select_columns():
     """Test SELECT specific columns."""
-    query = SelectQuery[Any](None, (User.c.id, User.c.name))
+    query = SelectQuery[Any](None, (User.id, User.name))
     query.from_(User)
     sql, params = query.build()
 
@@ -54,7 +61,7 @@ def test_select_columns():
 
 def test_select_where_eq():
     """Test SELECT with WHERE equality."""
-    query = SelectQuery[User](None, (User,)).where(User.c.id == 1)
+    query = SelectQuery[User](None, (User,)).where(User.id == 1)
     sql, params = query.build()
 
     assert "SELECT users.* FROM users WHERE" in sql
@@ -64,7 +71,7 @@ def test_select_where_eq():
 
 def test_select_where_comparison():
     """Test SELECT with comparison operators."""
-    query = SelectQuery[User](None, (User,)).where(User.c.age > 18)
+    query = SelectQuery[User](None, (User,)).where(User.age > 18)
     sql, params = query.build()
 
     assert "(users.age > $1)" in sql
@@ -74,7 +81,7 @@ def test_select_where_comparison():
 def test_select_where_and():
     """Test SELECT with AND condition."""
     query = SelectQuery[User](None, (User,)).where(
-        (User.c.name == "Alice") & (User.c.age > 18)
+        (User.name == "Alice") & (User.age > 18)
     )
     sql, params = query.build()
 
@@ -87,7 +94,7 @@ def test_select_where_and():
 def test_select_where_or():
     """Test SELECT with OR condition."""
     query = SelectQuery[User](None, (User,)).where(
-        (User.c.name == "Alice") | (User.c.name == "Bob")
+        (User.name == "Alice") | (User.name == "Bob")
     )
     sql, params = query.build()
 
@@ -97,7 +104,7 @@ def test_select_where_or():
 
 def test_select_where_in():
     """Test SELECT with IN clause."""
-    query = SelectQuery[User](None, (User,)).where(User.c.id.in_([1, 2, 3]))
+    query = SelectQuery[User](None, (User,)).where(User.id.in_([1, 2, 3]))
     sql, params = query.build()
 
     assert "IN ($1, $2, $3)" in sql
@@ -106,7 +113,7 @@ def test_select_where_in():
 
 def test_select_where_like():
     """Test SELECT with LIKE pattern."""
-    query = SelectQuery[User](None, (User,)).where(User.c.name.like("%Alice%"))
+    query = SelectQuery[User](None, (User,)).where(User.name.like("%Alice%"))
     sql, params = query.build()
 
     assert "LIKE $1" in sql
@@ -115,7 +122,7 @@ def test_select_where_like():
 
 def test_select_order_by():
     """Test SELECT with ORDER BY."""
-    query = SelectQuery[User](None, (User,)).order_by(User.c.name, asc=False)
+    query = SelectQuery[User](None, (User,)).order_by(User.name, asc=False)
     sql, params = query.build()
 
     assert "ORDER BY users.name DESC" in sql
@@ -155,7 +162,7 @@ def test_insert_returning():
 
 def test_update():
     """Test UPDATE query building."""
-    query = UpdateQuery[User](None, User).set(name="Robert").where(User.c.id == 1)
+    query = UpdateQuery[User](None, User).set(name="Robert").where(User.id == 1)
     sql, params = query.build()
 
     assert "UPDATE users SET name = $1" in sql
@@ -165,7 +172,7 @@ def test_update():
 
 def test_delete():
     """Test DELETE query building."""
-    query = DeleteQuery[User](None, User).where(User.c.id == 1)
+    query = DeleteQuery[User](None, User).where(User.id == 1)
     sql, params = query.build()
 
     assert "DELETE FROM users" in sql
@@ -176,9 +183,9 @@ def test_delete():
 def test_complex_where():
     """Test complex WHERE with nested conditions."""
     query = SelectQuery[User](None, (User,)).where(
-        ((User.c.name == "Alice") | (User.c.name == "Bob"))
-        & (User.c.age > 18)
-        & (User.c.age < 65),
+        ((User.name == "Alice") | (User.name == "Bob"))
+        & (User.age > 18)
+        & (User.age < 65),
     )
     sql, params = query.build()
 
@@ -187,48 +194,46 @@ def test_complex_where():
     assert params == ["Alice", "Bob", 18, 65]
 
 
-def test_field_dunder_operators():
-    """Test FieldInfo dunder methods for binary operations."""
+def test_column_dunder_operators():
+    """Test Column dunder methods for binary operations."""
     # Test == operator
-    query = SelectQuery[User](None, (User,)).where(User.c.id == 1)
+    query = SelectQuery[User](None, (User,)).where(User.id == 1)
     sql, params = query.build()
     assert "(users.id = $1)" in sql
     assert params == [1]
 
     # Test != operator
-    query = SelectQuery[User](None, (User,)).where(User.c.id != 1)
+    query = SelectQuery[User](None, (User,)).where(User.id != 1)
     sql, params = query.build()
     assert "(users.id <> $1)" in sql
     assert params == [1]
 
     # Test > operator
-    query = SelectQuery[User](None, (User,)).where(User.c.age > 18)
+    query = SelectQuery[User](None, (User,)).where(User.age > 18)
     sql, params = query.build()
     assert "(users.age > $1)" in sql
     assert params == [18]
 
     # Test >= operator
-    query = SelectQuery[User](None, (User,)).where(User.c.age >= 18)
+    query = SelectQuery[User](None, (User,)).where(User.age >= 18)
     sql, params = query.build()
     assert "(users.age >= $1)" in sql
     assert params == [18]
 
     # Test < operator
-    query = SelectQuery[User](None, (User,)).where(User.c.age < 65)
+    query = SelectQuery[User](None, (User,)).where(User.age < 65)
     sql, params = query.build()
     assert "(users.age < $1)" in sql
     assert params == [65]
 
     # Test <= operator
-    query = SelectQuery[User](None, (User,)).where(User.c.age <= 65)
+    query = SelectQuery[User](None, (User,)).where(User.age <= 65)
     sql, params = query.build()
     assert "(users.age <= $1)" in sql
     assert params == [65]
 
     # Test complex expression with dunder operators
-    query = SelectQuery[User](None, (User,)).where(
-        (User.c.age > 18) & (User.c.age < 65)
-    )
+    query = SelectQuery[User](None, (User,)).where((User.age > 18) & (User.age < 65))
     sql, params = query.build()
     assert "(users.age > $1)" in sql
     assert "(users.age < $2)" in sql
@@ -242,9 +247,7 @@ def test_field_dunder_operators():
 
 def test_inner_join():
     """Test SELECT with INNER JOIN."""
-    query = SelectQuery[User](None, (User,)).inner_join(
-        Post, User.c.id == Post.c.user_id
-    )
+    query = SelectQuery[User](None, (User,)).inner_join(Post, User.id == Post.user_id)
     sql, params = query.build()
 
     assert "INNER JOIN posts ON" in sql
@@ -254,9 +257,7 @@ def test_inner_join():
 
 def test_left_join():
     """Test SELECT with LEFT JOIN."""
-    query = SelectQuery[User](None, (User,)).left_join(
-        Post, User.c.id == Post.c.user_id
-    )
+    query = SelectQuery[User](None, (User,)).left_join(Post, User.id == Post.user_id)
     sql, params = query.build()
 
     assert "LEFT JOIN posts ON" in sql
@@ -265,9 +266,7 @@ def test_left_join():
 
 def test_right_join():
     """Test SELECT with RIGHT JOIN."""
-    query = SelectQuery[User](None, (User,)).right_join(
-        Post, User.c.id == Post.c.user_id
-    )
+    query = SelectQuery[User](None, (User,)).right_join(Post, User.id == Post.user_id)
     sql, params = query.build()
 
     assert "RIGHT JOIN posts ON" in sql
@@ -276,9 +275,7 @@ def test_right_join():
 
 def test_full_join():
     """Test SELECT with FULL OUTER JOIN."""
-    query = SelectQuery[User](None, (User,)).full_join(
-        Post, User.c.id == Post.c.user_id
-    )
+    query = SelectQuery[User](None, (User,)).full_join(Post, User.id == Post.user_id)
     sql, params = query.build()
 
     assert "FULL OUTER JOIN posts ON" in sql
@@ -298,8 +295,8 @@ def test_multiple_joins():
     """Test SELECT with multiple JOINs."""
     query = (
         SelectQuery[User](None, (User,))
-        .inner_join(Post, User.c.id == Post.c.user_id)
-        .left_join(Post, User.c.id == Post.c.user_id)
+        .inner_join(Post, User.id == Post.user_id)
+        .left_join(Post, User.id == Post.user_id)
     )
     sql, params = query.build()
 
@@ -312,15 +309,15 @@ def test_join_with_where():
     """Test JOIN combined with WHERE clause."""
     query = (
         SelectQuery[User](None, (User,))
-        .inner_join(Post, User.c.id == Post.c.user_id)
-        .where(Post.c.published == True)  # noqa: E712
+        .inner_join(Post, User.id == Post.user_id)
+        .where(Post.published)
     )
     sql, params = query.build()
 
     assert "INNER JOIN" in sql
     assert "WHERE" in sql
-    assert "(posts.published = $1)" in sql
-    assert params == [True]
+    assert "posts.published" in sql
+    assert params == []
 
 
 # =============================================================================
@@ -330,7 +327,7 @@ def test_join_with_where():
 
 def test_group_by_single_column():
     """Test SELECT with GROUP BY single column."""
-    query = SelectQuery[User](None, (User,)).group_by(User.c.age)
+    query = SelectQuery[User](None, (User,)).group_by(User.age)
     sql, params = query.build()
 
     assert "GROUP BY users.age" in sql
@@ -339,7 +336,7 @@ def test_group_by_single_column():
 
 def test_group_by_multiple_columns():
     """Test SELECT with GROUP BY multiple columns."""
-    query = SelectQuery[User](None, (User,)).group_by(User.c.age, User.c.name)
+    query = SelectQuery[User](None, (User,)).group_by(User.age, User.name)
     sql, params = query.build()
 
     assert "GROUP BY" in sql
@@ -350,7 +347,7 @@ def test_group_by_multiple_columns():
 
 def test_group_by_with_where():
     """Test GROUP BY combined with WHERE clause."""
-    query = SelectQuery[User](None, (User,)).where(User.c.age > 18).group_by(User.c.age)
+    query = SelectQuery[User](None, (User,)).where(User.age > 18).group_by(User.age)
     sql, params = query.build()
 
     assert "WHERE" in sql
@@ -367,8 +364,8 @@ def test_order_by_multiple_columns():
     """Test SELECT with multiple ORDER BY columns."""
     query = (
         SelectQuery[User](None, (User,))
-        .order_by(User.c.age, asc=False)
-        .order_by(User.c.name, asc=True)
+        .order_by(User.age, asc=False)
+        .order_by(User.name, asc=True)
     )
     sql, params = query.build()
 
@@ -380,7 +377,7 @@ def test_order_by_multiple_columns():
 
 def test_order_by_with_limit_offset():
     """Test ORDER BY combined with LIMIT and OFFSET."""
-    query = SelectQuery[User](None, (User,)).order_by(User.c.name).limit(10).offset(20)
+    query = SelectQuery[User](None, (User,)).order_by(User.name).limit(10).offset(20)
     sql, params = query.build()
 
     assert "ORDER BY" in sql
@@ -398,7 +395,7 @@ def test_update_returning_table():
     query = (
         UpdateQuery[User](None, User)
         .set(name="Robert")
-        .where(User.c.id == 1)
+        .where(User.id == 1)
         .returning(User)
     )
     sql, params = query.build()
@@ -414,8 +411,8 @@ def test_update_returning_columns():
     query = (
         UpdateQuery[User](None, User)
         .set(name="Robert", email="robert@example.com")
-        .where(User.c.id == 1)
-        .returning(User.c.id, User.c.name)
+        .where(User.id == 1)
+        .returning(User.id, User.name)
     )
     sql, params = query.build()
 
@@ -429,7 +426,7 @@ def test_update_multiple_set():
     query = (
         UpdateQuery[User](None, User)
         .set(name="Robert", email="robert@example.com", age=30)
-        .where(User.c.id == 1)
+        .where(User.id == 1)
     )
     sql, params = query.build()
 
@@ -448,7 +445,7 @@ def test_update_multiple_set():
 
 def test_delete_returning_table():
     """Test DELETE with RETURNING table."""
-    query = DeleteQuery[User](None, User).where(User.c.id == 1).returning(User)
+    query = DeleteQuery[User](None, User).where(User.id == 1).returning(User)
     sql, params = query.build()
 
     assert "DELETE FROM users" in sql
@@ -460,9 +457,7 @@ def test_delete_returning_table():
 def test_delete_returning_columns():
     """Test DELETE with RETURNING specific columns."""
     query = (
-        DeleteQuery[User](None, User)
-        .where(User.c.id == 1)
-        .returning(User.c.id, User.c.name)
+        DeleteQuery[User](None, User).where(User.id == 1).returning(User.id, User.name)
     )
     sql, params = query.build()
 
@@ -473,7 +468,7 @@ def test_delete_returning_columns():
 
 def test_delete_with_complex_where():
     """Test DELETE with complex WHERE clause."""
-    query = DeleteQuery[User](None, User).where((User.c.age > 65) | (User.c.age < 18))
+    query = DeleteQuery[User](None, User).where((User.age > 65) | (User.age < 18))
     sql, params = query.build()
 
     assert "DELETE FROM users" in sql
@@ -492,7 +487,7 @@ def test_insert_returning_columns():
     query = (
         InsertQuery[User](None, User)
         .values(name="Bob", email="bob@example.com")
-        .returning(User.c.id, User.c.name)
+        .returning(User.id, User.name)
     )
     sql, params = query.build()
 
@@ -521,7 +516,7 @@ def test_insert_multiple_values():
 
 def test_not_in():
     """Test NOT IN clause."""
-    query = SelectQuery[User](None, (User,)).where(User.c.id.not_in([1, 2, 3]))
+    query = SelectQuery[User](None, (User,)).where(User.id.not_in([1, 2, 3]))
     sql, params = query.build()
 
     assert "NOT IN ($1, $2, $3)" in sql
@@ -530,7 +525,7 @@ def test_not_in():
 
 def test_ilike():
     """Test ILIKE (case-insensitive LIKE) clause."""
-    query = SelectQuery[User](None, (User,)).where(User.c.name.ilike("%alice%"))
+    query = SelectQuery[User](None, (User,)).where(User.name.ilike("%alice%"))
     sql, params = query.build()
 
     assert "ILIKE $1" in sql
@@ -539,7 +534,7 @@ def test_ilike():
 
 def test_is_null():
     """Test IS NULL clause."""
-    query = SelectQuery[User](None, (User,)).where(User.c.age.is_null())
+    query = SelectQuery[User](None, (User,)).where(User.age.is_null())
     sql, params = query.build()
 
     assert "IS NULL" in sql
@@ -548,7 +543,7 @@ def test_is_null():
 
 def test_is_not_null():
     """Test IS NOT NULL clause."""
-    query = SelectQuery[User](None, (User,)).where(User.c.age.is_not_null())
+    query = SelectQuery[User](None, (User,)).where(User.age.is_not_null())
     sql, params = query.build()
 
     assert "IS NOT NULL" in sql
@@ -557,7 +552,7 @@ def test_is_not_null():
 
 def test_between():
     """Test BETWEEN clause."""
-    query = SelectQuery[User](None, (User,)).where(User.c.age.between(18, 65))
+    query = SelectQuery[User](None, (User,)).where(User.age.between(18, 65))
     sql, params = query.build()
 
     assert "BETWEEN $1 AND $2" in sql
@@ -566,7 +561,7 @@ def test_between():
 
 def test_not_operator():
     """Test NOT operator."""
-    query = SelectQuery[User](None, (User,)).where(~(User.c.age > 18))
+    query = SelectQuery[User](None, (User,)).where(~(User.age > 18))
     sql, params = query.build()
 
     assert "NOT" in sql
@@ -576,7 +571,7 @@ def test_not_operator():
 
 def test_not_with_is_null():
     """Test NOT with IS NULL."""
-    query = SelectQuery[User](None, (User,)).where(~User.c.age.is_null())
+    query = SelectQuery[User](None, (User,)).where(~User.age.is_null())
     sql, params = query.build()
 
     assert "NOT" in sql
@@ -592,9 +587,9 @@ def test_not_with_is_null():
 def test_column_select_with_join():
     """Test SelectQuery with JOIN."""
     query = (
-        SelectQuery[Any](None, (User.c.id, User.c.name, Post.c.title))
+        SelectQuery[Any](None, (User.id, User.name, Post.title))
         .from_(User)
-        .inner_join(Post, User.c.id == Post.c.user_id)
+        .inner_join(Post, User.id == Post.user_id)
     )
     sql, params = query.build()
 
@@ -607,9 +602,7 @@ def test_column_select_with_join():
 def test_column_select_with_where():
     """Test SelectQuery with WHERE clause."""
     query = (
-        SelectQuery[Any](None, (User.c.id, User.c.name))
-        .from_(User)
-        .where(User.c.age > 18)
+        SelectQuery[Any](None, (User.id, User.name)).from_(User).where(User.age > 18)
     )
     sql, params = query.build()
 
@@ -620,7 +613,7 @@ def test_column_select_with_where():
 
 def test_column_select_with_group_by():
     """Test SelectQuery with GROUP BY."""
-    query = SelectQuery[Any](None, (User.c.age,)).from_(User).group_by(User.c.age)
+    query = SelectQuery[Any](None, (User.age,)).from_(User).group_by(User.age)
     sql, params = query.build()
 
     assert "SELECT users.age" in sql
@@ -637,11 +630,11 @@ def test_complex_select_all_clauses():
     """Test SELECT with all clauses combined."""
     query = (
         SelectQuery[User](None, (User,))
-        .inner_join(Post, User.c.id == Post.c.user_id)
-        .where((User.c.age > 18) & (User.c.age < 65))
-        .group_by(User.c.age)
-        .order_by(User.c.age, asc=False)
-        .order_by(User.c.name, asc=True)
+        .inner_join(Post, User.id == Post.user_id)
+        .where((User.age > 18) & (User.age < 65))
+        .group_by(User.age)
+        .order_by(User.age, asc=False)
+        .order_by(User.name, asc=True)
         .limit(10)
         .offset(20)
     )
@@ -661,11 +654,11 @@ def test_complex_select_all_clauses():
 def test_complex_where_with_all_operators():
     """Test complex WHERE with multiple operator types."""
     query = SelectQuery(None, (User,)).where(
-        (User.c.id.in_([1, 2, 3]))
-        & (User.c.name.like("%Alice%"))
-        & (User.c.age.between(18, 65))
-        & (User.c.email.is_not_null())
-        & (~(User.c.age < 18))
+        (User.id.in_([1, 2, 3]))
+        & (User.name.like("%Alice%"))
+        & (User.age.between(18, 65))
+        & (User.email.is_not_null())
+        & (~(User.age < 18))
     )
     sql, params = query.build()
 
@@ -682,12 +675,8 @@ def test_update_with_complex_where():
     query = (
         UpdateQuery[User](None, User)
         .set(name="Updated", age=30)
-        .where(
-            (User.c.id.in_([1, 2, 3]))
-            & (User.c.age > 18)
-            & (User.c.email.is_not_null())
-        )
-        .returning(User.c.id, User.c.name)
+        .where((User.id.in_([1, 2, 3])) & (User.age > 18) & (User.email.is_not_null()))
+        .returning(User.id, User.name)
     )
     sql, params = query.build()
 
@@ -703,7 +692,7 @@ def test_delete_with_multiple_conditions():
     """Test DELETE with multiple WHERE conditions."""
     query = (
         DeleteQuery[User](None, User)
-        .where((User.c.age < 18) | (User.c.age > 65))
+        .where((User.age < 18) | (User.age > 65))
         .returning(User)
     )
     sql, params = query.build()
@@ -731,7 +720,7 @@ def test_count_all():
 
 def test_count_where():
     """Test COUNT(*) with WHERE clause."""
-    query = SelectQuery[User](None, (User,)).where(User.c.age > 18)
+    query = SelectQuery[User](None, (User,)).where(User.age > 18)
     sql, params = query.build_count()
 
     assert sql == "SELECT COUNT(*) FROM users WHERE (users.age > $1)"
@@ -742,23 +731,23 @@ def test_count_join():
     """Test COUNT(*) with JOIN clause."""
     query = (
         SelectQuery[User](None, (User,))
-        .inner_join(Post, User.c.id == Post.c.user_id)
-        .where(Post.c.published == True)  # noqa: E712
+        .inner_join(Post, User.id == Post.user_id)
+        .where(Post.published)
     )
     sql, params = query.build_count()
 
     assert "SELECT COUNT(*) FROM users" in sql
     assert "INNER JOIN posts ON" in sql
-    assert "(posts.published = $1)" in sql
-    assert params == [True]
+    assert "posts.published" in sql
+    assert params == []
 
 
 def test_count_ignores_order_limit_offset():
     """Test that COUNT(*) ignores ORDER BY, LIMIT, and OFFSET."""
     query = (
         SelectQuery[User](None, (User,))
-        .where(User.c.age > 18)
-        .order_by(User.c.name)
+        .where(User.age > 18)
+        .order_by(User.name)
         .limit(10)
         .offset(20)
     )
@@ -773,7 +762,7 @@ def test_count_ignores_order_limit_offset():
 
 def test_count_ignores_column_selection():
     """Test that COUNT(*) ignores the selected columns."""
-    query = SelectQuery[Any](None, (User.c.id, User.c.name)).from_(User)
+    query = SelectQuery[Any](None, (User.id, User.name)).from_(User)
     sql, params = query.build_count()
 
     assert sql == "SELECT COUNT(*) FROM users"
@@ -820,7 +809,7 @@ def test_insert_returning_dict_preserves_connection():
     """returning() with columns propagates the pool/connection."""
     sentinel = object()
     query = InsertQuery(sentinel, User).values(name="Alice")  # type: ignore[arg-type]
-    returning_query = query.returning(User.c.id)
+    returning_query = query.returning(User.id)
     assert returning_query._pool is sentinel
 
 
@@ -836,14 +825,14 @@ def test_update_returning_dict_preserves_connection():
     """returning() with columns propagates the pool/connection."""
     sentinel = object()
     query = UpdateQuery(sentinel, User).set(name="Bob")  # type: ignore[arg-type]
-    returning_query = query.returning(User.c.id)
+    returning_query = query.returning(User.id)
     assert returning_query._pool is sentinel
 
 
 def test_delete_returning_preserves_connection():
     """returning() propagates the pool/connection to the new builder."""
     sentinel = object()
-    query = DeleteQuery(sentinel, User).where(User.c.id == 1)  # type: ignore[arg-type]
+    query = DeleteQuery(sentinel, User).where(User.id == 1)  # type: ignore[arg-type]
     returning_query = query.returning(User)
     assert returning_query._pool is sentinel
 
@@ -851,15 +840,15 @@ def test_delete_returning_preserves_connection():
 def test_delete_returning_dict_preserves_connection():
     """returning() with columns propagates the pool/connection."""
     sentinel = object()
-    query = DeleteQuery(sentinel, User).where(User.c.id == 1)  # type: ignore[arg-type]
-    returning_query = query.returning(User.c.id)
+    query = DeleteQuery(sentinel, User).where(User.id == 1)  # type: ignore[arg-type]
+    returning_query = query.returning(User.id)
     assert returning_query._pool is sentinel
 
 
 def test_select_builds_with_connection():
     """SelectQuery builds valid SQL regardless of pool vs connection."""
     sentinel = object()
-    query = SelectQuery[User](sentinel, (User,)).where(User.c.id == 1)  # type: ignore[arg-type]
+    query = SelectQuery[User](sentinel, (User,)).where(User.id == 1)  # type: ignore[arg-type]
     sql, params = query.build()
     assert sql == "SELECT users.* FROM users WHERE (users.id = $1)"
     assert params == [1]
@@ -878,9 +867,9 @@ def test_eq_with_string():
     assert params == [1]
 
 
-def test_eq_with_field_info():
-    """Test .eq() with a FieldInfo column."""
-    query = SelectQuery[User](None, (User,)).eq(User.c.id, 1)
+def test_eq_with_column():
+    """Test .eq() with a Column."""
+    query = SelectQuery[User](None, (User,)).eq(User.id, 1)
     sql, params = query.build()
     assert "(users.id = $1)" in sql
     assert params == [1]
@@ -1011,7 +1000,7 @@ def test_chained_shorthand_methods():
 
 def test_mixed_shorthand_and_where():
     """Test mixing shorthand methods with where()."""
-    query = SelectQuery[User](None, (User,)).eq("name", "Alice").where(User.c.age > 18)
+    query = SelectQuery[User](None, (User,)).eq("name", "Alice").where(User.age > 18)
     sql, params = query.build()
     assert "AND" in sql
     assert "(users.name = $1)" in sql
@@ -1042,3 +1031,86 @@ def test_shorthand_no_table_context_raises():
     query = SelectQuery[User](None, ())
     with pytest.raises(ValueError, match="no table context"):
         query.eq("id", 1)
+
+
+# =============================================================================
+# Tuple select tests
+# =============================================================================
+
+
+def test_multi_column_detected():
+    """Multi-column selection is detected."""
+    query = SelectQuery[Any](None, (User.id, User.name))
+    assert query._is_multi_column() is True
+    assert query._is_single_column() is False
+
+
+def test_single_table_not_column_selection():
+    """Single table selection is not a column selection."""
+    query = SelectQuery[User](None, (User,))
+    assert query._is_multi_column() is False
+    assert query._is_single_column() is False
+
+
+def test_single_column_detected():
+    """Single column selection is detected."""
+    query = SelectQuery[Any](None, (User.id,))
+    assert query._is_single_column() is True
+    assert query._is_multi_column() is False
+
+
+def test_hydrate_returns_scalars_for_single_column():
+    """_hydrate returns scalar values for single-column selections."""
+    query = SelectQuery[Any](None, (User.id,))
+    rows = [{"id": 1}, {"id": 2}, {"id": 3}]
+    result = query._hydrate(rows)
+    assert result == [1, 2, 3]
+
+
+def test_hydrate_returns_tuples_for_columns():
+    """_hydrate returns tuples for multi-column selections."""
+    query = SelectQuery[Any](None, (User.id, User.name))
+    rows = [{"id": 1, "name": "Alice"}, {"id": 2, "name": "Bob"}]
+    result = query._hydrate(rows)
+    assert result == [(1, "Alice"), (2, "Bob")]
+    assert all(isinstance(r, tuple) for r in result)
+
+
+def test_hydrate_returns_dicts_for_mixed():
+    """_hydrate returns dicts when selection includes non-Column items."""
+
+    query = SelectQuery[Any](None, (User.id, sql("COUNT(*)")))
+    rows = [{"id": 1, "count": 5}]
+    result = query._hydrate(rows)
+    assert result == [{"id": 1, "count": 5}]
+
+
+@pytest.mark.asyncio
+async def test_execute_returns_tuples_for_columns():
+    """Full execute path returns tuples for multi-column selections."""
+    mock_conn = AsyncMock()
+    mock_record_1 = MagicMock()
+    mock_record_1.__iter__ = MagicMock(return_value=iter([1, "Alice"]))
+    mock_record_1.items = MagicMock(
+        return_value=[("id", 1), ("name", "Alice")]
+    )
+    mock_record_1.keys = MagicMock(return_value=["id", "name"])
+    mock_record_1.__getitem__ = lambda self, k: {"id": 1, "name": "Alice"}[k]
+
+    mock_record_2 = MagicMock()
+    mock_record_2.__iter__ = MagicMock(return_value=iter([2, "Bob"]))
+    mock_record_2.items = MagicMock(
+        return_value=[("id", 2), ("name", "Bob")]
+    )
+    mock_record_2.keys = MagicMock(return_value=["id", "name"])
+    mock_record_2.__getitem__ = lambda self, k: {"id": 2, "name": "Bob"}[k]
+
+    mock_conn.fetch = AsyncMock(
+        return_value=[mock_record_1, mock_record_2]
+    )
+
+    query = SelectQuery[Any](mock_conn, (User.id, User.name))
+    query.from_(User)
+    result = await query.execute()
+    assert result == [(1, "Alice"), (2, "Bob")]
+    assert all(isinstance(r, tuple) for r in result)

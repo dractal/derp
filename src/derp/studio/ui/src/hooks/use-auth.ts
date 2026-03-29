@@ -2,13 +2,15 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useState } from "react";
 
 import {
+  fetchAuthOrganizations,
   fetchAuthSessions,
   fetchAuthUsers,
+  type AuthOrganization,
   type AuthSessionInfo,
   type AuthUser,
 } from "../api";
 
-export type AuthTab = "users" | "sessions" | "config";
+export type AuthTab = "users" | "sessions" | "organizations" | "config";
 
 export function useAuth(enabled: boolean) {
   const [tab, setTab] = useState<AuthTab>("users");
@@ -25,9 +27,16 @@ export function useAuth(enabled: boolean) {
     enabled: enabled && tab === "sessions",
   });
 
+  const orgsQuery = useQuery({
+    queryKey: ["auth", "organizations"],
+    queryFn: ({ signal }) => fetchAuthOrganizations(signal),
+    enabled: enabled && tab === "organizations",
+  });
+
   const queryForTab = {
     users: usersQuery,
     sessions: sessionsQuery,
+    organizations: orgsQuery,
     config: null,
   }[tab];
 
@@ -40,6 +49,8 @@ export function useAuth(enabled: boolean) {
     selectTab,
     users: (usersQuery.data?.users ?? []) as AuthUser[],
     sessions: (sessionsQuery.data?.sessions ?? []) as AuthSessionInfo[],
+    organizations: (orgsQuery.data?.organizations ??
+      []) as AuthOrganization[],
     loading: queryForTab?.isLoading ?? false,
     error: queryForTab?.error
       ? queryForTab.error instanceof Error

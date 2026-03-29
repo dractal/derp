@@ -3,25 +3,30 @@
 from __future__ import annotations
 
 import enum
-import uuid
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict
 
-from derp.orm import Table
-from derp.orm.fields import (
+from derp.auth.jwt import TokenPair
+from derp.orm import (
+    FK,
+    JSONB,
     UUID,
     Boolean,
     Enum,
     Field,
-    ForeignKey,
-    ForeignKeyAction,
+    Fn,
+    Index,
+    L,
+    Nullable,
     Text,
-    Timestamp,
+    TimestampTZ,
     Varchar,
 )
+from derp.orm.table import Table
 
 
 class AuthProvider(enum.StrEnum):
@@ -62,6 +67,14 @@ class UserInfo(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
+@dataclass(frozen=True, kw_only=True)
+class AuthResult:
+    """Result of a sign-up or sign-in operation."""
+
+    user: UserInfo
+    tokens: TokenPair
+
+
 class SessionInfo(BaseModel):
     """Unified session information returned by authenticate."""
 
@@ -79,26 +92,26 @@ class SessionInfo(BaseModel):
 class AuthUser(Table, table="users"):
     """User authentication table."""
 
-    id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-    email: str = Field(Varchar(255), unique=True, index=True)
-    email_confirmed_at: datetime | None = Field(
-        Timestamp(with_timezone=True), nullable=True
-    )
-    encrypted_password: str | None = Field(Text(), nullable=True)
-    first_name: str | None = Field(Varchar(255), nullable=True)
-    last_name: str | None = Field(Varchar(255), nullable=True)
-    username: str | None = Field(Varchar(255), nullable=True)
-    image_url: str | None = Field(Text(), nullable=True)
-    provider: AuthProvider = Field(Enum(AuthProvider))
-    provider_id: str | None = Field(Varchar(255), nullable=True)
-    is_active: bool = Field(Boolean(), default=True)
-    is_superuser: bool = Field(Boolean(), default=False)
-    role: str = Field(Varchar(50), default="default")
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
-    updated_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
-    last_sign_in_at: datetime | None = Field(
-        Timestamp(with_timezone=True), nullable=True
-    )
+    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    email: Varchar[L[255]] = Field(unique=True)
+    email_confirmed_at: Nullable[TimestampTZ] = Field()
+    encrypted_password: Nullable[Text] = Field()
+    first_name: Nullable[Varchar[L[255]]] = Field()
+    last_name: Nullable[Varchar[L[255]]] = Field()
+    username: Nullable[Varchar[L[255]]] = Field()
+    image_url: Nullable[Text] = Field()
+    provider: Enum[AuthProvider] = Field()
+    provider_id: Nullable[Varchar[L[255]]] = Field()
+    is_active: Boolean = Field(default=True)
+    is_superuser: Boolean = Field(default=False)
+    role: Varchar[L[50]] = Field(default="default")
+    created_at: TimestampTZ = Field(default=Fn.NOW)
+    updated_at: TimestampTZ = Field(default=Fn.NOW)
+    last_sign_in_at: Nullable[TimestampTZ] = Field()
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [Index(cls.email)]
 
 
 class AuthSession(Table, table="auth_sessions"):
@@ -109,23 +122,26 @@ class AuthSession(Table, table="auth_sessions"):
     inserts a new row and revokes the old one.
     """
 
-    __indexes__ = [("session_id", "revoked")]
+    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    user_id: UUID = Field(foreign_key=AuthUser.id, on_delete=FK.CASCADE)
+    session_id: UUID = Field(default=Fn.GEN_RANDOM_UUID)
+    token: Varchar[L[255]] = Field(unique=True)
+    role: Varchar[L[50]] = Field(default="default")
+    revoked: Boolean = Field(default=False)
+    user_agent: Nullable[Text] = Field()
+    ip_address: Nullable[Varchar[L[45]]] = Field()  # IPv6 compatible
+    org_id: Nullable[UUID] = Field()
+    not_after: TimestampTZ = Field()
+    created_at: TimestampTZ = Field(default=Fn.NOW)
 
-    id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-    user_id: uuid.UUID = Field(
-        UUID(),
-        foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
-        index=True,
-    )
-    session_id: uuid.UUID = Field(UUID(), index=True, default="gen_random_uuid()")
-    token: str = Field(Varchar(255), unique=True, index=True)
-    role: str = Field(Varchar(50), default="default")
-    revoked: bool = Field(Boolean(), default=False)
-    user_agent: str | None = Field(Text(), nullable=True)
-    ip_address: str | None = Field(Varchar(45), nullable=True)  # IPv6 compatible
-    org_id: uuid.UUID | None = Field(UUID(), nullable=True)
-    not_after: datetime = Field(Timestamp(with_timezone=True))
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [
+            Index(cls.session_id, cls.revoked),
+            Index(cls.user_id),
+            Index(cls.session_id),
+            Index(cls.token),
+        ]
 
 
 class OrgInfo(BaseModel):
@@ -156,30 +172,53 @@ class OrgMemberInfo(BaseModel):
 class AuthOrganization(Table, table="organizations"):
     """Organization table for multi-tenancy."""
 
-    id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-    name: str = Field(Varchar(255))
-    slug: str = Field(Varchar(255), unique=True, index=True)
-    metadata: str | None = Field(Text(), nullable=True)
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
-    updated_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
+    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    name: Varchar[L[255]] = Field()
+    slug: Varchar[L[255]] = Field(unique=True)
+    metadata: Nullable[JSONB] = Field()
+    created_at: TimestampTZ = Field(default=Fn.NOW)
+    updated_at: TimestampTZ = Field(default=Fn.NOW)
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [Index(cls.slug)]
 
 
 class AuthOrgMember(Table, table="org_members"):
-    """Organization membership table."""
+    """Organization membership table (native auth — FK to AuthUser)."""
 
-    __indexes__ = [("org_id", "user_id")]
+    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    org_id: UUID = Field(foreign_key=AuthOrganization.id, on_delete=FK.CASCADE)
+    user_id: UUID = Field(foreign_key=AuthUser.id, on_delete=FK.CASCADE)
+    role: Varchar[L[50]] = Field(default="member")
+    created_at: TimestampTZ = Field(default=Fn.NOW)
+    updated_at: TimestampTZ = Field(default=Fn.NOW)
 
-    id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-    org_id: uuid.UUID = Field(
-        UUID(),
-        foreign_key=ForeignKey("organizations.id", on_delete=ForeignKeyAction.CASCADE),
-        index=True,
-    )
-    user_id: uuid.UUID = Field(
-        UUID(),
-        foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
-        index=True,
-    )
-    role: str = Field(Varchar(50), default="member")
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
-    updated_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [
+            Index(cls.org_id, cls.user_id, unique=True),
+            Index(cls.org_id),
+            Index(cls.user_id),
+        ]
+
+
+class CognitoOrgMember(Table, table="org_members"):
+    """Organization membership table (Cognito — no FK to users table)."""
+
+    id: UUID = Field(primary=True, default=Fn.GEN_RANDOM_UUID)
+    org_id: UUID = Field(foreign_key=AuthOrganization.id, on_delete=FK.CASCADE)
+    user_id: UUID = Field()
+    role: Varchar[L[50]] = Field(default="member")
+    created_at: TimestampTZ = Field(default=Fn.NOW)
+    updated_at: TimestampTZ = Field(default=Fn.NOW)
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [
+            Index(cls.org_id, cls.user_id, unique=True),
+            Index(cls.org_id),
+            Index(cls.user_id),
+        ]
+
+

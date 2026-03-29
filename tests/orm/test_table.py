@@ -1,33 +1,33 @@
 """Tests for table definitions and DDL generation."""
 
-from datetime import datetime
+import pytest
 
-from derp.orm import Table
-from derp.orm.fields import (
+from derp.orm import (
+    FK,
     Field,
-    ForeignKey,
-    ForeignKeyAction,
     Integer,
+    Nullable,
     Serial,
+    Table,
     Timestamp,
     Varchar,
 )
 
 
 class User(Table, table="users"):
-    id: int = Field(Serial(), primary_key=True)
-    name: str = Field(Varchar(255))
-    email: str = Field(Varchar(255), unique=True)
-    created_at: datetime = Field(Timestamp(), default="now()")
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field(unique=True)
+    created_at: Timestamp = Field(default="now()")
 
 
 class Post(Table, table="posts"):
-    id: int = Field(Serial(), primary_key=True)
-    title: str = Field(Varchar(255))
-    content: str = Field(Varchar(10000), nullable=True)
-    author_id: int = Field(
-        Integer(),
-        foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
+    id: Serial = Field(primary=True)
+    title: Varchar[255] = Field()
+    content: Nullable[Varchar[10000]] = Field()
+    author_id: Integer = Field(
+        foreign_key="users.id",
+        on_delete="cascade",
     )
 
 
@@ -62,9 +62,8 @@ def test_primary_key():
 def test_foreign_key():
     """Test foreign key configuration."""
     post_columns = Post.get_columns()
-    assert post_columns["author_id"].foreign_key is not None
-    assert post_columns["author_id"].foreign_key.reference == "users.id"
-    assert post_columns["author_id"].foreign_key.on_delete == ForeignKeyAction.CASCADE
+    assert post_columns["author_id"].foreign_key == "users.id"
+    assert post_columns["author_id"].on_delete == FK.CASCADE
 
 
 def test_ddl_generation():
@@ -87,11 +86,11 @@ def test_ddl_foreign_key():
     assert "ON DELETE CASCADE" in ddl
 
 
-def test_field_info_metadata():
-    """Test that FieldInfo has correct table/field metadata."""
+def test_column_metadata():
+    """Test that Column has correct table/field metadata."""
     user_columns = User.get_columns()
 
-    # FieldInfo should have table and field names
+    # Column should have table and field names
     assert user_columns["id"]._table_name == "users"
     assert user_columns["id"]._field_name == "id"
     assert user_columns["name"]._table_name == "users"
@@ -99,18 +98,18 @@ def test_field_info_metadata():
 
 
 def test_column_accessor():
-    """Test the .c column accessor for query building."""
-    # Access columns via .c attribute
-    assert User.c.id._field_name == "id"
-    assert User.c.name._field_name == "name"
-    assert User.c.email._field_name == "email"
+    """Test direct column access for query building."""
+    # Access columns via class attribute
+    assert User.id._field_name == "id"
+    assert User.name._field_name == "name"
+    assert User.email._field_name == "email"
 
     # Check table name is set
-    assert User.c.id._table_name == "users"
+    assert User.id._table_name == "users"
 
     # Check that non-existent columns raise AttributeError
     try:
-        _ = User.c.nonexistent
+        _ = User.nonexistent  # type: ignore[unresolved-attribute]
         assert False, "Should have raised AttributeError"
     except AttributeError:
         pass
@@ -119,21 +118,21 @@ def test_column_accessor():
 class BaseEntity(Table):
     """Abstract base table with common fields (no explicit table name)."""
 
-    id: int = Field(Serial(), primary_key=True)
-    created_at: datetime = Field(Timestamp(), default="now()")
+    id: Serial = Field(primary=True)
+    created_at: Timestamp = Field(default="now()")
 
 
 class Employee(BaseEntity, table="employees"):
     """Employee table inheriting from BaseEntity."""
 
-    name: str = Field(Varchar(255))
-    department: str = Field(Varchar(100))
+    name: Varchar[255] = Field()
+    department: Varchar[100] = Field()
 
 
 class Manager(Employee, table="employees"):
     """Manager table inheriting from Employee, same SQL table."""
 
-    level: int = Field(Integer())
+    level: Integer = Field()
 
 
 def test_inheritance_basic():
@@ -154,17 +153,17 @@ def test_inheritance_basic():
 
 def test_inheritance_column_accessor():
     """Test that column accessor works with inherited columns."""
-    # Access inherited columns via .c
-    assert Employee.c.id._field_name == "id"
-    assert Employee.c.created_at._field_name == "created_at"
+    # Access inherited columns
+    assert Employee.id._field_name == "id"
+    assert Employee.created_at._field_name == "created_at"
 
-    # Access own columns via .c
-    assert Employee.c.name._field_name == "name"
-    assert Employee.c.department._field_name == "department"
+    # Access own columns
+    assert Employee.name._field_name == "name"
+    assert Employee.department._field_name == "department"
 
     # Inherited columns should have the child's table name
-    assert Employee.c.id._table_name == "employees"
-    assert Employee.c.created_at._table_name == "employees"
+    assert Employee.id._table_name == "employees"
+    assert Employee.created_at._table_name == "employees"
 
 
 def test_inheritance_multi_level():
@@ -186,9 +185,9 @@ def test_inheritance_multi_level():
     assert Manager.get_table_name() == "employees"
 
     # All columns should reference employees table
-    assert Manager.c.id._table_name == "employees"
-    assert Manager.c.name._table_name == "employees"
-    assert Manager.c.level._table_name == "employees"
+    assert Manager.id._table_name == "employees"
+    assert Manager.name._table_name == "employees"
+    assert Manager.level._table_name == "employees"
 
 
 def test_inheritance_ddl():
@@ -204,26 +203,58 @@ def test_inheritance_ddl():
 
 def test_inheritance_table_name_mismatch():
     """Test that mismatched table names in inheritance raise TypeError."""
-    import pytest
 
     class Parent(Table, table="things"):
-        id: int = Field(Serial(), primary_key=True)
+        id: Serial = Field(primary=True)
 
     with pytest.raises(TypeError, match="must use the same table name"):
 
         class BadChild(Parent, table="other_things"):
-            extra: str = Field(Varchar(100))
+            extra: Varchar[100] = Field()
 
 
 def test_inheritance_table_name_match():
     """Test that matching table names in inheritance are allowed."""
 
     class Parent2(Table, table="items"):
-        id: int = Field(Serial(), primary_key=True)
+        id: Serial = Field(primary=True)
 
     class GoodChild(Parent2, table="items"):
-        extra: str = Field(Varchar(100))
+        extra: Varchar[100] = Field()
 
     assert GoodChild.get_table_name() == "items"
     assert "id" in GoodChild.get_columns()
     assert "extra" in GoodChild.get_columns()
+
+
+# -- Generated columns -------------------------------------------------------
+
+
+class OrderLine(Table, table="order_lines"):
+    id: Serial = Field(primary=True)
+    price: Integer = Field()
+    quantity: Integer = Field()
+    amount: Integer = Field(generated="price * quantity")
+
+
+def test_generated_column_metadata():
+    """Test that generated column stores the expression."""
+    cols = OrderLine.get_columns()
+    assert cols["amount"].generated == "price * quantity"
+    assert cols["amount"].default is None
+    assert cols["price"].generated is None
+
+
+def test_generated_column_ddl():
+    """Test DDL generation for generated columns."""
+    ddl = OrderLine.to_ddl()
+    assert (
+        "amount INTEGER NOT NULL"
+        " GENERATED ALWAYS AS (price * quantity) STORED" in ddl
+    )
+
+
+def test_generated_and_default_mutually_exclusive():
+    """Test that generated + default raises ValueError."""
+    with pytest.raises(ValueError, match="cannot have both"):
+        Field(default="0", generated="price * quantity")

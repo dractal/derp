@@ -18,11 +18,7 @@ from app.schemas import (
     WorkspaceResponse,
 )
 from derp import DerpClient
-from derp.auth.exceptions import (
-    OrgAlreadyExistsError,
-    OrgMemberExistsError,
-    OrgNotFoundError,
-)
+from derp.auth.exceptions import OrgAlreadyExistsError, OrgMemberExistsError
 from derp.auth.models import OrgMemberInfo, UserInfo
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -66,7 +62,7 @@ async def create_workspace(
     )
 
     return WorkspaceResponse(
-        id=str(org.id),
+        id=org.id,
         name=org.name,
         slug=org.slug,
         created_at=org.created_at,
@@ -81,9 +77,7 @@ async def list_workspaces(
     """List workspaces the current user belongs to."""
     orgs = await derp.auth.list_orgs(user_id=user.id)
     return [
-        WorkspaceResponse(
-            id=str(o.id), name=o.name, slug=o.slug, created_at=o.created_at
-        )
+        WorkspaceResponse(id=o.id, name=o.name, slug=o.slug, created_at=o.created_at)
         for o in orgs
     ]
 
@@ -99,7 +93,7 @@ async def get_workspace(
     if org is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return WorkspaceResponse(
-        id=str(org.id), name=org.name, slug=org.slug, created_at=org.created_at
+        id=org.id, name=org.name, slug=org.slug, created_at=org.created_at
     )
 
 
@@ -116,7 +110,7 @@ async def list_workspace_members(
         u = await derp.auth.get_user(m.user_id)
         result.append(
             WorkspaceMemberResponse(
-                user_id=str(m.user_id),
+                user_id=m.user_id,
                 role=m.role,
                 user=UserPublicResponse.model_validate(u) if u else None,
             )
@@ -156,9 +150,9 @@ async def invite_member(
     general = await (
         derp.db.select(Channel)
         .where(
-            (Channel.c.workspace_id == str(workspace_id))
-            & (Channel.c.name == "general")
-            & (Channel.c.is_dm == False)  # noqa: E712
+            (Channel.workspace_id == workspace_id)
+            & (Channel.name == "general")
+            & (Channel.is_dm == False)  # noqa: E712
         )
         .first_or_none()
     )
@@ -166,8 +160,8 @@ async def invite_member(
         existing = await (
             derp.db.select(ChannelMember)
             .where(
-                (ChannelMember.c.channel_id == str(general.id))
-                & (ChannelMember.c.user_id == str(data.user_id))
+                (ChannelMember.channel_id == general.id)
+                & (ChannelMember.user_id == data.user_id)
             )
             .first_or_none()
         )
@@ -179,7 +173,7 @@ async def invite_member(
             )
 
     return WorkspaceMemberResponse(
-        user_id=str(new_member.user_id),
+        user_id=new_member.user_id,
         role=new_member.role,
         user=UserPublicResponse.model_validate(target),
     )
@@ -196,23 +190,19 @@ async def remove_member(
     if member.role != "owner":
         raise HTTPException(status_code=403, detail="Only owners can remove members")
 
-    try:
-        await derp.auth.remove_org_member(org_id=workspace_id, user_id=user_id)
-    except OrgNotFoundError:
-        raise HTTPException(status_code=404, detail="Member not found") from None
+    removed = await derp.auth.remove_org_member(org_id=workspace_id, user_id=user_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Member not found")
 
     # Remove from all channels in this workspace
     channels = await (
-        derp.db.select(Channel)
-        .where(Channel.c.workspace_id == str(workspace_id))
-        .execute()
+        derp.db.select(Channel).where(Channel.workspace_id == workspace_id).execute()
     )
     for ch in channels:
         await (
             derp.db.delete(ChannelMember)
             .where(
-                (ChannelMember.c.channel_id == str(ch.id))
-                & (ChannelMember.c.user_id == str(user_id))
+                (ChannelMember.channel_id == ch.id) & (ChannelMember.user_id == user_id)
             )
             .execute()
         )
@@ -230,29 +220,27 @@ async def list_workspace_channels(
     """List channels the user can see in a workspace."""
     # Get all channels the user is a member of
     memberships = await (
-        derp.db.select(ChannelMember)
-        .where(ChannelMember.c.user_id == str(user.id))
-        .execute()
+        derp.db.select(ChannelMember).where(ChannelMember.user_id == user.id).execute()
     )
-    member_channel_ids = {str(m.channel_id) for m in memberships}
+    member_channel_ids = {m.channel_id for m in memberships}
 
     # Get all channels in workspace
     channels = await (
         derp.db.select(Channel)
-        .where(Channel.c.workspace_id == str(workspace_id))
-        .order_by(Channel.c.name)
+        .where(Channel.workspace_id == workspace_id)
+        .order_by(Channel.name)
         .execute()
     )
 
     result = []
     for ch in channels:
         # Show public channels + channels user is a member of
-        if ch.is_private and str(ch.id) not in member_channel_ids:
+        if ch.is_private and ch.id not in member_channel_ids:
             continue
 
         count = await (
             derp.db.select(ChannelMember)
-            .where(ChannelMember.c.channel_id == str(ch.id))
+            .where(ChannelMember.channel_id == ch.id)
             .count()
         )
 

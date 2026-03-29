@@ -1,6 +1,6 @@
-import { KeyRound, Settings, Users } from "lucide-react";
+import { Building, KeyRound, Settings, Users } from "lucide-react";
 
-import type { AuthSessionInfo, AuthUser } from "../api";
+import type { AuthOrganization, AuthSessionInfo, AuthUser } from "../api";
 import { useConfig } from "../api";
 import { JsonViewer } from "../components/json-viewer";
 import { Badge } from "../components/ui/badge";
@@ -144,6 +144,44 @@ function SessionsTable({ sessions }: { sessions: AuthSessionInfo[] }) {
   );
 }
 
+function OrganizationsTable({ organizations }: { organizations: AuthOrganization[] }) {
+  if (organizations.length === 0) return <EmptyState resource="organizations" />;
+
+  return (
+    <div className="rounded-lg border">
+      <div className="grid grid-cols-[1fr_1.5fr_1fr_0.6fr_1fr_1fr] gap-4 border-b px-4 py-2.5 text-xs font-medium text-muted-foreground">
+        <span>ID</span>
+        <span>Name</span>
+        <span>Slug</span>
+        <span>Members</span>
+        <span>Created</span>
+        <span>Updated</span>
+      </div>
+      <div className="divide-y">
+        {organizations.map((o) => (
+          <div
+            key={o.id}
+            className="grid grid-cols-[1fr_1.5fr_1fr_0.6fr_1fr_1fr] gap-4 px-4 py-2.5 text-sm"
+          >
+            <span className="truncate font-mono text-xs">{o.id}</span>
+            <span className="truncate">{o.name}</span>
+            <span className="truncate font-mono text-xs">{o.slug}</span>
+            <span>
+              <Badge variant="secondary">{o.member_count}</Badge>
+            </span>
+            <span className="text-muted-foreground text-xs">
+              {o.created_at ? formatDate(o.created_at) : "—"}
+            </span>
+            <span className="text-muted-foreground text-xs">
+              {o.updated_at ? formatDate(o.updated_at) : "—"}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const TAB_CONFIG: {
   value: AuthTab;
   label: string;
@@ -151,13 +189,14 @@ const TAB_CONFIG: {
 }[] = [
     { value: "users", label: "Users", icon: Users },
     { value: "sessions", label: "Sessions", icon: KeyRound },
+    { value: "organizations", label: "Organizations", icon: Building },
     { value: "config", label: "Config", icon: Settings },
   ];
 
 export function AuthPage(): JSX.Element {
   const { data: config, isLoading: configLoading } = useConfig();
   const isConfigured = config?.auth != null;
-  const { tab, selectTab, users, sessions, loading, error } = useAuth(isConfigured);
+  const { tab, selectTab, users, sessions, organizations, loading, error } = useAuth(isConfigured);
 
   return (
     <div className="flex flex-1 flex-col gap-6 overflow-y-auto p-6 md:p-10">
@@ -227,6 +266,21 @@ export function AuthPage(): JSX.Element {
                       </Badge>
                     </div>
                     <SessionsTable sessions={sessions} />
+                  </>
+                )}
+              </TabsContent>
+
+              <TabsContent value="organizations">
+                {loading ? (
+                  <LoadingSkeleton />
+                ) : (
+                  <>
+                    <div className="mb-3">
+                      <Badge variant="secondary">
+                        {organizations.length} organizations
+                      </Badge>
+                    </div>
+                    <OrganizationsTable organizations={organizations} />
                   </>
                 )}
               </TabsContent>

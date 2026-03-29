@@ -11,6 +11,7 @@ from derp.auth.jwt import TokenPair
 from derp.auth.models import (
     AuthProvider,
     AuthRequest,
+    AuthResult,
     OrgInfo,
     OrgMemberInfo,
     SessionInfo,
@@ -32,6 +33,12 @@ class BaseAuthClient(abc.ABC):
     # ------------------------------------------------------------------
     # Infrastructure wiring (optional)
     # ------------------------------------------------------------------
+
+    async def connect(self) -> None:
+        """Initialize backend-specific connections."""
+
+    async def disconnect(self) -> None:
+        """Close backend-specific connections."""
 
     def set_db(self, db: DatabaseEngine | None) -> None:
         """Set the database client."""
@@ -63,12 +70,12 @@ class BaseAuthClient(abc.ABC):
         user_id: str | uuid.UUID,
         email: str | None = None,
         **kwargs: Any,
-    ) -> UserInfo:
-        """Update user data."""
+    ) -> UserInfo | None:
+        """Update user data. Returns ``None`` if the user is not found."""
 
     @abc.abstractmethod
-    async def delete_user(self, user_id: str | uuid.UUID) -> None:
-        """Delete a user and all their sessions."""
+    async def delete_user(self, user_id: str | uuid.UUID) -> bool:
+        """Delete a user and all their sessions. Returns ``False`` if not found."""
 
     @abc.abstractmethod
     async def count_users(self) -> int:
@@ -117,13 +124,20 @@ class BaseAuthClient(abc.ABC):
         *,
         email: str,
         password: str,
+        request: AuthRequest | None = None,
         confirmation_url: str | None = None,
         confirmation_subject: str = "Confirm your email address",
         user_agent: str | None = None,
         ip_address: str | None = None,
         **kwargs: Any,
-    ) -> tuple[UserInfo, TokenPair]:
-        """Register a new user with email and password."""
+    ) -> AuthResult | None:
+        """Register a new user with email and password.
+
+        If *request* is provided, ``user_agent`` and ``ip_address`` are
+        extracted automatically when not explicitly given.
+
+        Returns ``None`` if password validation fails or the email is taken.
+        """
         raise NotImplementedError
 
     async def sign_in_with_password(
@@ -131,11 +145,12 @@ class BaseAuthClient(abc.ABC):
         email: str,
         password: str,
         *,
+        request: AuthRequest | None = None,
         first_name: str | None = None,
         last_name: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> tuple[UserInfo, TokenPair]:
+    ) -> AuthResult | None:
         """Sign in with email and password."""
         raise NotImplementedError
 
@@ -149,7 +164,7 @@ class BaseAuthClient(abc.ABC):
         *,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> tuple[UserInfo, TokenPair]:
+    ) -> AuthResult | None:
         """Verify a magic link and sign in."""
         raise NotImplementedError
 
@@ -179,7 +194,7 @@ class BaseAuthClient(abc.ABC):
         redirect_uri: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> tuple[UserInfo, TokenPair]:
+    ) -> AuthResult | None:
         """Complete OAuth sign in with authorization code."""
         raise NotImplementedError
 
@@ -187,7 +202,7 @@ class BaseAuthClient(abc.ABC):
     # Tokens (optional)
     # ------------------------------------------------------------------
 
-    async def refresh_token(self, refresh_token: str) -> TokenPair:
+    async def refresh_token(self, refresh_token: str) -> TokenPair | None:
         """Refresh an access token using a refresh token."""
         raise NotImplementedError
 
@@ -206,16 +221,16 @@ class BaseAuthClient(abc.ABC):
         """Send a password recovery email."""
         raise NotImplementedError
 
-    async def reset_password(self, token: str, new_password: str) -> UserInfo:
-        """Reset password using recovery token."""
+    async def reset_password(self, token: str, new_password: str) -> UserInfo | None:
+        """Reset password using recovery token. Returns ``None`` for invalid tokens."""
         raise NotImplementedError
 
     # ------------------------------------------------------------------
     # Email confirmation (optional)
     # ------------------------------------------------------------------
 
-    async def confirm_email(self, token: str) -> UserInfo:
-        """Confirm email address with token."""
+    async def confirm_email(self, token: str) -> UserInfo | None:
+        """Confirm email address with token. Returns ``None`` for invalid tokens."""
         raise NotImplementedError
 
     async def resend_confirmation_email(
@@ -259,12 +274,15 @@ class BaseAuthClient(abc.ABC):
         name: str | None = None,
         slug: str | None = None,
         **kwargs: Any,
-    ) -> OrgInfo:
-        """Update an organization."""
+    ) -> OrgInfo | None:
+        """Update an organization. Returns ``None`` if not found."""
         raise NotImplementedError
 
-    async def delete_org(self, org_id: str | uuid.UUID) -> None:
-        """Delete an organization and all its memberships."""
+    async def delete_org(self, org_id: str | uuid.UUID) -> bool:
+        """Delete an organization and all its memberships.
+
+        Returns ``False`` if not found.
+        """
         raise NotImplementedError
 
     async def list_orgs(
@@ -297,8 +315,8 @@ class BaseAuthClient(abc.ABC):
         org_id: str | uuid.UUID,
         user_id: str | uuid.UUID,
         role: str,
-    ) -> OrgMemberInfo:
-        """Update a member's role within an organization."""
+    ) -> OrgMemberInfo | None:
+        """Update a member's role. Returns ``None`` if not found."""
         raise NotImplementedError
 
     async def remove_org_member(
@@ -306,8 +324,11 @@ class BaseAuthClient(abc.ABC):
         *,
         org_id: str | uuid.UUID,
         user_id: str | uuid.UUID,
-    ) -> None:
-        """Remove a user from an organization."""
+    ) -> bool:
+        """Remove a user from an organization.
+
+        Returns ``False`` if not found or if the user is the last owner.
+        """
         raise NotImplementedError
 
     async def list_org_members(
@@ -338,8 +359,11 @@ class BaseAuthClient(abc.ABC):
         *,
         session_id: str | uuid.UUID,
         org_id: str | uuid.UUID | None,
-    ) -> TokenPair:
-        """Switch the active organization for a session. Returns new tokens."""
+    ) -> TokenPair | None:
+        """Switch the active organization for a session.
+
+        Returns new tokens, or ``None`` if the user is not a member.
+        """
         raise NotImplementedError
 
     def is_org_authorized(self, session: SessionInfo, org_id: str, *roles: str) -> bool:

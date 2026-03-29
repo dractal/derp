@@ -105,10 +105,17 @@ Organizations
    org = await derp.auth.create_org(
        name="Acme Inc", slug="acme", creator_id=user.id
    )
+   # Raises OrgAlreadyExistsError if slug is taken
 
    await derp.auth.add_org_member(
        org_id=org.id, user_id=other_user_id, role="member"
    )
+   # Raises OrgMemberExistsError if already a member
+
+   removed = await derp.auth.remove_org_member(
+       org_id=org.id, user_id=other_user_id
+   )
+   # Returns False if not found or if removing the last owner
 
    new_tokens = await derp.auth.set_active_org(
        session_id=session.session_id, org_id=org.id

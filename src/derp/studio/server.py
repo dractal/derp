@@ -535,6 +535,29 @@ def create_app(
         sessions = await derp.auth.list_sessions(limit=limit)
         return {"sessions": sessions}
 
+    @app.get("/api/auth/organizations")
+    async def list_auth_organizations(
+        limit: int = 100,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """List auth organizations with member counts."""
+        if derp._auth is None:
+            raise HTTPException(status_code=400, detail="Auth is not configured.")
+        limit = min(max(limit, 1), 500)
+        orgs = await derp.auth.list_orgs(limit=limit)
+        results = []
+        for org in orgs:
+            members = await derp.auth.list_org_members(org.id)
+            results.append({
+                "id": org.id,
+                "name": org.name,
+                "slug": org.slug,
+                "member_count": len(members),
+                "created_at": org.created_at.isoformat() if org.created_at else None,
+                "updated_at": org.updated_at.isoformat() if org.updated_at else None,
+            })
+        return {"organizations": results}
+
     # --- Payments ---
 
     @app.get("/api/payments/customers")

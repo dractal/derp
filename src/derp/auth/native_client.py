@@ -2,34 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import asyncpg
+
 from derp.auth.base import BaseAuthClient
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
-    ConfirmationTokenInvalidError,
     ConfirmationURLMissingError,
-    EmailNotConfirmedError,
-    InvalidCredentialsError,
-    MagicLinkExpiredError,
-    NotOrgMemberError,
     OrgAlreadyExistsError,
-    OrgLastOwnerError,
     OrgMemberExistsError,
-    OrgMemberNotFoundError,
-    OrgNotFoundError,
     PasswordValidationError,
-    RecoveryTokenInvalidError,
-    RefreshTokenReusedError,
-    RefreshTokenRevokedError,
-    SessionExpiredError,
-    SessionNotFoundError,
     SignupDisabledError,
-    UserAlreadyExistsError,
-    UserNotActiveError,
-    UserNotFoundError,
 )
 from derp.auth.jwt import TokenPair, create_token_pair, decode_token
 from derp.auth.models import (
@@ -37,6 +24,7 @@ from derp.auth.models import (
     AuthOrgMember,
     AuthProvider,
     AuthRequest,
+    AuthResult,
     AuthSession,
     AuthUser,
     OrgInfo,
@@ -56,6 +44,8 @@ from derp.auth.providers.google import GoogleProvider
 from derp.config import NativeAuthConfig
 from derp.kv.base import KVClient
 from derp.orm import DatabaseEngine
+
+logger = logging.getLogger(__name__)
 
 
 class NativeAuthClient(BaseAuthClient):
@@ -111,6 +101,27 @@ class NativeAuthClient(BaseAuthClient):
             raise ValueError("Email client not set. Must call `set_email()` first.")
         return self._email_client
 
+    @staticmethod
+    def _extract_client_info(
+        request: AuthRequest | None,
+        user_agent: str | None,
+        ip_address: str | None,
+    ) -> tuple[str | None, str | None]:
+        """Extract user_agent and ip_address from *request* when not given."""
+        if request is None:
+            return user_agent, ip_address
+        if user_agent is None:
+            user_agent = request.headers.get("User-Agent")
+        if ip_address is None:
+            forwarded = request.headers.get("X-Forwarded-For")
+            if forwarded:
+                ip_address = forwarded.split(",")[0].strip()
+            else:
+                client = getattr(request, "client", None)
+                if client is not None:
+                    ip_address = getattr(client, "host", None)
+        return user_agent, ip_address
+
     async def _invalidate_user_cache(
         self, user_id: str | uuid.UUID, email: str | None = None
     ) -> None:
@@ -145,7 +156,9 @@ class NativeAuthClient(BaseAuthClient):
             last_sign_in_at=user.last_sign_in_at,
             email_confirmed_at=user.email_confirmed_at,
             metadata={
-                "provider": user.provider.value,
+                "provider": user.provider.value
+                if hasattr(user.provider, "value")
+                else user.provider,
                 "provider_id": user.provider_id,
             },
         )
@@ -159,12 +172,12 @@ class NativeAuthClient(BaseAuthClient):
                 row = await (
                     self._db()
                     .select(AuthUser)
-                    .where(AuthUser.c.id == str(user_id))
+                    .where(AuthUser.id == str(user_id))
                     .first_or_none()
                 )
                 if row is None:
                     return b""
-                return row.model_dump_json().encode()
+                return row.to_json().encode()
 
             cached = await self._kv_client.guarded_get(
                 cache_key,
@@ -173,12 +186,12 @@ class NativeAuthClient(BaseAuthClient):
             )
             if cached == b"":
                 return None
-            return AuthUser.model_validate_json(cached)
+            return AuthUser.from_json(cached)
 
         return await (
             self._db()
             .select(AuthUser)
-            .where(AuthUser.c.id == str(user_id))
+            .where(AuthUser.id == str(user_id))
             .first_or_none()
         )
 
@@ -191,7 +204,7 @@ class NativeAuthClient(BaseAuthClient):
         self, *, limit: int | None = None, offset: int | None = None
     ) -> list[UserInfo]:
         """List users ordered by creation date (newest first)."""
-        q = self._db().select(AuthUser).order_by(AuthUser.c.created_at, asc=False)
+        q = self._db().select(AuthUser).order_by(AuthUser.created_at, asc=False)
         if limit is not None:
             q = q.limit(limit)
         if offset is not None:
@@ -211,18 +224,18 @@ class NativeAuthClient(BaseAuthClient):
             cache_key = f"{self._config.cache_prefix}:user:email:{normalized}".encode()
             cached = await self._kv_client.get(cache_key)
             if cached is not None:
-                return AuthUser.model_validate_json(cached)
+                return AuthUser.from_json(cached)
 
             user = await (
                 self._db()
                 .select(AuthUser)
-                .where(AuthUser.c.email == normalized)
+                .where(AuthUser.email == normalized)
                 .first_or_none()
             )
             if user is not None:
                 await self._kv_client.set(
                     cache_key,
-                    user.model_dump_json().encode(),
+                    user.to_json().encode(),
                     ttl=self._config.cache_user_ttl_seconds,
                 )
             return user
@@ -230,7 +243,7 @@ class NativeAuthClient(BaseAuthClient):
         return await (
             self._db()
             .select(AuthUser)
-            .where(AuthUser.c.email == normalized)
+            .where(AuthUser.email == normalized)
             .first_or_none()
         )
 
@@ -240,11 +253,11 @@ class NativeAuthClient(BaseAuthClient):
         user_id: str | uuid.UUID,
         email: str | None = None,
         **kwargs: Any,
-    ) -> UserInfo:
+    ) -> UserInfo | None:
         """Update user data."""
         user = await self._fetch_user(user_id=user_id)
         if not user:
-            raise UserNotFoundError()
+            return None
 
         updates: dict[str, Any] = {"updated_at": datetime.now(UTC)}
 
@@ -252,7 +265,7 @@ class NativeAuthClient(BaseAuthClient):
             updates["email"] = email.lower()
 
         for key, value in kwargs.items():
-            if key in AuthUser.c:
+            if key in AuthUser.get_columns():
                 updates[key] = value
             else:
                 raise ValueError(f"Invalid user field: {key}.")
@@ -261,7 +274,7 @@ class NativeAuthClient(BaseAuthClient):
             self._db()
             .update(AuthUser)
             .set(**updates)
-            .where(AuthUser.c.id == str(user_id))
+            .where(AuthUser.id == str(user_id))
             .returning(AuthUser)
             .execute()
         )
@@ -272,17 +285,25 @@ class NativeAuthClient(BaseAuthClient):
 
         return self._to_user_info(result)
 
-    async def delete_user(self, user_id: str | uuid.UUID) -> None:
+    async def delete_user(self, user_id: str | uuid.UUID) -> bool:
         """Delete a user and all their sessions."""
-        user = await self._fetch_user(user_id)
-        if not user:
-            raise UserNotFoundError()
+        row = await (
+            self._db()
+            .select(AuthUser.id, AuthUser.email)
+            .from_(AuthUser)
+            .where(AuthUser.id == str(user_id))
+            .first_or_none()
+        )
+        if not row:
+            return False
 
+        _, email = row
         await self.sign_out_all(user_id)
 
-        await self._db().delete(AuthUser).where(AuthUser.c.id == str(user_id)).execute()
+        await self._db().delete(AuthUser).where(AuthUser.id == str(user_id)).execute()
 
-        await self._invalidate_user_cache(user_id, user.email)
+        await self._invalidate_user_cache(user_id, email)
+        return True
 
     async def count_users(self) -> int:
         """Return the total number of users."""
@@ -297,22 +318,25 @@ class NativeAuthClient(BaseAuthClient):
         *,
         email: str,
         password: str,
+        request: AuthRequest | None = None,
         confirmation_url: str | None = None,
         confirmation_subject: str = "Confirm your email address",
         user_agent: str | None = None,
         ip_address: str | None = None,
         **kwargs: Any,
-    ) -> tuple[UserInfo, TokenPair]:
+    ) -> AuthResult | None:
         """Register a new user with email and password.
 
         Returns:
-            Tuple of (user, token_pair)
+            Tuple of (user, token_pair), or ``None`` if the password
+            fails validation or the email is already taken.
 
         Raises:
             SignupDisabledError: If signup is disabled
-            UserAlreadyExistsError: If user already exists
-            PasswordValidationError: If password doesn't meet requirements
         """
+        user_agent, ip_address = self._extract_client_info(
+            request, user_agent, ip_address
+        )
         if not self._config.enable_signup:
             raise SignupDisabledError()
         if confirmation_url is None and self._config.enable_confirmation:
@@ -323,12 +347,18 @@ class NativeAuthClient(BaseAuthClient):
         # Validate password
         validation = validate_password(self._config.password, password)
         if not validation.valid:
-            raise PasswordValidationError("; ".join(validation.errors))
+            return None
 
         # Check if user exists
-        existing = await self._get_user_by_email(email=email.lower())
-        if existing:
-            raise UserAlreadyExistsError()
+        exists = await (
+            self._db()
+            .select(AuthUser.id)
+            .from_(AuthUser)
+            .where(AuthUser.email == email.lower())
+            .first_or_none()
+        )
+        if exists:
+            return None
 
         # Create user
         hashed_password = await self._hasher.async_hash(password)
@@ -338,7 +368,7 @@ class NativeAuthClient(BaseAuthClient):
 
         vals: dict[str, Any] = {}
         for key, value in kwargs.items():
-            if key in AuthUser.c:
+            if key in AuthUser.get_columns():
                 vals[key] = value
             else:
                 raise ValueError(f"Invalid user field: {key}.")
@@ -385,43 +415,46 @@ class NativeAuthClient(BaseAuthClient):
             ip_address=ip_address,
         )
 
-        return self._to_user_info(user), token_pair
+        return AuthResult(user=self._to_user_info(user), tokens=token_pair)
 
     async def sign_in_with_password(
         self,
         email: str,
         password: str,
         *,
+        request: AuthRequest | None = None,
         first_name: str | None = None,
         last_name: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> tuple[UserInfo, TokenPair]:
+    ) -> AuthResult | None:
         """Sign in with email and password.
 
-        Returns:
-            Tuple of (user, token_pair)
-
-        Raises:
-            InvalidCredentialsError: If credentials are invalid
-            UserNotActiveError: If user is disabled
-            EmailNotConfirmedError: If email confirmation is required but not done
+        Returns ``None`` if credentials are invalid or the account cannot sign in.
         """
+        user_agent, ip_address = self._extract_client_info(
+            request, user_agent, ip_address
+        )
         user = await self._get_user_by_email(email=email.lower())
         if not user:
-            raise InvalidCredentialsError()
+            logger.warning("Sign-in failed: user not found for %s", email)
+            return None
 
         if not user.encrypted_password:
-            raise InvalidCredentialsError()
+            logger.warning("Sign-in failed: no password set for %s", email)
+            return None
 
         if not await self._hasher.async_verify(password, user.encrypted_password):
-            raise InvalidCredentialsError()
+            logger.warning("Sign-in failed: invalid password for %s", email)
+            return None
 
         if not user.is_active:
-            raise UserNotActiveError()
+            logger.warning("Sign-in failed: account disabled for %s", email)
+            return None
 
         if self._config.enable_confirmation and not user.email_confirmed_at:
-            raise EmailNotConfirmedError()
+            logger.warning("Sign-in failed: email not confirmed for %s", email)
+            return None
 
         # Update last sign in (and rehash password if needed) in a single write
         now = datetime.now(UTC)
@@ -434,7 +467,7 @@ class NativeAuthClient(BaseAuthClient):
             self._db()
             .update(AuthUser)
             .set(**updates)
-            .where(AuthUser.c.id == user.id)
+            .where(AuthUser.id == user.id)
             .returning(AuthUser)
             .execute()
         )
@@ -448,7 +481,7 @@ class NativeAuthClient(BaseAuthClient):
             ip_address=ip_address,
         )
 
-        return self._to_user_info(user), token_pair
+        return AuthResult(user=self._to_user_info(user), tokens=token_pair)
 
     # =========================================================================
     # Magic Link Authentication
@@ -510,32 +543,31 @@ class NativeAuthClient(BaseAuthClient):
         *,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> tuple[UserInfo, TokenPair]:
+    ) -> AuthResult | None:
         """Verify a magic link and sign in.
 
-        Returns:
-            Tuple of (user, token_pair)
-
-        Raises:
-            MagicLinkExpiredError: If the magic link has expired or is invalid
-            UserNotFoundError: If the user doesn't exist
-            UserNotActiveError: If the user is disabled
+        Returns ``None`` if the link is expired, invalid, or the account cannot sign in.
         """
         kv_key = f"{self._config.cache_prefix}:magic_link:{token}".encode()
         user_id_bytes = await self._kv().get(kv_key)
 
         if user_id_bytes is None:
-            raise MagicLinkExpiredError()
+            logger.warning("Magic link verification failed: token expired or invalid")
+            return None
 
         # Delete on use (single use)
         await self._kv().delete(kv_key)
 
         user = await self._fetch_user(user_id_bytes.decode())
         if not user:
-            raise UserNotFoundError()
+            logger.warning("Magic link verification failed: user not found")
+            return None
 
         if not user.is_active:
-            raise UserNotActiveError()
+            logger.warning(
+                "Magic link verification failed: account disabled for %s", user.email
+            )
+            return None
 
         # Update user
         now = datetime.now(UTC)
@@ -551,7 +583,7 @@ class NativeAuthClient(BaseAuthClient):
             self._db()
             .update(AuthUser)
             .set(**updates)
-            .where(AuthUser.c.id == user.id)
+            .where(AuthUser.id == user.id)
             .returning(AuthUser)
             .execute()
         )
@@ -565,7 +597,7 @@ class NativeAuthClient(BaseAuthClient):
             ip_address=ip_address,
         )
 
-        return self._to_user_info(user), token_pair
+        return AuthResult(user=self._to_user_info(user), tokens=token_pair)
 
     # =========================================================================
     # OAuth Authentication
@@ -608,23 +640,18 @@ class NativeAuthClient(BaseAuthClient):
         redirect_uri: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> tuple[UserInfo, TokenPair]:
+    ) -> AuthResult | None:
         """Complete OAuth sign in with authorization code.
 
         Creates user if they don't exist.
-
-        Returns:
-            Tuple of (user, token_pair)
-
-        Raises:
-            ValueError: If provider is not registered
-            OAuthError: If OAuth flow fails
-            UserNotActiveError: If user is disabled
+        Returns ``None`` if the OAuth flow fails or the account is disabled.
         """
         oauth_provider = self.get_oauth_provider(provider)
 
         # Get user info from provider
         user_info = await oauth_provider.authenticate(code, redirect_uri)
+        if user_info is None:
+            return None
 
         # Find or create user
         user = await self._get_user_by_email(email=user_info.email)
@@ -633,7 +660,11 @@ class NativeAuthClient(BaseAuthClient):
         if user:
             # Update existing user
             if not user.is_active:
-                raise UserNotActiveError()
+                logger.warning(
+                    "OAuth sign-in failed: account disabled for %s",
+                    user.email,
+                )
+                return None
 
             updates: dict[str, Any] = {
                 "last_sign_in_at": now,
@@ -652,7 +683,7 @@ class NativeAuthClient(BaseAuthClient):
                 self._db()
                 .update(AuthUser)
                 .set(**updates)
-                .where(AuthUser.c.id == user.id)
+                .where(AuthUser.id == user.id)
                 .returning(AuthUser)
                 .execute()
             )
@@ -682,7 +713,7 @@ class NativeAuthClient(BaseAuthClient):
             ip_address=ip_address,
         )
 
-        return self._to_user_info(user), token_pair
+        return AuthResult(user=self._to_user_info(user), tokens=token_pair)
 
     # =========================================================================
     # Session Management
@@ -725,20 +756,14 @@ class NativeAuthClient(BaseAuthClient):
             extra_claims={"role": role},
         )
 
-    async def refresh_token(self, refresh_token: str) -> TokenPair:
+    async def refresh_token(self, refresh_token: str) -> TokenPair | None:
         """Refresh an access token using a refresh token.
 
         Implements token rotation for security. Happy path is 2 DB calls:
         one UPDATE…RETURNING to atomically revoke the old token, one INSERT
         for the new token.
 
-        Returns:
-            New TokenPair
-
-        Raises:
-            RefreshTokenRevokedError: If token was revoked
-            RefreshTokenReusedError: If token reuse detected (potential theft)
-            SessionExpiredError: If session has expired
+        Returns ``None`` if the token is invalid, revoked, reused, or expired.
         """
         # Atomically revoke and return the token in one query.
         # If the token doesn't exist or is already revoked, this returns [].
@@ -746,8 +771,8 @@ class NativeAuthClient(BaseAuthClient):
             self._db()
             .update(AuthSession)
             .set(revoked=True)
-            .eq(AuthSession.c.token, refresh_token)
-            .not_(AuthSession.c.revoked)
+            .eq(AuthSession.token, refresh_token)
+            .not_(AuthSession.revoked)
             .returning(AuthSession)
             .execute()
         )
@@ -757,7 +782,7 @@ class NativeAuthClient(BaseAuthClient):
             existing = await (
                 self._db()
                 .select(AuthSession)
-                .eq(AuthSession.c.token, refresh_token)
+                .eq(AuthSession.token, refresh_token)
                 .first_or_none()
             )
             if existing is not None and existing.revoked:
@@ -766,20 +791,23 @@ class NativeAuthClient(BaseAuthClient):
                     self._db()
                     .update(AuthSession)
                     .set(revoked=True)
-                    .eq(AuthSession.c.session_id, existing.session_id)
+                    .eq(AuthSession.session_id, existing.session_id)
                     .execute()
                 )
                 if self._kv_client is not None:
                     await self._kv_client.delete(
                         f"{self._config.cache_prefix}:session:{existing.session_id}".encode()
                     )
-                raise RefreshTokenReusedError()
-            raise RefreshTokenRevokedError("Invalid refresh token")
+                logger.warning("Refresh token reuse detected, all sessions revoked")
+                return None
+            logger.warning("Refresh token invalid or revoked")
+            return None
 
         [token_record] = revoked_rows
 
         if token_record.not_after < datetime.now(UTC):
-            raise SessionExpiredError()
+            logger.warning("Refresh token failed: session expired")
+            return None
 
         # Insert rotated token
         new_refresh_token = generate_secure_token()
@@ -850,11 +878,11 @@ class NativeAuthClient(BaseAuthClient):
         q = (
             self._db()
             .select(AuthSession)
-            .where(~AuthSession.c.revoked)
-            .order_by(AuthSession.c.created_at, asc=False)
+            .where(~AuthSession.revoked)
+            .order_by(AuthSession.created_at, asc=False)
         )
         if user_id is not None:
-            q = q.where(AuthSession.c.user_id == str(user_id))
+            q = q.where(AuthSession.user_id == str(user_id))
         if limit is not None:
             q = q.limit(limit)
         if offset is not None:
@@ -866,7 +894,7 @@ class NativeAuthClient(BaseAuthClient):
         await (
             self._db()
             .delete(AuthSession)
-            .where(AuthSession.c.session_id == str(session_id))
+            .where(AuthSession.session_id == str(session_id))
             .execute()
         )
 
@@ -878,30 +906,19 @@ class NativeAuthClient(BaseAuthClient):
 
     async def sign_out_all(self, user_id: str | uuid.UUID) -> None:
         """Sign out all sessions for a user by deleting all tokens."""
-        sessions = await (
-            self._db()
-            .select(AuthSession)
-            .where(AuthSession.c.user_id == str(user_id))
-            .execute()
-        )
-
-        if not sessions:
-            return
-
-        session_ids = {str(s.session_id) for s in sessions}
-
-        await (
+        deleted = await (
             self._db()
             .delete(AuthSession)
-            .where(AuthSession.c.user_id == str(user_id))
+            .where(AuthSession.user_id == str(user_id))
+            .returning(AuthSession)
             .execute()
         )
 
         # Invalidate all session caches
-        if self._kv_client is not None:
+        if deleted and self._kv_client is not None:
             cache_keys = [
-                f"{self._config.cache_prefix}:session:{sid}".encode()
-                for sid in session_ids
+                f"{self._config.cache_prefix}:session:{s.session_id}".encode()
+                for s in deleted
             ]
             await self._kv_client.delete_many(cache_keys)
 
@@ -921,11 +938,18 @@ class NativeAuthClient(BaseAuthClient):
 
         Does not reveal whether user exists for security.
         """
-        user = await self._get_user_by_email(email=email)
-        if not user:
+        row = await (
+            self._db()
+            .select(AuthUser.id, AuthUser.is_active)
+            .from_(AuthUser)
+            .where(AuthUser.email == email.lower())
+            .first_or_none()
+        )
+        if not row:
             return  # Don't reveal user doesn't exist
 
-        if not user.is_active:
+        uid, is_active = row
+        if not is_active:
             return  # Don't reveal user is disabled
 
         # Store recovery token in KV
@@ -933,7 +957,7 @@ class NativeAuthClient(BaseAuthClient):
         ttl = self._config.recovery_token_expire_minutes * 60
         await self._kv().set(
             f"{self._config.cache_prefix}:recovery:{token}".encode(),
-            str(user.id).encode(),
+            str(uid).encode(),
             ttl=ttl,
         )
 
@@ -945,14 +969,13 @@ class NativeAuthClient(BaseAuthClient):
             **kwargs,
         )
 
-    async def reset_password(self, token: str, new_password: str) -> UserInfo:
+    async def reset_password(self, token: str, new_password: str) -> UserInfo | None:
         """Reset password using recovery token.
 
         Returns:
-            Updated user
+            Updated user, or ``None`` if the token is invalid or expired.
 
         Raises:
-            RecoveryTokenInvalidError: If token is invalid or expired
             PasswordValidationError: If new password doesn't meet requirements
         """
         # Validate password
@@ -965,14 +988,14 @@ class NativeAuthClient(BaseAuthClient):
         user_id_bytes = await self._kv().get(kv_key)
 
         if user_id_bytes is None:
-            raise RecoveryTokenInvalidError()
+            return None
 
         # Delete token (single use)
         await self._kv().delete(kv_key)
 
         user = await self._fetch_user(user_id=user_id_bytes.decode())
         if user is None:
-            raise RecoveryTokenInvalidError()
+            return None
 
         # Update password
         hashed_password = await self._hasher.async_hash(new_password)
@@ -982,7 +1005,7 @@ class NativeAuthClient(BaseAuthClient):
             self._db()
             .update(AuthUser)
             .set(encrypted_password=hashed_password, updated_at=now)
-            .where(AuthUser.c.id == user.id)
+            .where(AuthUser.id == user.id)
             .returning(AuthUser)
             .execute()
         )
@@ -998,27 +1021,24 @@ class NativeAuthClient(BaseAuthClient):
     # Email Confirmation
     # =========================================================================
 
-    async def confirm_email(self, token: str) -> UserInfo:
+    async def confirm_email(self, token: str) -> UserInfo | None:
         """Confirm email address with token.
 
         Returns:
-            Updated user
-
-        Raises:
-            ConfirmationTokenInvalidError: If token is invalid or expired
+            Updated user, or ``None`` if the token is invalid or expired.
         """
         kv_key = f"{self._config.cache_prefix}:confirmation:{token}".encode()
         user_id_bytes = await self._kv().get(kv_key)
 
         if user_id_bytes is None:
-            raise ConfirmationTokenInvalidError()
+            return None
 
         # Delete token (single use)
         await self._kv().delete(kv_key)
 
         user = await self._fetch_user(user_id=user_id_bytes.decode())
         if user is None:
-            raise ConfirmationTokenInvalidError()
+            return None
 
         # Confirm email
         now = datetime.now(UTC)
@@ -1026,7 +1046,7 @@ class NativeAuthClient(BaseAuthClient):
             self._db()
             .update(AuthUser)
             .set(email_confirmed_at=now, updated_at=now)
-            .where(AuthUser.c.id == user.id)
+            .where(AuthUser.id == user.id)
             .returning(AuthUser)
             .execute()
         )
@@ -1047,11 +1067,18 @@ class NativeAuthClient(BaseAuthClient):
 
         Does not reveal whether user exists for security.
         """
-        user = await self._get_user_by_email(email=email)
-        if not user:
+        row = await (
+            self._db()
+            .select(AuthUser.id, AuthUser.email_confirmed_at)
+            .from_(AuthUser)
+            .where(AuthUser.email == email.lower())
+            .first_or_none()
+        )
+        if not row:
             return
 
-        if user.email_confirmed_at:
+        uid, confirmed_at = row
+        if confirmed_at:
             return  # Already confirmed
 
         # Store new confirmation token in KV
@@ -1059,7 +1086,7 @@ class NativeAuthClient(BaseAuthClient):
         ttl = self._config.confirmation_token_expire_hours * 3600
         await self._kv().set(
             f"{self._config.cache_prefix}:confirmation:{token}".encode(),
-            str(user.id).encode(),
+            str(uid).encode(),
             ttl=ttl,
         )
 
@@ -1077,16 +1104,11 @@ class NativeAuthClient(BaseAuthClient):
 
     def _to_org_info(self, org: AuthOrganization) -> OrgInfo:
         """Convert an AuthOrganization ORM model to a public OrgInfo."""
-        import json
-
-        metadata: dict[str, Any] = {}
-        if org.metadata:
-            metadata = json.loads(org.metadata)
         return OrgInfo(
             id=str(org.id),
             name=org.name,
             slug=org.slug,
-            metadata=metadata,
+            metadata=org.metadata or {},
             created_at=org.created_at,
             updated_at=org.updated_at,
         )
@@ -1110,29 +1132,17 @@ class NativeAuthClient(BaseAuthClient):
         **kwargs: Any,
     ) -> OrgInfo:
         """Create an organization. The creator is added as owner."""
-        # Check for duplicate slug
-        existing = await (
-            self._db()
-            .select(AuthOrganization)
-            .where(AuthOrganization.c.slug == slug)
-            .first_or_none()
-        )
-        if existing is not None:
-            raise OrgAlreadyExistsError()
-
         now = datetime.now(UTC)
-        org = await (
-            self._db()
-            .insert(AuthOrganization)
-            .values(
-                name=name,
-                slug=slug,
-                created_at=now,
-                updated_at=now,
+        try:
+            org = await (
+                self._db()
+                .insert(AuthOrganization)
+                .values(name=name, slug=slug, created_at=now, updated_at=now)
+                .returning(AuthOrganization)
+                .execute()
             )
-            .returning(AuthOrganization)
-            .execute()
-        )
+        except asyncpg.UniqueViolationError as exc:
+            raise OrgAlreadyExistsError() from exc
 
         # Add creator as owner
         await (
@@ -1155,7 +1165,7 @@ class NativeAuthClient(BaseAuthClient):
         org = await (
             self._db()
             .select(AuthOrganization)
-            .where(AuthOrganization.c.id == str(org_id))
+            .where(AuthOrganization.id == str(org_id))
             .first_or_none()
         )
         return self._to_org_info(org) if org is not None else None
@@ -1165,7 +1175,7 @@ class NativeAuthClient(BaseAuthClient):
         org = await (
             self._db()
             .select(AuthOrganization)
-            .where(AuthOrganization.c.slug == slug)
+            .where(AuthOrganization.slug == slug)
             .first_or_none()
         )
         return self._to_org_info(org) if org is not None else None
@@ -1177,16 +1187,16 @@ class NativeAuthClient(BaseAuthClient):
         name: str | None = None,
         slug: str | None = None,
         **kwargs: Any,
-    ) -> OrgInfo:
+    ) -> OrgInfo | None:
         """Update an organization."""
         existing = await (
             self._db()
             .select(AuthOrganization)
-            .where(AuthOrganization.c.id == str(org_id))
+            .where(AuthOrganization.id == str(org_id))
             .first_or_none()
         )
         if existing is None:
-            raise OrgNotFoundError()
+            return None
 
         updates: dict[str, Any] = {"updated_at": datetime.now(UTC)}
         if name is not None:
@@ -1198,30 +1208,31 @@ class NativeAuthClient(BaseAuthClient):
             self._db()
             .update(AuthOrganization)
             .set(**updates)
-            .where(AuthOrganization.c.id == str(org_id))
+            .where(AuthOrganization.id == str(org_id))
             .returning(AuthOrganization)
             .execute()
         )
 
         return self._to_org_info(result)
 
-    async def delete_org(self, org_id: str | uuid.UUID) -> None:
+    async def delete_org(self, org_id: str | uuid.UUID) -> bool:
         """Delete an organization and all its memberships."""
         existing = await (
             self._db()
             .select(AuthOrganization)
-            .where(AuthOrganization.c.id == str(org_id))
+            .where(AuthOrganization.id == str(org_id))
             .first_or_none()
         )
         if existing is None:
-            raise OrgNotFoundError()
+            return False
 
         await (
             self._db()
             .delete(AuthOrganization)
-            .where(AuthOrganization.c.id == str(org_id))
+            .where(AuthOrganization.id == str(org_id))
             .execute()
         )
+        return True
 
     async def list_orgs(
         self,
@@ -1231,29 +1242,17 @@ class NativeAuthClient(BaseAuthClient):
         offset: int | None = None,
     ) -> list[OrgInfo]:
         """List organizations, optionally filtered by user membership."""
+        q = (
+            self._db()
+            .select(AuthOrganization)
+            .order_by(AuthOrganization.created_at, asc=False)
+        )
+
         if user_id is not None:
-            # Get org IDs the user belongs to, then fetch orgs
-            members = await (
-                self._db()
-                .select(AuthOrgMember)
-                .where(AuthOrgMember.c.user_id == str(user_id))
-                .execute()
-            )
-            org_ids = [str(m.org_id) for m in members]
-            if not org_ids:
-                return []
-            q = (
-                self._db()
-                .select(AuthOrganization)
-                .where(AuthOrganization.c.id.in_(org_ids))
-                .order_by(AuthOrganization.c.created_at, asc=False)
-            )
-        else:
-            q = (
-                self._db()
-                .select(AuthOrganization)
-                .order_by(AuthOrganization.c.created_at, asc=False)
-            )
+            q = q.inner_join(
+                AuthOrgMember,
+                AuthOrgMember.org_id == AuthOrganization.id,
+            ).where(AuthOrgMember.user_id == str(user_id))
 
         if limit is not None:
             q = q.limit(limit)
@@ -1273,30 +1272,23 @@ class NativeAuthClient(BaseAuthClient):
         role: str = "member",
     ) -> OrgMemberInfo:
         """Add a user to an organization."""
-        existing = await (
-            self._db()
-            .select(AuthOrgMember)
-            .where(AuthOrgMember.c.org_id == str(org_id))
-            .where(AuthOrgMember.c.user_id == str(user_id))
-            .first_or_none()
-        )
-        if existing is not None:
-            raise OrgMemberExistsError()
-
         now = datetime.now(UTC)
-        member = await (
-            self._db()
-            .insert(AuthOrgMember)
-            .values(
-                org_id=str(org_id),
-                user_id=str(user_id),
-                role=role,
-                created_at=now,
-                updated_at=now,
+        try:
+            member = await (
+                self._db()
+                .insert(AuthOrgMember)
+                .values(
+                    org_id=str(org_id),
+                    user_id=str(user_id),
+                    role=role,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .returning(AuthOrgMember)
+                .execute()
             )
-            .returning(AuthOrgMember)
-            .execute()
-        )
+        except asyncpg.UniqueViolationError as exc:
+            raise OrgMemberExistsError() from exc
 
         return self._to_org_member_info(member)
 
@@ -1306,24 +1298,24 @@ class NativeAuthClient(BaseAuthClient):
         org_id: str | uuid.UUID,
         user_id: str | uuid.UUID,
         role: str,
-    ) -> OrgMemberInfo:
-        """Update a member's role within an organization."""
+    ) -> OrgMemberInfo | None:
+        """Update a member's role. Returns ``None`` if not found."""
         existing = await (
             self._db()
             .select(AuthOrgMember)
-            .where(AuthOrgMember.c.org_id == str(org_id))
-            .where(AuthOrgMember.c.user_id == str(user_id))
+            .where(AuthOrgMember.org_id == str(org_id))
+            .where(AuthOrgMember.user_id == str(user_id))
             .first_or_none()
         )
         if existing is None:
-            raise OrgMemberNotFoundError()
+            return None
 
         [result] = await (
             self._db()
             .update(AuthOrgMember)
             .set(role=role, updated_at=datetime.now(UTC))
-            .where(AuthOrgMember.c.org_id == str(org_id))
-            .where(AuthOrgMember.c.user_id == str(user_id))
+            .where(AuthOrgMember.org_id == str(org_id))
+            .where(AuthOrgMember.user_id == str(user_id))
             .returning(AuthOrgMember)
             .execute()
         )
@@ -1335,37 +1327,45 @@ class NativeAuthClient(BaseAuthClient):
         *,
         org_id: str | uuid.UUID,
         user_id: str | uuid.UUID,
-    ) -> None:
-        """Remove a user from an organization."""
+    ) -> bool:
+        """Remove a user from an organization.
+
+        Returns ``False`` if not found.
+        """
         existing = await (
             self._db()
             .select(AuthOrgMember)
-            .where(AuthOrgMember.c.org_id == str(org_id))
-            .where(AuthOrgMember.c.user_id == str(user_id))
+            .where(AuthOrgMember.org_id == str(org_id))
+            .where(AuthOrgMember.user_id == str(user_id))
             .first_or_none()
         )
         if existing is None:
-            raise OrgMemberNotFoundError()
+            return False
 
         # Prevent removing the last owner
         if existing.role == "owner":
             owner_count = await (
                 self._db()
                 .select(AuthOrgMember)
-                .where(AuthOrgMember.c.org_id == str(org_id))
-                .where(AuthOrgMember.c.role == "owner")
+                .where(AuthOrgMember.org_id == str(org_id))
+                .where(AuthOrgMember.role == "owner")
                 .count()
             )
             if owner_count <= 1:
-                raise OrgLastOwnerError()
+                logger.error(
+                    "Remove org member failed: cannot remove last owner of org %s",
+                    org_id,
+                )
+                return False
 
         await (
             self._db()
             .delete(AuthOrgMember)
-            .where(AuthOrgMember.c.org_id == str(org_id))
-            .where(AuthOrgMember.c.user_id == str(user_id))
+            .where(AuthOrgMember.org_id == str(org_id))
+            .where(AuthOrgMember.user_id == str(user_id))
             .execute()
         )
+        return True
 
     async def list_org_members(
         self,
@@ -1378,8 +1378,8 @@ class NativeAuthClient(BaseAuthClient):
         q = (
             self._db()
             .select(AuthOrgMember)
-            .where(AuthOrgMember.c.org_id == str(org_id))
-            .order_by(AuthOrgMember.c.created_at, asc=True)
+            .where(AuthOrgMember.org_id == str(org_id))
+            .order_by(AuthOrgMember.created_at, asc=True)
         )
         if limit is not None:
             q = q.limit(limit)
@@ -1397,8 +1397,8 @@ class NativeAuthClient(BaseAuthClient):
         member = await (
             self._db()
             .select(AuthOrgMember)
-            .where(AuthOrgMember.c.org_id == str(org_id))
-            .where(AuthOrgMember.c.user_id == str(user_id))
+            .where(AuthOrgMember.org_id == str(org_id))
+            .where(AuthOrgMember.user_id == str(user_id))
             .first_or_none()
         )
         return self._to_org_member_info(member) if member is not None else None
@@ -1412,19 +1412,23 @@ class NativeAuthClient(BaseAuthClient):
         *,
         session_id: str | uuid.UUID,
         org_id: str | uuid.UUID | None,
-    ) -> TokenPair:
-        """Switch the active organization for a session. Returns new tokens."""
+    ) -> TokenPair | None:
+        """Switch the active organization for a session.
+
+        Returns new tokens, or ``None`` if the user is not a member.
+        """
         # Find the active session
         session = await (
             self._db()
             .select(AuthSession)
-            .where(AuthSession.c.session_id == str(session_id))
-            .where(~AuthSession.c.revoked)
-            .order_by(AuthSession.c.created_at, asc=False)
+            .where(AuthSession.session_id == str(session_id))
+            .where(~AuthSession.revoked)
+            .order_by(AuthSession.created_at, asc=False)
             .first_or_none()
         )
         if session is None:
-            raise SessionNotFoundError()
+            logger.error("Set active org failed: session not found")
+            return None
 
         extra_claims: dict[str, Any] = {"role": session.role}
 
@@ -1433,12 +1437,12 @@ class NativeAuthClient(BaseAuthClient):
             member = await (
                 self._db()
                 .select(AuthOrgMember)
-                .where(AuthOrgMember.c.org_id == str(org_id))
-                .where(AuthOrgMember.c.user_id == str(session.user_id))
+                .where(AuthOrgMember.org_id == str(org_id))
+                .where(AuthOrgMember.user_id == str(session.user_id))
                 .first_or_none()
             )
             if member is None:
-                raise NotOrgMemberError()
+                return None
 
             extra_claims["org_id"] = str(org_id)
             extra_claims["org_role"] = member.role
@@ -1448,8 +1452,8 @@ class NativeAuthClient(BaseAuthClient):
                 self._db()
                 .update(AuthSession)
                 .set(org_id=str(org_id))
-                .where(AuthSession.c.session_id == str(session_id))
-                .where(~AuthSession.c.revoked)
+                .where(AuthSession.session_id == str(session_id))
+                .where(~AuthSession.revoked)
                 .execute()
             )
         else:
@@ -1458,8 +1462,8 @@ class NativeAuthClient(BaseAuthClient):
                 self._db()
                 .update(AuthSession)
                 .set(org_id=None)
-                .where(AuthSession.c.session_id == str(session_id))
-                .where(~AuthSession.c.revoked)
+                .where(AuthSession.session_id == str(session_id))
+                .where(~AuthSession.revoked)
                 .execute()
             )
 

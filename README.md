@@ -25,17 +25,14 @@ Requires Python 3.12+.
 Define a table:
 
 ```python
-import uuid
-from datetime import datetime
-
-from derp.orm import Table, Field, UUID, Varchar, Integer, Boolean, Timestamp
+from derp.orm import Table, Field, UUID, Varchar, Integer, Boolean, TimestampTZ
 
 class Product(Table, table="products"):
-    id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-    name: str = Field(Varchar(255))
-    price_cents: int = Field(Integer())
-    is_active: bool = Field(Boolean(), default="true")
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
+    id: UUID = Field(primary=True, default="gen_random_uuid()")
+    name: Varchar[255] = Field()
+    price_cents: Integer = Field()
+    is_active: Boolean = Field(default="true")
+    created_at: TimestampTZ = Field(default="now()")
 ```
 
 Generate and apply a migration:
@@ -58,8 +55,8 @@ await derp.connect()
 # Select
 products = await (
     derp.db.select(Product)
-    .where(Product.c.is_active == True)
-    .order_by(Product.c.created_at, asc=False)
+    .where(Product.is_active)
+    .order_by(Product.created_at, asc=False)
     .limit(10)
     .execute()
 )
@@ -76,7 +73,7 @@ product = await (
 await (
     derp.db.update(Product)
     .set(price_cents=3999)
-    .where(Product.c.id == product.id)
+    .where(Product.id == product.id)
     .execute()
 )
 ```
@@ -105,7 +102,7 @@ def get_derp(request: Request) -> DerpClient:
 
 @app.get("/products")
 async def list_products(derp: DerpClient = Depends(get_derp)):
-    return await derp.db.select(Product).where(Product.c.is_active == True).execute()
+    return await derp.db.select(Product).where(Product.is_active).execute()
 ```
 
 ## Configuration

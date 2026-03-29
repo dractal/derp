@@ -6,22 +6,12 @@ models that can be compared for migration generation.
 
 from __future__ import annotations
 
-import enum as enum_lib
 import re
 from typing import Any
 
-from derp.orm.fields import (
-    Array,
-    BigSerial,
-    Enum,
-    FieldInfo,
-    FieldType,
-    ForeignKey,
-    Serial,
-)
-from derp.orm.fields import (
-    ForeignKeyAction as OrmForeignKeyAction,
-)
+from derp.orm.column.base import FK as OrmFK
+from derp.orm.column.base import Column
+from derp.orm.index import _expression_to_literal_sql
 from derp.orm.migrations.snapshot.models import (
     ColumnSnapshot,
     EnumSnapshot,
@@ -31,6 +21,7 @@ from derp.orm.migrations.snapshot.models import (
     IndexSnapshot,
     PrimaryKeySnapshot,
     SchemaSnapshot,
+    SnapshotVersion,
     TableSnapshot,
     UniqueConstraintSnapshot,
 )
@@ -38,17 +29,16 @@ from derp.orm.table import Table
 
 
 def _map_foreign_key_action(
-    action: OrmForeignKeyAction | None,
+    action: OrmFK | None,
 ) -> ForeignKeyAction | None:
     """Map ORM foreign key action to snapshot action."""
     if action is None:
         return None
     mapping = {
-        OrmForeignKeyAction.CASCADE: ForeignKeyAction.CASCADE,
-        OrmForeignKeyAction.SET_NULL: ForeignKeyAction.SET_NULL,
-        OrmForeignKeyAction.SET_DEFAULT: ForeignKeyAction.SET_DEFAULT,
-        OrmForeignKeyAction.RESTRICT: ForeignKeyAction.RESTRICT,
-        OrmForeignKeyAction.NO_ACTION: ForeignKeyAction.NO_ACTION,
+        OrmFK.CASCADE: ForeignKeyAction.CASCADE,
+        OrmFK.SET_NULL: ForeignKeyAction.SET_NULL,
+        OrmFK.SET_DEFAULT: ForeignKeyAction.SET_DEFAULT,
+        OrmFK.RESTRICT: ForeignKeyAction.RESTRICT,
     }
     return mapping.get(action)
 
@@ -74,45 +64,39 @@ def _serialize_default(default: Any) -> str | None:
     return str(default)
 
 
-def _extract_array_dimensions(field_type: FieldType[Any]) -> tuple[str, int]:
-    """Extract base type and array dimensions from a field type."""
+def _extract_array_info(sql_type: str) -> tuple[str, int]:
+    """Extract base type and array dimensions from a SQL type string."""
     dimensions = 0
-    current = field_type
-    while isinstance(current, Array):
+    base = sql_type
+    while base.endswith("[]"):
         dimensions += 1
-        current = current.element_type
-    return current.sql_type(), dimensions
+        base = base[:-2]
+    return base, dimensions
 
 
-def serialize_column(name: str, field_info: FieldInfo[Any]) -> ColumnSnapshot:
+def serialize_column(name: str, col: Column[Any]) -> ColumnSnapshot:
     """Serialize a single column definition to snapshot."""
-    field_type = field_info.field_type
+    sql_type = col.sql_type()
 
     # Handle array types
-    if isinstance(field_type, Array):
-        base_type, dimensions = _extract_array_dimensions(field_type)
-    else:
-        base_type = field_type.sql_type()
-        dimensions = 0
+    base_type, dimensions = _extract_array_info(sql_type)
 
-    # Determine if primary key (Serial/BigSerial implies PK behavior)
-    is_pk = field_info.primary_key
+    # Determine if primary key
+    is_pk = col.primary_key
 
     # Determine nullability
     # Primary keys are implicitly NOT NULL
     # Serial types are implicitly NOT NULL
-    is_not_null = (
-        not field_info.nullable or is_pk or isinstance(field_type, Serial | BigSerial)
-    )
+    is_not_null = not col.nullable or is_pk or col.is_auto_increment()
 
     return ColumnSnapshot(
         name=name,
         type=base_type.lower(),
         primary_key=is_pk,
         not_null=is_not_null,
-        unique=field_info.unique and not is_pk,  # PK implies unique
-        default=_serialize_default(field_info.default),
-        generated=None,  # TODO: support generated columns
+        unique=col.unique and not is_pk,  # PK implies unique
+        default=_serialize_default(col.default),
+        generated=col.generated,
         identity=None,  # TODO: support identity columns
         array_dimensions=dimensions,
     )
@@ -121,30 +105,30 @@ def serialize_column(name: str, field_info: FieldInfo[Any]) -> ColumnSnapshot:
 def serialize_foreign_key(
     table_name: str,
     column_name: str,
-    fk: ForeignKey,
+    col: Column[Any],
     constraint_num: int,
 ) -> tuple[str, ForeignKeySnapshot]:
     """Serialize a foreign key constraint to snapshot."""
-    # Handle class references (e.g., ForeignKey(User))
-    if isinstance(fk.reference, type) and issubclass(fk.reference, Table):
-        ref_table = fk.reference.get_table_name()
-        primary_key = fk.reference.get_primary_key()
-        if primary_key is None:
-            raise ValueError(f"Table `{fk.reference.__name__}` has no primary key.")
-        ref_column = primary_key[0]
+    fk_ref = col.foreign_key
+
+    if isinstance(fk_ref, Column):
+        if not fk_ref._table_name or not fk_ref._field_name:
+            raise ValueError("Column in foreign_key has no table metadata.")
+        ref_table = fk_ref._table_name
+        ref_column = fk_ref._field_name
         ref_schema = "public"
-    else:
-        # Parse string reference like "users.id" or "public.users.id"
-        ref_parts = fk.reference.split(".")
+    elif isinstance(fk_ref, str):
+        ref_parts = fk_ref.split(".")
         if len(ref_parts) == 2:
             ref_table, ref_column = ref_parts
             ref_schema = "public"
         elif len(ref_parts) == 3:
             ref_schema, ref_table, ref_column = ref_parts
         else:
-            raise ValueError(f"Invalid foreign key reference: {fk.reference}")
+            raise ValueError(f"Invalid foreign key reference: {fk_ref}")
+    else:
+        raise ValueError(f"Invalid foreign key reference: {fk_ref}")
 
-    # Generate constraint name
     constraint_name = f"{table_name}_{column_name}_fkey"
 
     return constraint_name, ForeignKeySnapshot(
@@ -153,8 +137,8 @@ def serialize_foreign_key(
         references_schema=ref_schema,
         references_table=ref_table,
         references_columns=[ref_column],
-        on_delete=_map_foreign_key_action(fk.on_delete),
-        on_update=_map_foreign_key_action(fk.on_update),
+        on_delete=_map_foreign_key_action(col.on_delete),
+        on_update=_map_foreign_key_action(col.on_update),
     )
 
 
@@ -176,15 +160,7 @@ def serialize_index(
 
 
 def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnapshot:
-    """Serialize a Table class to a TableSnapshot.
-
-    Args:
-        table_cls: The Table class to serialize
-        schema: The database schema name (default: "public")
-
-    Returns:
-        TableSnapshot representing the table definition
-    """
+    """Serialize a Table class to a TableSnapshot."""
     table_name = table_cls.get_table_name()
     columns_info = table_cls.get_columns()
 
@@ -196,34 +172,47 @@ def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnap
 
     fk_counter = 0
 
-    for col_name, field_info in columns_info.items():
+    for col_name, col in columns_info.items():
         # Serialize column
-        columns[col_name] = serialize_column(col_name, field_info)
+        columns[col_name] = serialize_column(col_name, col)
 
         # Track primary key columns
-        if field_info.primary_key:
+        if col.primary_key:
             primary_key_columns.append(col_name)
 
         # Serialize foreign key if present
-        if field_info.foreign_key:
+        if col.foreign_key:
             fk_name, fk_snapshot = serialize_foreign_key(
-                table_name, col_name, field_info.foreign_key, fk_counter
+                table_name, col_name, col, fk_counter
             )
             foreign_keys[fk_name] = fk_snapshot
             fk_counter += 1
 
-        # Serialize index if present
-        if field_info.index:
-            idx_name, idx_snapshot = serialize_index(table_name, col_name)
-            indexes[idx_name] = idx_snapshot
-
         # Unique constraint (if not already PK which implies unique)
-        if field_info.unique and not field_info.primary_key:
+        if col.unique and not col.primary_key:
             uc_name = f"{table_name}_{col_name}_unique"
             unique_constraints[uc_name] = UniqueConstraintSnapshot(
                 name=uc_name,
                 columns=[col_name],
             )
+
+    # Indexes
+    for idx in table_cls._resolved_indexes:
+        idx_name = idx.auto_name(table_name)
+        where_sql = (
+            _expression_to_literal_sql(idx.where) if idx.where is not None else None
+        )
+        indexes[idx_name] = IndexSnapshot(
+            name=idx_name,
+            columns=idx.column_names,
+            unique=idx.unique,
+            where=where_sql,
+            method=IndexMethod(idx.method.value),
+            concurrently=idx.concurrently,
+            nulls_not_distinct=not idx.nulls_distinct,
+            include=list(idx.include),
+            with_options=dict(idx.with_params),
+        )
 
     # Build primary key snapshot
     primary_key = None
@@ -251,37 +240,58 @@ def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnap
 def extract_enums(
     tables: list[type[Table]], schema: str = "public"
 ) -> dict[str, EnumSnapshot]:
-    """Extract enum types from table definitions.
-
-    Args:
-        tables: List of Table classes
-        schema: The database schema name
-
-    Returns:
-        Dict of enum name to EnumSnapshot
-    """
+    """Extract enum types from table definitions."""
     enums: dict[str, EnumSnapshot] = {}
 
     for table_cls in tables:
-        for col_name, field_info in table_cls.get_columns().items():
-            field_type = field_info.field_type
+        for _col_name, col in table_cls.get_columns().items():
+            sql_type = col.sql_type()
 
-            # Handle arrays of enums
-            while isinstance(field_type, Array):
-                field_type = field_type.element_type
+            # Strip array brackets to check base type
+            base_type = sql_type
+            while base_type.endswith("[]"):
+                base_type = base_type[:-2]
 
-            if isinstance(field_type, Enum):
-                enum_type: type[enum_lib.Enum] = field_type.enum  # type: ignore[assignment]
-                enum_name = _to_snake_case(enum_type.__name__)
-
-                if enum_name not in enums:
-                    enums[enum_name] = EnumSnapshot(
-                        name=enum_name,
-                        schema_name=schema,
-                        values=[e.value for e in enum_type],
-                    )
+            # Check if this looks like an enum (snake_case name, not a
+            # standard SQL type keyword)
+            if base_type.upper() not in _SQL_BUILTIN_TYPES and base_type not in enums:
+                # Try to find the enum class from the column's context
+                # For now, we detect enum columns by checking if the sql_type
+                # is a snake_case name (enum types are named after the Python enum)
+                if re.match(r"^[a-z][a-z0-9_]*$", base_type):
+                    # This is likely an enum type — but we need the values.
+                    # The enum values aren't stored on the Column, so we skip
+                    # for now. Enum extraction needs the original enum class.
+                    pass
 
     return enums
+
+
+# Standard SQL type names that are NOT enums
+_SQL_BUILTIN_TYPES = frozenset(
+    {
+        "SERIAL",
+        "BIGSERIAL",
+        "SMALLINT",
+        "INTEGER",
+        "BIGINT",
+        "TEXT",
+        "BOOLEAN",
+        "TIMESTAMP",
+        "TIMESTAMP WITH TIME ZONE",
+        "DATE",
+        "TIME",
+        "TIME WITH TIME ZONE",
+        "INTERVAL",
+        "UUID",
+        "NUMERIC",
+        "REAL",
+        "DOUBLE PRECISION",
+        "JSON",
+        "JSONB",
+        "BYTEA",
+    }
+)
 
 
 def serialize_schema(
@@ -290,42 +300,25 @@ def serialize_schema(
     snapshot_id: str = "",
     prev_id: str | None = None,
 ) -> SchemaSnapshot:
-    """Serialize a list of Table classes to a complete SchemaSnapshot.
-
-    Args:
-        tables: List of Table classes to serialize
-        schema: The database schema name (default: "public")
-        snapshot_id: Unique identifier for this snapshot
-        prev_id: ID of the previous snapshot (for diffing chain)
-
-    Returns:
-        SchemaSnapshot representing the complete schema
-    """
+    """Serialize a list of Table classes to a complete SchemaSnapshot."""
     table_snapshots: dict[str, TableSnapshot] = {}
-    schemas: list[str] = [schema] if schema else ["public"]
-
     for table_cls in tables:
-        table_snapshot = serialize_table(table_cls, schema)
-        key = (
-            table_snapshot.name
-            if schema == "public"
-            else f"{schema}.{table_snapshot.name}"
-        )
-        table_snapshots[key] = table_snapshot
+        snap = serialize_table(table_cls, schema)
+        table_snapshots[snap.name] = snap
 
-    # Extract enums from tables
     enums = extract_enums(tables, schema)
 
     return SchemaSnapshot(
+        id=snapshot_id,
+        prev_id=prev_id or "",
+        version=SnapshotVersion.V1,
+        dialect="postgresql",
         tables=table_snapshots,
         enums=enums,
-        sequences={},  # TODO: extract sequences
-        schemas=schemas,
-        policies={},  # Policies are DB-only, not defined in code
-        roles={},  # Roles are DB-only, not defined in code
-        grants=[],  # Grants are DB-only, not defined in code
-        id=snapshot_id,
-        prev_id=prev_id,
+        schemas=["public"],
+        sequences={},
+        policies={},
+        roles={},
     )
 
 

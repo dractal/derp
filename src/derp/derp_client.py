@@ -63,6 +63,10 @@ class DerpClient:
                 self._auth = NativeAuthClient(self._config.auth.native)
             elif self._config.auth.clerk is not None:
                 self._auth = ClerkAuthClient(self._config.auth.clerk)
+            elif self._config.auth.cognito is not None:
+                from derp.auth.cognito_client import CognitoAuthClient
+
+                self._auth = CognitoAuthClient(self._config.auth.cognito)
         self._kv: KVClient | None = (
             ValkeyClient(self._config.kv.valkey)
             if self._config.kv is not None and self._config.kv.valkey is not None
@@ -129,6 +133,7 @@ class DerpClient:
         if self._queue is not None:
             await self._queue.connect()
         if self._auth is not None:
+            await self._auth.connect()
             self._auth.set_db(self._db)
             self._auth.set_email(self._email)
             if self._kv is not None:
@@ -178,6 +183,7 @@ class DerpClient:
                     errors.append(exc)
 
         if self._auth is not None:
+            await self._auth.disconnect()
             self._auth.set_db(None)
             self._auth.set_email(None)
             self._auth.set_kv(None)

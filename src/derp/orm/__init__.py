@@ -2,38 +2,36 @@
 
 Example usage::
 
-    from derp import Derp, Table, Field, eq
-    from derp.fields import Serial, Varchar, Timestamp
+    from derp.orm import Table, Serial, Text, Varchar, Timestamp, Field
 
     class User(Table, table="users"):
-        id: int = Field(Serial(), primary_key=True)
-        name: str = Field(Varchar(255))
-        email: str = Field(Varchar(255), unique=True)
-        created_at: datetime = Field(Timestamp(), default="now()")
+        id: Serial = Field(primary=True)
+        name: Text = Field()
+        email: Varchar[255] = Field(unique=True)
+        created_at: Timestamp = Field(default="now()")
 
-    async with Derp("postgresql://...") as db:
-        users = await db.select(User).where(User.c.name == "Alice").execute()
+    async with DatabaseEngine("postgresql://...") as db:
+        users = await db.select(User).where(User.name == "Alice").execute()
 """
 
+from typing import Literal
+
 from derp.config import DatabaseConfig
-from derp.orm.engine import DatabaseEngine
-from derp.orm.fields import (
+from derp.orm.column.base import FK, Column, Field, FieldSpec, Fn
+from derp.orm.column.types import (
     JSON,
     JSONB,
     UUID,
-    Array,
     BigInt,
     BigSerial,
     Boolean,
     Char,
     Date,
     DoublePrecision,
-    Field,
-    FieldInfo,
-    ForeignKey,
-    ForeignKeyAction,
+    Enum,
     Integer,
     Interval,
+    Nullable,
     Numeric,
     Real,
     Serial,
@@ -41,10 +39,15 @@ from derp.orm.fields import (
     Text,
     Time,
     Timestamp,
+    TimestampTZ,
+    TimeTZ,
     Varchar,
+    Vector,
 )
+from derp.orm.engine import DatabaseEngine
+from derp.orm.expression_base import ComparisonOperator, Expression
+from derp.orm.index import Index, IndexColumn, IndexMethod, NullsPosition
 from derp.orm.query import (
-    ComparisonOperator,
     JoinType,
     LockMode,
     LogicalOperator,
@@ -53,7 +56,9 @@ from derp.orm.query import (
 )
 from derp.orm.table import Table
 
-__version__ = "0.1.0"
+L = Literal
+
+__version__ = "0.2.0"
 
 __all__ = [
     # Main engine
@@ -61,11 +66,12 @@ __all__ = [
     "DatabaseEngine",
     # Table definition
     "Table",
+    "Column",
     "Field",
-    "FieldInfo",
-    "ForeignKey",
-    "ForeignKeyAction",
-    # Field types
+    "FieldSpec",
+    "Fn",
+    "FK",
+    # PG types
     "Serial",
     "BigSerial",
     "SmallInt",
@@ -76,22 +82,34 @@ __all__ = [
     "Text",
     "Boolean",
     "Timestamp",
+    "TimestampTZ",
     "Date",
     "Time",
+    "TimeTZ",
     "Interval",
+    "UUID",
     "Numeric",
     "Real",
     "DoublePrecision",
-    "UUID",
     "JSON",
     "JSONB",
-    "Array",
+    "Vector",
+    "Nullable",
+    "Enum",
     # Query enums
     "JoinType",
     "LockMode",
     "SortOrder",
     "LogicalOperator",
     "ComparisonOperator",
-    # SQL expressions
+    # Expressions
+    "Expression",
     "sql",
+    # Indexes
+    "Index",
+    "IndexColumn",
+    "IndexMethod",
+    "NullsPosition",
+    # Literal shorthand for strict type checkers
+    "L",
 ]

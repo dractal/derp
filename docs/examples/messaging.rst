@@ -24,35 +24,28 @@ Extend ``AuthUser`` to add profile fields. Define channels and messages with for
 
    from derp.auth.models import AuthUser
    from derp.orm import (
-       Table, Field, UUID, Varchar, Text, Timestamp,
-       Boolean, ForeignKey, ForeignKeyAction,
+       Table, Field, Nullable, UUID, Varchar, Text, Boolean, TimestampTZ,
    )
 
    class User(AuthUser, table="users"):
-       username: str | None = Field(Varchar(100), nullable=True)
-       display_name: str | None = Field(Varchar(255), nullable=True)
-       avatar_url: str | None = Field(Varchar(512), nullable=True)
+       username: Nullable[Varchar[100]] = Field()
+       display_name: Nullable[Varchar[255]] = Field()
+       avatar_url: Nullable[Varchar[512]] = Field()
 
    class Channel(Table, table="channels"):
-       id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-       workspace_id: uuid.UUID = Field(UUID(), index=True)
-       name: str = Field(Varchar(80))
-       is_private: bool = Field(Boolean(), default="false")
-       is_dm: bool = Field(Boolean(), default="false")
-       created_by: uuid.UUID = Field(
-           UUID(), foreign_key=ForeignKey(User, on_delete=ForeignKeyAction.CASCADE),
-       )
+       id: UUID = Field(primary=True, default="gen_random_uuid()")
+       workspace_id: UUID = Field()
+       name: Varchar[80] = Field()
+       is_private: Boolean = Field(default="false")
+       is_dm: Boolean = Field(default="false")
+       created_by: UUID = Field(foreign_key=User.id, on_delete="cascade")
 
    class Message(Table, table="messages"):
-       id: uuid.UUID = Field(UUID(), primary_key=True, default="gen_random_uuid()")
-       channel_id: uuid.UUID = Field(
-           UUID(), foreign_key=ForeignKey(Channel, on_delete=ForeignKeyAction.CASCADE),
-       )
-       sender_id: uuid.UUID = Field(
-           UUID(), foreign_key=ForeignKey(User, on_delete=ForeignKeyAction.CASCADE),
-       )
-       content: str = Field(Text())
-       created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
+       id: UUID = Field(primary=True, default="gen_random_uuid()")
+       channel_id: UUID = Field(foreign_key=Channel.id, on_delete="cascade")
+       sender_id: UUID = Field(foreign_key=User.id, on_delete="cascade")
+       content: Text = Field()
+       created_at: TimestampTZ = Field(default="now()")
 
 Workspaces are ``AuthOrganization`` — no extra table needed.
 
@@ -133,7 +126,7 @@ Key Endpoints
        await (
            derp.db.update(Channel)
            .set(last_message_at=msg.created_at)
-           .where(Channel.c.id == channel_id)
+           .where(Channel.id == channel_id)
            .execute()
        )
        return msg

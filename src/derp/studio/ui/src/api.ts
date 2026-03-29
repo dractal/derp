@@ -405,6 +405,32 @@ export async function fetchAuthSessions(
   return (await response.json()) as { sessions: AuthSessionInfo[] };
 }
 
+export interface AuthOrganization {
+  id: string;
+  name: string;
+  slug: string;
+  member_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export async function fetchAuthOrganizations(
+  signal?: AbortSignal,
+): Promise<{ organizations: AuthOrganization[] }> {
+  const response = await fetch("/api/auth/organizations", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Failed to load auth organizations: HTTP ${response.status}`,
+    );
+  }
+  return (await response.json()) as {
+    organizations: AuthOrganization[];
+  };
+}
+
 // --- Payments ---
 
 export interface StripeCustomer {

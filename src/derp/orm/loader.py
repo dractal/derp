@@ -170,29 +170,48 @@ def _deduplicate_tables(tables: list[type[Table]]) -> list[type[Table]]:
 def discover_tables(
     schema_path: str,
     *,
-    include_auth: bool = False,
+    auth_config: object | None = None,
 ) -> list[type[Table]]:
     """Load user tables and optionally inject framework tables, then dedup.
 
     Args:
         schema_path: Path/glob/directory for user schema files.
-        include_auth: If True, inject AuthUser and AuthSession when no
-            subclass is already present in the loaded tables.
+        auth_config: An ``AuthConfig`` instance (or ``None``).  The
+            active backend determines which auth tables are injected:
+
+            - **native**: AuthUser, AuthSession, AuthOrganization, AuthOrgMember
+            - **cognito**: AuthOrganization, AuthOrgMember (users/sessions in Cognito)
+            - **clerk**: none (everything managed via Clerk API)
 
     Returns:
         Deduplicated list of Table subclasses.
     """
     tables = load_tables(schema_path)
 
-    if include_auth:
-        from derp.auth.models import (
-            AuthOrganization,
-            AuthOrgMember,
-            AuthSession,
-            AuthUser,
-        )
+    if auth_config is not None:
+        native = getattr(auth_config, "native", None)
+        cognito = getattr(auth_config, "cognito", None)
 
-        for auth_table in (AuthUser, AuthSession, AuthOrganization, AuthOrgMember):
+        auth_tables: list[type[Table]] = []
+
+        if native is not None:
+            from derp.auth.models import (
+                AuthOrganization,
+                AuthOrgMember,
+                AuthSession,
+                AuthUser,
+            )
+
+            auth_tables = [
+                AuthUser, AuthSession, AuthOrganization, AuthOrgMember,
+            ]
+
+        elif cognito is not None:
+            from derp.auth.models import AuthOrganization, CognitoOrgMember
+
+            auth_tables = [AuthOrganization, CognitoOrgMember]
+
+        for auth_table in auth_tables:
             if not any(issubclass(t, auth_table) for t in tables):
                 tables.append(auth_table)
 

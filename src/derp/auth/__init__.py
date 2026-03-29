@@ -4,35 +4,17 @@ from __future__ import annotations
 
 from derp.auth.base import BaseAuthClient
 from derp.auth.clerk_client import ClerkAuthClient
+from derp.auth.cognito_client import CognitoAuthClient
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     AuthError,
-    ConfirmationTokenInvalidError,
-    EmailNotConfirmedError,
+    ConfirmationURLMissingError,
     EmailSendError,
-    InvalidCredentialsError,
-    InvalidTokenError,
-    MagicLinkExpiredError,
-    NotOrgMemberError,
-    OAuthError,
-    OAuthProviderError,
-    OAuthStateError,
     OrgAlreadyExistsError,
     OrgLastOwnerError,
     OrgMemberExistsError,
-    OrgMemberNotFoundError,
-    OrgNotFoundError,
     PasswordValidationError,
-    RecoveryTokenInvalidError,
-    RefreshTokenReusedError,
-    RefreshTokenRevokedError,
-    SessionExpiredError,
-    SessionNotFoundError,
     SignupDisabledError,
-    TokenExpiredError,
-    UserAlreadyExistsError,
-    UserNotActiveError,
-    UserNotFoundError,
 )
 from derp.auth.jwt import TokenPair, TokenPayload
 from derp.auth.models import (
@@ -40,6 +22,7 @@ from derp.auth.models import (
     AuthOrgMember,
     AuthProvider,
     AuthRequest,
+    AuthResult,
     AuthSession,
     AuthUser,
     OrgInfo,
@@ -63,6 +46,7 @@ from derp.auth.providers import (
 from derp.config import (
     AuthConfig,
     ClerkConfig,
+    CognitoConfig,
     EmailConfig,
     GitHubOAuthConfig,
     GoogleOAuthConfig,
@@ -75,6 +59,7 @@ __all__ = [
     # Config
     "AuthConfig",
     "ClerkConfig",
+    "CognitoConfig",
     "EmailConfig",
     "GitHubOAuthConfig",
     "GoogleOAuthConfig",
@@ -83,37 +68,18 @@ __all__ = [
     "PasswordConfig",
     # Exceptions
     "AuthError",
-    "ConfirmationTokenInvalidError",
-    "EmailNotConfirmedError",
+    "ConfirmationURLMissingError",
     "EmailSendError",
-    "InvalidCredentialsError",
-    "InvalidTokenError",
-    "MagicLinkExpiredError",
-    "NotOrgMemberError",
-    "OAuthError",
-    "OAuthProviderError",
-    "OAuthStateError",
     "OrgAlreadyExistsError",
     "OrgLastOwnerError",
     "OrgMemberExistsError",
-    "OrgMemberNotFoundError",
-    "OrgNotFoundError",
     "PasswordValidationError",
-    "RecoveryTokenInvalidError",
-    "RefreshTokenRevokedError",
-    "RefreshTokenReusedError",
-    "SessionExpiredError",
-    "SessionNotFoundError",
     "SignupDisabledError",
-    "TokenExpiredError",
-    "UserAlreadyExistsError",
-    "UserNotActiveError",
-    "UserNotFoundError",
     # JWT
-    "JWTManager",
     "TokenPair",
     "TokenPayload",
     # Models
+    "AuthResult",
     "AuthOrgMember",
     "AuthOrganization",
     "AuthProvider",
@@ -126,12 +92,8 @@ __all__ = [
     "UserInfo",
     # Password
     "Argon2Hasher",
-    "BcryptHasher",
-    "CompositeHasher",
     "PasswordHasher",
     "PasswordValidationResult",
-    "PasswordValidator",
-    "create_default_hasher",
     "generate_secure_token",
     # OAuth Providers
     "BaseOAuthProvider",
@@ -143,5 +105,6 @@ __all__ = [
     # Client
     "BaseAuthClient",
     "ClerkAuthClient",
+    "CognitoAuthClient",
     "NativeAuthClient",
 ]
