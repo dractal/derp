@@ -35,11 +35,10 @@ derp = "derp.cli.main:app"
 requires = ["uv_build>=0.9.21,<0.10.0"]
 build-backend = "uv_build"
 
-[tool.uv-build]
-packages = ["src/derp"]
-
 [tool.uv.build-backend]
+packages = ["src/derp"]
 module-name = "derp"
+source-exclude = ["studio/ui"]
 
 [project.optional-dependencies]
 docs = [

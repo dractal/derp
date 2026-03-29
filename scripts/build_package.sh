@@ -17,7 +17,7 @@ trap restore_node_modules EXIT
 
 cd "${UI_DIR}"
 bun install --frozen-lockfile
-bun run build --env=PUBLIC_*
+bun run build
 
 if [[ -d "${NODE_MODULES_DIR}" ]]; then
   temp_root="$(mktemp -d)"
