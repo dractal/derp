@@ -1,18 +1,19 @@
 """Tests for field types."""
 
-from derp.orm.fields import (
+from derp.orm import (
     JSON,
     JSONB,
     UUID,
-    Array,
     BigInt,
     BigSerial,
     Boolean,
     Char,
     Date,
     DoublePrecision,
+    Field,
     Integer,
     Interval,
+    L,
     Numeric,
     Real,
     Serial,
@@ -20,63 +21,65 @@ from derp.orm.fields import (
     Text,
     Time,
     Timestamp,
+    TimestampTZ,
+    TimeTZ,
     Varchar,
+    Vector,
 )
 
 
 def test_integer_types():
     """Test integer type SQL generation."""
-    assert Serial().sql_type() == "SERIAL"
-    assert BigSerial().sql_type() == "BIGSERIAL"
-    assert SmallInt().sql_type() == "SMALLINT"
-    assert Integer().sql_type() == "INTEGER"
-    assert BigInt().sql_type() == "BIGINT"
+    assert Serial(Field()).sql_type() == "SERIAL"
+    assert BigSerial(Field()).sql_type() == "BIGSERIAL"
+    assert SmallInt(Field()).sql_type() == "SMALLINT"
+    assert Integer(Field()).sql_type() == "INTEGER"
+    assert BigInt(Field()).sql_type() == "BIGINT"
 
 
 def test_string_types():
     """Test string type SQL generation."""
-    assert Varchar(255).sql_type() == "VARCHAR(255)"
-    assert Char(10).sql_type() == "CHAR(10)"
-    assert Text().sql_type() == "TEXT"
+    assert Varchar[255](Field()).sql_type() == "VARCHAR(255)"
+    assert Char[10](Field()).sql_type() == "CHAR(10)"
+    assert Text(Field()).sql_type() == "TEXT"
 
 
 def test_boolean():
     """Test boolean type SQL generation."""
-    assert Boolean().sql_type() == "BOOLEAN"
+    assert Boolean(Field()).sql_type() == "BOOLEAN"
 
 
 def test_temporal_types():
     """Test temporal type SQL generation."""
-    assert Timestamp().sql_type() == "TIMESTAMP"
-    assert Timestamp(with_timezone=True).sql_type() == "TIMESTAMP WITH TIME ZONE"
-    assert Date().sql_type() == "DATE"
-    assert Time().sql_type() == "TIME"
-    assert Time(with_timezone=True).sql_type() == "TIME WITH TIME ZONE"
-    assert Interval().sql_type() == "INTERVAL"
+    assert Timestamp(Field()).sql_type() == "TIMESTAMP"
+    assert TimestampTZ(Field()).sql_type() == "TIMESTAMP WITH TIME ZONE"
+    assert Date(Field()).sql_type() == "DATE"
+    assert Time(Field()).sql_type() == "TIME"
+    assert TimeTZ(Field()).sql_type() == "TIME WITH TIME ZONE"
+    assert Interval(Field()).sql_type() == "INTERVAL"
 
 
 def test_numeric_types():
     """Test numeric type SQL generation."""
-    assert Numeric().sql_type() == "NUMERIC"
-    assert Numeric(10).sql_type() == "NUMERIC(10)"
-    assert Numeric(10, 2).sql_type() == "NUMERIC(10, 2)"
-    assert Real().sql_type() == "REAL"
-    assert DoublePrecision().sql_type() == "DOUBLE PRECISION"
+    assert Numeric(Field()).sql_type() == "NUMERIC"
+    assert Numeric[L[10]](Field()).sql_type() == "NUMERIC(10)"
+    assert Numeric[L[10], L[2]](Field()).sql_type() == "NUMERIC(10, 2)"
+    assert Real(Field()).sql_type() == "REAL"
+    assert DoublePrecision(Field()).sql_type() == "DOUBLE PRECISION"
 
 
 def test_uuid():
     """Test UUID type SQL generation."""
-    assert UUID().sql_type() == "UUID"
+    assert UUID(Field()).sql_type() == "UUID"
 
 
 def test_json_types():
     """Test JSON type SQL generation."""
-    assert JSON().sql_type() == "JSON"
-    assert JSONB().sql_type() == "JSONB"
+    assert JSON(Field()).sql_type() == "JSON"
+    assert JSONB(Field()).sql_type() == "JSONB"
 
 
-def test_array_type():
-    """Test array type SQL generation."""
-    assert Array(Integer()).sql_type() == "INTEGER[]"
-    assert Array(Varchar(255)).sql_type() == "VARCHAR(255)[]"
-    assert Array(Array(Integer())).sql_type() == "INTEGER[][]"
+def test_vector_type():
+    """Test vector type SQL generation."""
+    assert Vector[L[1536]](Field()).sql_type() == "VECTOR(1536)"
+    assert Vector(Field()).sql_type() == "VECTOR"

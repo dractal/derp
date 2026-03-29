@@ -74,7 +74,8 @@ def rollback(
                     # Get applied migrations in order
                     async with pool.acquire() as conn:
                         rows = await conn.fetch(
-                            f"SELECT version, tag FROM {MIGRATIONS_TABLE} ORDER BY id DESC"
+                            f"SELECT version, tag FROM {MIGRATIONS_TABLE}"
+                            " ORDER BY id DESC"
                         )
 
                     if not rows:
@@ -128,7 +129,8 @@ def rollback(
                                 typer.echo(f"    {line}")
                             if down_sql.count("\n") > 10:
                                 typer.echo(
-                                    f"    ... ({down_sql.count(chr(10)) - 10} more lines)"
+                                    f"    ... ({down_sql.count(chr(10)) - 10}"
+                                    " more lines)"
                                 )
                             typer.echo("")
                             continue

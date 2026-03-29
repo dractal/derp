@@ -45,7 +45,7 @@ async def _create_bucket_with_retry(
 ) -> None:
     for attempt in range(retries):
         try:
-            await client.storage.client.create_bucket(Bucket=bucket)
+            await client.storage._client.create_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
             return
         except Exception:
             if attempt == retries - 1:
@@ -57,7 +57,7 @@ async def _delete_bucket_with_objects(client: DerpClient, bucket: str) -> None:
     keys = await client.storage.list_files(bucket=bucket)
     for key in keys:
         await client.storage.delete_file(bucket=bucket, key=key)
-    await client.storage.client.delete_bucket(Bucket=bucket)
+    await client.storage._client.delete_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
 
 
 def test_properties_require_active_session(client_schema_path: str) -> None:

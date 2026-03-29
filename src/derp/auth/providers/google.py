@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from urllib.parse import urlencode
 
 import httpx
 
-from derp.auth.exceptions import OAuthProviderError
 from derp.auth.providers.base import BaseOAuthProvider, OAuthTokens, OAuthUserInfo
 from derp.config import GoogleOAuthConfig
+
+logger = logging.getLogger(__name__)
 
 
 class GoogleProvider(BaseOAuthProvider[GoogleOAuthConfig]):
@@ -43,7 +45,7 @@ class GoogleProvider(BaseOAuthProvider[GoogleOAuthConfig]):
         self,
         code: str,
         redirect_uri: str | None = None,
-    ) -> OAuthTokens:
+    ) -> OAuthTokens | None:
         """Exchange authorization code for Google tokens."""
         data = {
             "client_id": self._config.client_id,
@@ -63,7 +65,8 @@ class GoogleProvider(BaseOAuthProvider[GoogleOAuthConfig]):
             if response.status_code != 200:
                 error_data = response.json() if response.content else {}
                 message = error_data.get("error_description", response.text)
-                raise OAuthProviderError(f"Failed to exchange code: {message}")
+                logger.error("Google code exchange failed: %s", message)
+                return None
 
             token_data = response.json()
 
@@ -76,7 +79,7 @@ class GoogleProvider(BaseOAuthProvider[GoogleOAuthConfig]):
             id_token=token_data.get("id_token"),
         )
 
-    async def get_user_info(self, access_token: str) -> OAuthUserInfo:
+    async def get_user_info(self, access_token: str) -> OAuthUserInfo | None:
         """Get user info from Google."""
         async with httpx.AsyncClient() as client:
             response = await client.get(
@@ -85,7 +88,10 @@ class GoogleProvider(BaseOAuthProvider[GoogleOAuthConfig]):
             )
 
             if response.status_code != 200:
-                raise OAuthProviderError(f"Failed to get user info: {response.text}")
+                logger.error(
+                    "Google get user info failed: %s", response.text
+                )
+                return None
 
             user_data = response.json()
 

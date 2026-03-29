@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from urllib.parse import urlencode
 
 import httpx
 
-from derp.auth.exceptions import OAuthProviderError
 from derp.auth.providers.base import BaseOAuthProvider, OAuthTokens, OAuthUserInfo
 from derp.config import GitHubOAuthConfig
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubProvider(BaseOAuthProvider[GitHubOAuthConfig]):
@@ -41,7 +43,7 @@ class GitHubProvider(BaseOAuthProvider[GitHubOAuthConfig]):
         self,
         code: str,
         redirect_uri: str | None = None,
-    ) -> OAuthTokens:
+    ) -> OAuthTokens | None:
         """Exchange authorization code for GitHub tokens."""
         data = {
             "client_id": self._config.client_id,
@@ -61,13 +63,15 @@ class GitHubProvider(BaseOAuthProvider[GitHubOAuthConfig]):
             )
 
             if response.status_code != 200:
-                raise OAuthProviderError(f"Failed to exchange code: {response.text}")
+                logger.error("GitHub code exchange failed: %s", response.text)
+                return None
 
             token_data = response.json()
 
             if "error" in token_data:
                 message = token_data.get("error_description", token_data["error"])
-                raise OAuthProviderError(f"Failed to exchange code: {message}")
+                logger.error("GitHub code exchange failed: %s", message)
+                return None
 
         return OAuthTokens(
             access_token=token_data["access_token"],
@@ -75,7 +79,7 @@ class GitHubProvider(BaseOAuthProvider[GitHubOAuthConfig]):
             scope=token_data.get("scope"),
         )
 
-    async def get_user_info(self, access_token: str) -> OAuthUserInfo:
+    async def get_user_info(self, access_token: str) -> OAuthUserInfo | None:
         """Get user info from GitHub."""
         headers = {
             "Authorization": f"Bearer {access_token}",
@@ -88,7 +92,10 @@ class GitHubProvider(BaseOAuthProvider[GitHubOAuthConfig]):
             response = await client.get(self.USERINFO_URL, headers=headers)
 
             if response.status_code != 200:
-                raise OAuthProviderError(f"Failed to get user info: {response.text}")
+                logger.error(
+                    "GitHub get user info failed: %s", response.text
+                )
+                return None
 
             user_data = response.json()
 
@@ -118,10 +125,11 @@ class GitHubProvider(BaseOAuthProvider[GitHubOAuthConfig]):
                         email = emails[0]["email"]
 
             if not email:
-                raise OAuthProviderError(
-                    "Could not retrieve email from GitHub. "
+                logger.error(
+                    "GitHub OAuth: could not retrieve email. "
                     "Ensure the user:email scope is granted."
                 )
+                return None
 
         return OAuthUserInfo(
             id=str(user_data["id"]),

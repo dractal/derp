@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from derp.orm import Table
-from derp.orm.fields import (
+from derp.orm import (
     Boolean,
     Field,
-    ForeignKey,
-    ForeignKeyAction,
+    Index,
     Integer,
+    Nullable,
     Serial,
+    Table,
     Text,
     Timestamp,
     Varchar,
@@ -35,22 +33,25 @@ from derp.orm.migrations.snapshot.serializer import (
 
 # Test tables
 class User(Table, table="users"):
-    id: int = Field(Serial(), primary_key=True)
-    name: str = Field(Varchar(255))
-    email: str = Field(Varchar(255), unique=True)
-    is_active: bool = Field(Boolean(), default=True)
-    created_at: datetime = Field(Timestamp(), default="now()")
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field(unique=True)
+    is_active: Boolean = Field(default=True)
+    created_at: Timestamp = Field(default="now()")
 
 
 class Post(Table, table="posts"):
-    id: int = Field(Serial(), primary_key=True)
-    title: str = Field(Varchar(255))
-    content: str = Field(Text(), nullable=True)
-    author_id: int = Field(
-        Integer(),
-        foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
-        index=True,
+    id: Serial = Field(primary=True)
+    title: Varchar[255] = Field()
+    content: Nullable[Text] = Field()
+    author_id: Integer = Field(
+        foreign_key="users.id",
+        on_delete="cascade",
     )
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [Index(cls.author_id)]
 
 
 class TestColumnSnapshot:
@@ -250,7 +251,7 @@ class TestSerializeTable:
         """Test serializing a table with index."""
         table = serialize_table(Post)
 
-        # author_id has index=True
+        # author_id has an index via __indexes__
         assert len(table.indexes) >= 1
 
     def test_serialize_table_with_unique_constraint(self):

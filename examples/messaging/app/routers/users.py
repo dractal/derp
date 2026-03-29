@@ -71,7 +71,7 @@ async def upload_avatar(
     key = f"avatars/{user.id}/{uuid.uuid4().hex}.{extension}"
 
     # Delete old avatar if exists
-    full_user = await derp.db.select(User).where(User.c.id == user.id).first_or_none()
+    full_user = await derp.db.select(User).where(User.id == user.id).first_or_none()
     if full_user and full_user.avatar_url:
         old_key = full_user.avatar_url.split("avatars/")[-1]
         try:
@@ -84,7 +84,7 @@ async def upload_avatar(
         key=key,
         data=content,
         content_type=file.content_type,
-        metadata={"user_id": str(user.id)},
+        metadata={"user_id": user.id},
     )
 
     avatar_url = derp.storage.get_url(bucket="avatars", key=key)
@@ -107,26 +107,24 @@ async def search_workspace_users(
 ) -> list[UserPublicResponse]:
     """Search users within a workspace."""
     members = await derp.auth.list_org_members(workspace_id)
-    member_ids = [str(m.user_id) for m in members]
+    member_ids = [m.user_id for m in members]
 
     if not member_ids:
         return []
 
     query = (
         derp.db.select(User)
-        .where(
-            (User.c.id.in_(member_ids))
-            & (User.c.id != str(user.id))
-            & (User.c.is_active == True)  # noqa: E712
-        )
+        .where(User.id.in_(member_ids))
+        .where(User.id != user.id)
+        .where(User.is_active)
         .limit(limit)
     )
 
     if q:
         query = query.where(
-            (User.c.email.ilike(f"%{q}%"))
-            | (User.c.username.ilike(f"%{q}%"))
-            | (User.c.display_name.ilike(f"%{q}%"))
+            (User.email.ilike(f"%{q}%"))
+            | (User.username.ilike(f"%{q}%"))
+            | (User.display_name.ilike(f"%{q}%"))
         )
 
     users = await query.execute()

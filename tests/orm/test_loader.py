@@ -4,36 +4,35 @@ from __future__ import annotations
 
 import pytest
 
-from derp.orm import Table
-from derp.orm.fields import Field, Serial, Varchar
+from derp.orm import Field, Serial, Table, Varchar
 from derp.orm.loader import _deduplicate_tables
 
 # ── Test fixtures ──────────────────────────────────────────────────────
 
 
 class Product(Table, table="products"):
-    id: int = Field(Serial(), primary_key=True)
-    name: str = Field(Varchar(255))
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
 
 
 class Order(Table, table="orders"):
-    id: int = Field(Serial(), primary_key=True)
+    id: Serial = Field(primary=True)
 
 
 class Animal(Table, table="animals"):
-    id: int = Field(Serial(), primary_key=True)
+    id: Serial = Field(primary=True)
 
 
 class Dog(Animal, table="animals"):
-    breed: str = Field(Varchar(255))
+    breed: Varchar[255] = Field()
 
 
 class Cat(Animal, table="animals"):
-    color: str = Field(Varchar(100))
+    color: Varchar[100] = Field()
 
 
 class Puppy(Dog, table="animals"):
-    toy: str = Field(Varchar(255))
+    toy: Varchar[255] = Field()
 
 
 # ── _deduplicate_tables tests ──────────────────────────────────────────

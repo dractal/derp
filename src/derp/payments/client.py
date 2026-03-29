@@ -73,7 +73,7 @@ class PaymentsClient:
     async def _provider_call(self, method: Any, *args: Any, **kwargs: Any) -> Any:
         try:
             return await method(*args, **kwargs)
-        except Exception as exc:  # pragma: no cover - behavior validated via tests
+        except Exception as exc:
             raise PaymentsProviderError(
                 str(exc) or "Payments provider request failed",
                 code=str(getattr(exc, "code", "payments_provider_error")),

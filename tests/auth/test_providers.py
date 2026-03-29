@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from derp.auth.exceptions import OAuthProviderError
 from derp.auth.providers import GitHubProvider, GoogleProvider, OAuthUserInfo
 from derp.config import GitHubOAuthConfig, GoogleOAuthConfig
 
@@ -93,6 +92,7 @@ class TestGoogleProvider:
 
             tokens = await provider.exchange_code("auth-code")
 
+        assert tokens is not None
         assert tokens.access_token == "access-token-123"
         assert tokens.refresh_token == "refresh-token-456"
         assert tokens.expires_in == 3600
@@ -118,8 +118,9 @@ class TestGoogleProvider:
             mock_client.post.return_value = mock_response
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with pytest.raises(OAuthProviderError):
-                await provider.exchange_code("invalid-code")
+            result = await provider.exchange_code("invalid-code")
+
+        assert result is None
 
     async def test_get_user_info_success(
         self, google_config: GoogleOAuthConfig
@@ -144,6 +145,7 @@ class TestGoogleProvider:
 
             user_info = await provider.get_user_info("access-token")
 
+        assert user_info is not None
         assert user_info.id == "12345"
         assert user_info.email == "user@gmail.com"
         assert user_info.email_verified is True
@@ -165,8 +167,9 @@ class TestGoogleProvider:
             mock_client.get.return_value = mock_response
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with pytest.raises(OAuthProviderError):
-                await provider.get_user_info("invalid-token")
+            result = await provider.get_user_info("invalid-token")
+
+        assert result is None
 
 
 class TestGitHubProvider:
@@ -205,7 +208,8 @@ class TestGitHubProvider:
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
             tokens = await provider.exchange_code("auth-code")
-
+        
+        assert tokens is not None
         assert tokens.access_token == "access-token-123"
         assert tokens.scope == "user:email"
 
@@ -227,8 +231,9 @@ class TestGitHubProvider:
             mock_client.post.return_value = mock_response
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
-            with pytest.raises(OAuthProviderError):
-                await provider.exchange_code("invalid-code")
+            result = await provider.exchange_code("invalid-code")
+
+        assert result is None
 
     async def test_get_user_info_success(
         self, github_config: GitHubOAuthConfig
@@ -252,7 +257,8 @@ class TestGitHubProvider:
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
             user_info = await provider.get_user_info("access-token")
-
+        
+        assert user_info is not None
         assert user_info.id == "12345"
         assert user_info.email == "user@github.com"
         assert user_info.name == "Test User"
@@ -287,7 +293,8 @@ class TestGitHubProvider:
             mock_client_class.return_value.__aenter__.return_value = mock_client
 
             user_info = await provider.get_user_info("access-token")
-
+        
+        assert user_info is not None
         assert user_info.email == "primary@example.com"
         assert user_info.email_verified is True
 

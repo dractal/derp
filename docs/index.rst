@@ -23,8 +23,8 @@ An async Python backend toolkit. One client, one config file.
 
    products = await (
        derp.db.select(Product)
-       .where(Product.c.is_active == True)
-       .order_by(Product.c.created_at, asc=False)
+       .where(Product.is_active)
+       .order_by(Product.created_at, asc=False)
        .limit(10)
        .execute()
    )

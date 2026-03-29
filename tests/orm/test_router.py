@@ -11,7 +11,7 @@ from derp.orm.router import ReplicaRouter
 
 
 def _make_config(**overrides: object) -> DatabaseConfig:
-    defaults = {
+    defaults: dict[str, object] = {
         "db_url": "postgresql://primary",
         "replica_url": "postgresql://replica",
         "schema_path": "schema.py",
@@ -20,7 +20,7 @@ def _make_config(**overrides: object) -> DatabaseConfig:
         "replica_lag_check_interval_seconds": 5.0,
     }
     defaults.update(overrides)
-    return DatabaseConfig(**defaults)
+    return DatabaseConfig.model_validate(defaults)
 
 
 def _make_router(

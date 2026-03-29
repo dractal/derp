@@ -21,7 +21,7 @@ def _config(**overrides: object) -> VercelQueueConfig:
         "default_queue": "default",
     }
     defaults.update(overrides)
-    return VercelQueueConfig(**defaults)  # type: ignore[arg-type]
+    return VercelQueueConfig(**defaults)
 
 
 def _connected_client(

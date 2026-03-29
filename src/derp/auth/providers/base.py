@@ -62,7 +62,7 @@ class BaseOAuthProvider[ConfigT](abc.ABC):
         self,
         code: str,
         redirect_uri: str | None = None,
-    ) -> OAuthTokens:
+    ) -> OAuthTokens | None:
         """Exchange authorization code for tokens.
 
         Args:
@@ -74,7 +74,7 @@ class BaseOAuthProvider[ConfigT](abc.ABC):
         """
 
     @abc.abstractmethod
-    async def get_user_info(self, access_token: str) -> OAuthUserInfo:
+    async def get_user_info(self, access_token: str) -> OAuthUserInfo | None:
         """Get user information from the provider.
 
         Args:
@@ -88,15 +88,12 @@ class BaseOAuthProvider[ConfigT](abc.ABC):
         self,
         code: str,
         redirect_uri: str | None = None,
-    ) -> OAuthUserInfo:
+    ) -> OAuthUserInfo | None:
         """Complete OAuth flow: exchange code and get user info.
 
-        Args:
-            code: Authorization code from callback
-            redirect_uri: Redirect URI (must match authorization request)
-
-        Returns:
-            OAuthUserInfo with user details
+        Returns ``None`` if the provider request fails.
         """
         tokens = await self.exchange_code(code, redirect_uri)
+        if tokens is None:
+            return None
         return await self.get_user_info(tokens.access_token)

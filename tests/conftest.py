@@ -25,6 +25,7 @@ def bearer_request(token: str) -> MockRequest:
     """Create a mock request with a Bearer Authorization header."""
     return MockRequest(headers={"Authorization": f"Bearer {token}"})
 
+
 # Store the original working directory at module load time
 _ORIGINAL_CWD = os.getcwd()
 
@@ -129,41 +130,41 @@ def temp_schema_file(temp_dir: Path) -> Path:
     """Create a temporary schema file with sample tables."""
     schema_content = '''"""Test schema for migrations."""
 
-from datetime import datetime
-
-from derp.orm import Table
-from derp.orm.fields import (
+from derp.orm import (
+    Boolean,
     Field,
-    ForeignKey,
-    ForeignKeyAction,
+    Index,
     Integer,
+    Nullable,
     Serial,
+    Text,
     Timestamp,
     Varchar,
-    Text,
-    Boolean,
 )
+from derp.orm.table import Table
 
 
 class User(Table, table="users"):
-    id: int = Field(Serial(), primary_key=True)
-    name: str = Field(Varchar(255))
-    email: str = Field(Varchar(255), unique=True)
-    is_active: bool = Field(Boolean(), default=True)
-    created_at: datetime = Field(Timestamp(), default="now()")
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field(unique=True)
+    is_active: Boolean = Field(default=True)
+    created_at: Timestamp = Field(default="now()")
 
 
 class Post(Table, table="posts"):
-    id: int = Field(Serial(), primary_key=True)
-    title: str = Field(Varchar(255))
-    content: str = Field(Text(), nullable=True)
-    author_id: int = Field(
-        Integer(),
-        foreign_key=ForeignKey("users.id", on_delete=ForeignKeyAction.CASCADE),
-        index=True,
+    id: Serial = Field(primary=True)
+    title: Varchar[255] = Field()
+    content: Nullable[Text] = Field()
+    author_id: Integer = Field(
+        foreign_key="users.id", on_delete="cascade",
     )
-    published: bool = Field(Boolean(), default=False)
-    created_at: datetime = Field(Timestamp(), default="now()")
+    published: Boolean = Field(default=False)
+    created_at: Timestamp = Field(default="now()")
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [Index(cls.author_id)]
 '''
     schema_path = temp_dir / "schema.py"
     schema_path.write_text(schema_content)

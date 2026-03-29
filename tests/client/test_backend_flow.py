@@ -12,8 +12,8 @@ import pytest
 from derp.auth import AuthConfig, EmailConfig, JWTConfig, NativeAuthConfig
 from derp.config import DatabaseConfig, DerpConfig, StorageConfig
 from derp.derp_client import DerpClient
-from tests.conftest import bearer_request
 from derp.orm import DatabaseEngine
+from tests.conftest import bearer_request
 
 
 async def _create_bucket_with_retry(
@@ -21,7 +21,7 @@ async def _create_bucket_with_retry(
 ) -> None:
     for attempt in range(retries):
         try:
-            await client.storage.client.create_bucket(Bucket=bucket)
+            await client.storage._client.create_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
             return
         except Exception:
             if attempt == retries - 1:
@@ -33,7 +33,7 @@ async def _delete_bucket_with_objects(client: DerpClient, bucket: str) -> None:
     keys = await client.storage.list_files(bucket=bucket)
     for key in keys:
         await client.storage.delete_file(bucket=bucket, key=key)
-    await client.storage.client.delete_bucket(Bucket=bucket)
+    await client.storage._client.delete_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
 
 
 async def _create_backend_tables(db: DatabaseEngine) -> None:
@@ -193,17 +193,19 @@ async def test_backend_handler_auth_storage_db_chain(
     try:
         await _create_backend_tables(derp.db)
 
-        user, _ = await derp.auth.sign_up(
+        signup_result = await derp.auth.sign_up(
             email="backend@example.com",
             password="password123",
         )
+        assert signup_result is not None
 
-        _, tokens = await derp.auth.sign_in_with_password(
+        signin_result = await derp.auth.sign_in_with_password(
             email="backend@example.com",
             password="password123",
         )
+        assert signin_result is not None
 
-        key = f"users/{user.id}/profile.txt"
+        key = f"users/{signup_result.user.id}/profile.txt"
 
         await _create_bucket_with_retry(derp, bucket)
         bucket_created = True
@@ -216,12 +218,12 @@ async def test_backend_handler_auth_storage_db_chain(
 
         result = await _fetch_user_asset_and_log_access(
             derp=derp,
-            access_token=tokens.access_token,
+            access_token=signin_result.tokens.access_token,
             bucket=bucket,
             key=key,
         )
 
-        assert result["user_id"] == str(user.id)
+        assert result["user_id"] == str(signup_result.user.id)
         assert result["object_key"] == key
         assert result["object_size"] == len(content)
         assert result["preview"] == content.decode("utf-8")
@@ -242,7 +244,7 @@ async def test_backend_handler_auth_storage_db_chain(
         assert len(logs) == 1
         [log] = logs
 
-        assert log["user_id"] == str(user.id)
+        assert log["user_id"] == str(signup_result.user.id)
         assert log["session_id"] == result["session_id"]
         assert log["object_key"] == key
         assert log["object_size"] == len(content)

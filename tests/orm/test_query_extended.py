@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 import pytest
 
-from derp.orm import Table
-from derp.orm.fields import Boolean, Field, Integer, Serial, Timestamp, Varchar
+from derp.orm import (
+    Boolean,
+    Field,
+    Integer,
+    Nullable,
+    Serial,
+    Table,
+    Timestamp,
+    Varchar,
+)
 from derp.orm.query.builder import (
     InsertQuery,
     SelectQuery,
@@ -18,19 +25,19 @@ from derp.orm.query.expressions import sql
 
 
 class User(Table, table="users"):
-    id: int = Field(Serial(), primary_key=True)
-    name: str = Field(Varchar(255))
-    email: str = Field(Varchar(255), unique=True)
-    age: int = Field(Integer(), nullable=True)
-    created_at: datetime = Field(Timestamp(), default="now()")
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field(unique=True)
+    age: Nullable[Integer] = Field()
+    created_at: Timestamp = Field(default="now()")
 
 
 class Post(Table, table="posts"):
-    id: int = Field(Serial(), primary_key=True)
-    user_id: int = Field(Integer())
-    title: str = Field(Varchar(255))
-    content: str = Field(Varchar(1000), nullable=True)
-    published: bool = Field(Boolean(), default=False)
+    id: Serial = Field(primary=True)
+    user_id: Integer = Field()
+    title: Varchar[255] = Field()
+    content: Nullable[Varchar[1000]] = Field()
+    published: Boolean = Field(default=False)
 
 
 # =============================================================================
@@ -80,7 +87,7 @@ class TestSQLTemplate:
 
     def test_raw_sql_in_select_columns(self):
         """sql() usable in SELECT column list."""
-        query = SelectQuery[Any](None, (User.c.name, sql("COUNT(*)"))).from_(User)
+        query = SelectQuery[Any](None, (User.name, sql("COUNT(*)"))).from_(User)
         s, params = query.build()
         assert "SELECT users.name, COUNT(*)" in s
 
@@ -96,7 +103,7 @@ class TestSQLTemplate:
         query = (
             UpdateQuery[User](None, User)
             .set(name=sql("UPPER(name)"))
-            .where(User.c.id == 1)
+            .where(User.id == 1)
         )
         s, params = query.build()
         assert "name = UPPER(name)" in s
@@ -108,7 +115,7 @@ class TestSQLTemplate:
         query = (
             UpdateQuery[User](None, User)
             .set(name=sql("CONCAT({}, name)", "Dr. "))
-            .where(User.c.id == 1)
+            .where(User.id == 1)
         )
         s, params = query.build()
         assert "name = CONCAT($1, name)" in s
@@ -144,7 +151,7 @@ class TestDistinct:
 
     def test_distinct_with_where(self):
         """SELECT DISTINCT with WHERE."""
-        query = SelectQuery[User](None, (User,)).distinct().where(User.c.age > 18)
+        query = SelectQuery[User](None, (User,)).distinct().where(User.age > 18)
         s, params = query.build()
         assert "SELECT DISTINCT users.*" in s
         assert "WHERE" in s
@@ -154,15 +161,15 @@ class TestDistinct:
         """SELECT DISTINCT ON (col)."""
         query = (
             SelectQuery[User](None, (User,))
-            .distinct_on(User.c.email)
-            .order_by(User.c.email)
+            .distinct_on(User.email)
+            .order_by(User.email)
         )
         s, params = query.build()
         assert "SELECT DISTINCT ON (users.email) users.*" in s
 
     def test_distinct_on_multiple_columns(self):
         """SELECT DISTINCT ON (col1, col2)."""
-        query = SelectQuery[User](None, (User,)).distinct_on(User.c.email, User.c.name)
+        query = SelectQuery[User](None, (User,)).distinct_on(User.email, User.name)
         s, params = query.build()
         assert "DISTINCT ON (users.email, users.name)" in s
 
@@ -175,23 +182,21 @@ class TestDistinct:
 class TestRowLocking:
     def test_for_update(self):
         """SELECT ... FOR UPDATE."""
-        query = SelectQuery[User](None, (User,)).where(User.c.id == 1).for_update()
+        query = SelectQuery[User](None, (User,)).where(User.id == 1).for_update()
         s, params = query.build()
         assert s.endswith("FOR UPDATE")
         assert params == [1]
 
     def test_for_share(self):
         """SELECT ... FOR SHARE."""
-        query = SelectQuery[User](None, (User,)).where(User.c.id == 1).for_share()
+        query = SelectQuery[User](None, (User,)).where(User.id == 1).for_share()
         s, params = query.build()
         assert s.endswith("FOR SHARE")
 
     def test_for_update_nowait(self):
         """SELECT ... FOR UPDATE NOWAIT."""
         query = (
-            SelectQuery[User](None, (User,))
-            .where(User.c.id == 1)
-            .for_update(nowait=True)
+            SelectQuery[User](None, (User,)).where(User.id == 1).for_update(nowait=True)
         )
         s, params = query.build()
         assert s.endswith("FOR UPDATE NOWAIT")
@@ -200,7 +205,7 @@ class TestRowLocking:
         """SELECT ... FOR UPDATE SKIP LOCKED."""
         query = (
             SelectQuery[User](None, (User,))
-            .where(User.c.id == 1)
+            .where(User.id == 1)
             .for_update(skip_locked=True)
         )
         s, params = query.build()
@@ -210,7 +215,7 @@ class TestRowLocking:
         """SELECT ... FOR SHARE SKIP LOCKED."""
         query = (
             SelectQuery[User](None, (User,))
-            .where(User.c.id == 1)
+            .where(User.id == 1)
             .for_share(skip_locked=True)
         )
         s, params = query.build()
@@ -220,7 +225,7 @@ class TestRowLocking:
         """Lock clause comes after LIMIT/OFFSET."""
         query = (
             SelectQuery[User](None, (User,))
-            .where(User.c.id == 1)
+            .where(User.id == 1)
             .limit(10)
             .offset(5)
             .for_update()
@@ -242,7 +247,7 @@ class TestUpsert:
         query = (
             InsertQuery[User](None, User)
             .values(name="Alice", email="alice@example.com")
-            .ignore_conflicts(target=User.c.email)
+            .ignore_conflicts(target=User.email)
         )
         s, params = query.build()
         assert "ON CONFLICT (email) DO NOTHING" in s
@@ -253,7 +258,7 @@ class TestUpsert:
         query = (
             InsertQuery[User](None, User)
             .values(name="Alice", email="alice@example.com")
-            .ignore_conflicts(target=(User.c.email, User.c.name))
+            .ignore_conflicts(target=(User.email, User.name))
         )
         s, params = query.build()
         assert "ON CONFLICT (email, name) DO NOTHING" in s
@@ -263,7 +268,7 @@ class TestUpsert:
         query = (
             InsertQuery[User](None, User)
             .values(name="Alice", email="alice@example.com")
-            .upsert(target=User.c.email, name="Alice Updated")
+            .upsert(target=User.email, name="Alice Updated")
         )
         s, params = query.build()
         assert "ON CONFLICT (email) DO UPDATE SET" in s
@@ -275,7 +280,7 @@ class TestUpsert:
         query = (
             InsertQuery[User](None, User)
             .values(name="Alice", email="alice@example.com", age=25)
-            .upsert(target=User.c.email, name="Alice Updated", age=30)
+            .upsert(target=User.email, name="Alice Updated", age=30)
         )
         s, params = query.build()
         assert "ON CONFLICT (email) DO UPDATE SET" in s
@@ -288,7 +293,7 @@ class TestUpsert:
         query = (
             InsertQuery[User](None, User)
             .values(name="Alice", email="alice@example.com")
-            .upsert(target=User.c.email, name="Alice Updated")
+            .upsert(target=User.email, name="Alice Updated")
             .returning(User)
         )
         s, params = query.build()
@@ -300,7 +305,7 @@ class TestUpsert:
         query = (
             InsertQuery[User](None, User)
             .values(name="Alice", email="alice@example.com")
-            .ignore_conflicts(target=User.c.email)
+            .ignore_conflicts(target=User.email)
             .returning(User)
         )
         s, params = query.build()
@@ -311,7 +316,7 @@ class TestUpsert:
         """Upsert can be called before values()."""
         query = (
             InsertQuery[User](None, User)
-            .upsert(target=User.c.email, name="Updated")
+            .upsert(target=User.email, name="Updated")
             .values(name="Alice", email="alice@example.com")
         )
         s, params = query.build()
@@ -376,7 +381,7 @@ class TestMultiRowInsert:
                     {"name": "Bob", "email": "b@b.com"},
                 ]
             )
-            .ignore_conflicts(target=User.c.email)
+            .ignore_conflicts(target=User.email)
         )
         s, params = query.build()
         assert "VALUES ($1, $2), ($3, $4)" in s

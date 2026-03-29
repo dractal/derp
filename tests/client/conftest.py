@@ -7,43 +7,42 @@ import shutil
 import socket
 import subprocess
 import time
-import uuid
 from collections.abc import Generator, Iterator
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from derp.auth.models import AuthSession, AuthUser
-from derp.orm import Table
-from derp.orm.fields import (
+from derp.orm import (
     UUID,
     Field,
-    ForeignKey,
-    ForeignKeyAction,
+    Index,
     Integer,
     Serial,
-    Timestamp,
+    TimestampTZ,
     Varchar,
 )
+from derp.orm.table import Table
 
 
 class UserAssetAccessLog(Table, table="user_asset_access_logs"):
-    id: int = Field(Serial(), primary_key=True)
-    user_id: uuid.UUID = Field(
-        UUID(),
-        foreign_key=ForeignKey(AuthUser, on_delete=ForeignKeyAction.CASCADE),
-        index=True,
+    id: Serial = Field(primary=True)
+    user_id: UUID = Field(
+        foreign_key=AuthUser.id,
+        on_delete="cascade",
     )
-    session_id: uuid.UUID = Field(
-        UUID(),
-        foreign_key=ForeignKey(AuthSession, on_delete=ForeignKeyAction.CASCADE),
-        index=True,
+    session_id: UUID = Field(
+        foreign_key=AuthSession.id,
+        on_delete="cascade",
     )
-    object_key: str = Field(Varchar(512))
-    object_size: int = Field(Integer())
-    created_at: datetime = Field(Timestamp(with_timezone=True), default="now()")
+    object_key: Varchar[512] = Field()
+    object_size: Integer = Field()
+    created_at: TimestampTZ = Field(default="now()")
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [Index(cls.user_id), Index(cls.session_id)]
 
 
 def _pick_free_port() -> int:

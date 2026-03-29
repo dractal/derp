@@ -48,9 +48,9 @@ async def create_channel(
     existing = await (
         derp.db.select(Channel)
         .where(
-            (Channel.c.workspace_id == str(workspace_id))
-            & (Channel.c.name == data.name)
-            & (Channel.c.is_dm == False)  # noqa: E712
+            (Channel.workspace_id == workspace_id)
+            & (Channel.name == data.name)
+            & ~Channel.is_dm
         )
         .first_or_none()
     )
@@ -119,36 +119,34 @@ async def start_dm(
 
     # Check if DM already exists between these two users in this workspace
     my_channels = await (
-        derp.db.select(ChannelMember)
-        .where(ChannelMember.c.user_id == str(user.id))
-        .execute()
+        derp.db.select(ChannelMember).where(ChannelMember.user_id == user.id).execute()
     )
-    my_channel_ids = [str(m.channel_id) for m in my_channels]
+    my_channel_ids = [m.channel_id for m in my_channels]
 
     if my_channel_ids:
         dm_channels = await (
             derp.db.select(Channel)
-            .where(
-                (Channel.c.workspace_id == str(workspace_id))
-                & (Channel.c.is_dm == True)  # noqa: E712
-                & (Channel.c.id.in_(my_channel_ids))
-            )
+            .where(Channel.workspace_id == workspace_id)
+            .where(Channel.is_dm)
+            .where(Channel.id.in_(my_channel_ids))
             .execute()
         )
 
         for dm in dm_channels:
             other_member = await (
                 derp.db.select(ChannelMember)
+                .where(ChannelMember.channel_id == dm.id)
+                .where(ChannelMember.user_id == data.user_id)
                 .where(
-                    (ChannelMember.c.channel_id == str(dm.id))
-                    & (ChannelMember.c.user_id == str(data.user_id))
+                    (ChannelMember.channel_id == dm.id)
+                    & (ChannelMember.user_id == data.user_id)
                 )
                 .first_or_none()
             )
             if other_member:
                 count = await (
                     derp.db.select(ChannelMember)
-                    .where(ChannelMember.c.channel_id == str(dm.id))
+                    .where(ChannelMember.channel_id == dm.id)
                     .count()
                 )
                 return ChannelResponse(
@@ -214,7 +212,7 @@ async def get_channel(
 ) -> ChannelResponse:
     """Get channel details."""
     channel = await (
-        derp.db.select(Channel).where(Channel.c.id == str(channel_id)).first_or_none()
+        derp.db.select(Channel).where(Channel.id == channel_id).first_or_none()
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
@@ -224,8 +222,8 @@ async def get_channel(
         membership = await (
             derp.db.select(ChannelMember)
             .where(
-                (ChannelMember.c.channel_id == str(channel_id))
-                & (ChannelMember.c.user_id == str(user.id))
+                (ChannelMember.channel_id == channel_id)
+                & (ChannelMember.user_id == user.id)
             )
             .first_or_none()
         )
@@ -234,7 +232,7 @@ async def get_channel(
 
     count = await (
         derp.db.select(ChannelMember)
-        .where(ChannelMember.c.channel_id == str(channel_id))
+        .where(ChannelMember.channel_id == channel_id)
         .count()
     )
 
@@ -260,7 +258,7 @@ async def update_channel(
 ) -> ChannelResponse:
     """Update channel name or topic."""
     channel = await (
-        derp.db.select(Channel).where(Channel.c.id == str(channel_id)).first_or_none()
+        derp.db.select(Channel).where(Channel.id == channel_id).first_or_none()
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
@@ -268,8 +266,8 @@ async def update_channel(
     membership = await (
         derp.db.select(ChannelMember)
         .where(
-            (ChannelMember.c.channel_id == str(channel_id))
-            & (ChannelMember.c.user_id == str(user.id))
+            (ChannelMember.channel_id == channel_id)
+            & (ChannelMember.user_id == user.id)
         )
         .first_or_none()
     )
@@ -281,10 +279,7 @@ async def update_channel(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     await (
-        derp.db.update(Channel)
-        .set(**updates)
-        .where(Channel.c.id == str(channel_id))
-        .execute()
+        derp.db.update(Channel).set(**updates).where(Channel.id == channel_id).execute()
     )
 
     return await get_channel(channel_id, user, derp)
@@ -298,7 +293,7 @@ async def delete_channel(
 ) -> MessageResponse:
     """Delete a channel (creator or workspace owner only)."""
     channel = await (
-        derp.db.select(Channel).where(Channel.c.id == str(channel_id)).first_or_none()
+        derp.db.select(Channel).where(Channel.id == channel_id).first_or_none()
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
@@ -316,7 +311,7 @@ async def delete_channel(
     if channel.created_by != user.id and ws_member.role != "owner":
         raise HTTPException(status_code=403, detail="Only creator or owner can delete")
 
-    await derp.db.delete(Channel).where(Channel.c.id == str(channel_id)).execute()
+    await derp.db.delete(Channel).where(Channel.id == channel_id).execute()
 
     return MessageResponse(message="Channel deleted")
 
@@ -334,7 +329,7 @@ async def join_channel(
 ) -> MessageResponse:
     """Join a public channel."""
     channel = await (
-        derp.db.select(Channel).where(Channel.c.id == str(channel_id)).first_or_none()
+        derp.db.select(Channel).where(Channel.id == channel_id).first_or_none()
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
@@ -352,8 +347,8 @@ async def join_channel(
     existing = await (
         derp.db.select(ChannelMember)
         .where(
-            (ChannelMember.c.channel_id == str(channel_id))
-            & (ChannelMember.c.user_id == str(user.id))
+            (ChannelMember.channel_id == channel_id)
+            & (ChannelMember.user_id == user.id)
         )
         .first_or_none()
     )
@@ -377,7 +372,7 @@ async def leave_channel(
 ) -> MessageResponse:
     """Leave a channel."""
     channel = await (
-        derp.db.select(Channel).where(Channel.c.id == str(channel_id)).first_or_none()
+        derp.db.select(Channel).where(Channel.id == channel_id).first_or_none()
     )
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
@@ -385,8 +380,8 @@ async def leave_channel(
     await (
         derp.db.delete(ChannelMember)
         .where(
-            (ChannelMember.c.channel_id == str(channel_id))
-            & (ChannelMember.c.user_id == str(user.id))
+            (ChannelMember.channel_id == channel_id)
+            & (ChannelMember.user_id == user.id)
         )
         .execute()
     )
@@ -406,8 +401,8 @@ async def list_channel_members(
     membership = await (
         derp.db.select(ChannelMember)
         .where(
-            (ChannelMember.c.channel_id == str(channel_id))
-            & (ChannelMember.c.user_id == str(user.id))
+            (ChannelMember.channel_id == channel_id)
+            & (ChannelMember.user_id == user.id)
         )
         .first_or_none()
     )
@@ -416,15 +411,13 @@ async def list_channel_members(
 
     members = await (
         derp.db.select(ChannelMember)
-        .where(ChannelMember.c.channel_id == str(channel_id))
+        .where(ChannelMember.channel_id == channel_id)
         .execute()
     )
 
     result = []
     for m in members:
-        u = await (
-            derp.db.select(User).where(User.c.id == str(m.user_id)).first_or_none()
-        )
+        u = await derp.db.select(User).where(User.id == m.user_id).first_or_none()
         result.append(
             ChannelMemberResponse(
                 user_id=m.user_id,
@@ -445,9 +438,7 @@ async def list_channel_members(
 
 async def _enrich_message(msg: Message, derp: DerpClient) -> ChatMessageResponse:
     """Add sender info to a message."""
-    sender = await (
-        derp.db.select(User).where(User.c.id == str(msg.sender_id)).first_or_none()
-    )
+    sender = await derp.db.select(User).where(User.id == msg.sender_id).first_or_none()
     return ChatMessageResponse(
         id=msg.id,
         channel_id=msg.channel_id,
@@ -476,8 +467,8 @@ async def list_messages(
     membership = await (
         derp.db.select(ChannelMember)
         .where(
-            (ChannelMember.c.channel_id == str(channel_id))
-            & (ChannelMember.c.user_id == str(user.id))
+            (ChannelMember.channel_id == channel_id)
+            & (ChannelMember.user_id == user.id)
         )
         .first_or_none()
     )
@@ -486,17 +477,17 @@ async def list_messages(
 
     query = (
         derp.db.select(Message)
-        .where(Message.c.channel_id == str(channel_id))
-        .order_by(Message.c.created_at, asc=False)
+        .where(Message.channel_id == channel_id)
+        .order_by(Message.created_at, asc=False)
         .limit(limit)
     )
 
     if before:
         cursor_msg = await (
-            derp.db.select(Message).where(Message.c.id == str(before)).first_or_none()
+            derp.db.select(Message).where(Message.id == before).first_or_none()
         )
         if cursor_msg:
-            query = query.where(Message.c.created_at < cursor_msg.created_at)
+            query = query.where(Message.created_at < cursor_msg.created_at)
 
     messages = await query.execute()
 
@@ -518,8 +509,8 @@ async def send_message(
     membership = await (
         derp.db.select(ChannelMember)
         .where(
-            (ChannelMember.c.channel_id == str(channel_id))
-            & (ChannelMember.c.user_id == str(user.id))
+            (ChannelMember.channel_id == channel_id)
+            & (ChannelMember.user_id == user.id)
         )
         .first_or_none()
     )
@@ -541,7 +532,7 @@ async def send_message(
     await (
         derp.db.update(Channel)
         .set(last_message_at=datetime.now(UTC))
-        .where(Channel.c.id == str(channel_id))
+        .where(Channel.id == channel_id)
         .execute()
     )
 
@@ -557,7 +548,7 @@ async def edit_message(
 ) -> ChatMessageResponse:
     """Edit a message (sender only)."""
     message = await (
-        derp.db.select(Message).where(Message.c.id == str(message_id)).first_or_none()
+        derp.db.select(Message).where(Message.id == message_id).first_or_none()
     )
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -568,7 +559,7 @@ async def edit_message(
     [updated] = await (
         derp.db.update(Message)
         .set(content=data.content, edited_at=datetime.now(UTC))
-        .where(Message.c.id == str(message_id))
+        .where(Message.id == message_id)
         .returning(Message)
         .execute()
     )
@@ -584,7 +575,7 @@ async def delete_message(
 ) -> MessageResponse:
     """Delete a message (sender only)."""
     message = await (
-        derp.db.select(Message).where(Message.c.id == str(message_id)).first_or_none()
+        derp.db.select(Message).where(Message.id == message_id).first_or_none()
     )
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
@@ -592,6 +583,6 @@ async def delete_message(
     if message.sender_id != user.id:
         raise HTTPException(status_code=403, detail="Can only delete your own messages")
 
-    await derp.db.delete(Message).where(Message.c.id == str(message_id)).execute()
+    await derp.db.delete(Message).where(Message.id == message_id).execute()
 
     return MessageResponse(message="Message deleted")

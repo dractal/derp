@@ -38,6 +38,8 @@ class IndexMethod(StrEnum):
     GIST = "gist"
     SPGIST = "spgist"
     BRIN = "brin"
+    HNSW = "hnsw"
+    IVFFLAT = "ivfflat"
 
 
 class IdentityGeneration(StrEnum):

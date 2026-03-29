@@ -2,113 +2,12 @@
 
 from __future__ import annotations
 
-import abc
 import dataclasses
+import enum
 import re
-from collections.abc import Sequence
-from enum import StrEnum
 from typing import Any
 
-from derp.orm.fields import FieldInfo
-
-
-class LogicalOperator(StrEnum):
-    """SQL logical operators."""
-
-    AND = "AND"
-    OR = "OR"
-
-
-class ComparisonOperator(StrEnum):
-    """SQL comparison operators."""
-
-    EQ = "="
-    NE = "<>"
-    GT = ">"
-    GTE = ">="
-    LT = "<"
-    LTE = "<="
-
-
-@dataclasses.dataclass
-class Expression(abc.ABC):
-    """Base class for SQL expressions."""
-
-    @abc.abstractmethod
-    def to_sql(self, params: list[Any]) -> str:
-        """Generate SQL string with parameterized values.
-
-        Args:
-            params: List to append parameter values to
-
-        Returns:
-            SQL string with $N placeholders
-        """
-
-    def __and__(self, other: Expression) -> Expression:
-        return LogicalOp(LogicalOperator.AND, (self, other))
-
-    def __or__(self, other: Expression) -> Expression:
-        return LogicalOp(LogicalOperator.OR, (self, other))
-
-    def __invert__(self) -> Expression:
-        return UnaryOp("NOT", self)
-
-    def __eq__(self, other: Any) -> Any:
-        """Equal comparison: field == value."""
-        return BinaryOp(self, ComparisonOperator.EQ, to_expr(other))
-
-    def __ne__(self, other: Any) -> Any:
-        """Not equal comparison: field != value."""
-        return BinaryOp(self, ComparisonOperator.NE, to_expr(other))
-
-    def __lt__(self, other: Any) -> Any:
-        """Less than comparison: field < value."""
-        return BinaryOp(self, ComparisonOperator.LT, to_expr(other))
-
-    def __le__(self, other: Any) -> Any:
-        """Less than or equal comparison: field <= value."""
-        return BinaryOp(self, ComparisonOperator.LTE, to_expr(other))
-
-    def __gt__(self, other: Any) -> Any:
-        """Greater than comparison: field > value."""
-        return BinaryOp(self, ComparisonOperator.GT, to_expr(other))
-
-    def __ge__(self, other: Any) -> Any:
-        """Greater than or equal comparison: field >= value."""
-        return BinaryOp(self, ComparisonOperator.GTE, to_expr(other))
-
-    def in_(self, values: Sequence[Any] | Any) -> Any:
-        """IN clause. Accepts a list of values or a SelectQuery."""
-        if hasattr(values, "build"):
-            return InSubquery(self, values, negated=False)
-        return InList(self, tuple(values), negated=False)
-
-    def not_in(self, values: Sequence[Any] | Any) -> Any:
-        """NOT IN clause. Accepts a list of values or a SelectQuery."""
-        if hasattr(values, "build"):
-            return InSubquery(self, values, negated=True)
-        return InList(self, tuple(values), negated=True)
-
-    def like(self, pattern: str) -> Any:
-        """LIKE pattern matching."""
-        return Like(self, pattern, case_insensitive=False)
-
-    def ilike(self, pattern: str) -> Any:
-        """ILIKE pattern matching."""
-        return Like(self, pattern, case_insensitive=True)
-
-    def is_null(self) -> Any:
-        """IS NULL check."""
-        return NullCheck(self, is_null=True)
-
-    def is_not_null(self) -> Any:
-        """IS NOT NULL check."""
-        return NullCheck(self, is_null=False)
-
-    def between(self, low: Any, high: Any) -> Any:
-        """BETWEEN range check."""
-        return Between(self, low, high)
+from derp.orm.expression_base import ComparisonOperator, Expression, LogicalOperator
 
 
 @dataclasses.dataclass(eq=False)
@@ -134,12 +33,24 @@ class Literal(Expression):
 
 
 @dataclasses.dataclass
+class CastLiteral(Expression):
+    """Literal value with an explicit SQL cast (e.g. ``$1::vector``)."""
+
+    value: Any
+    cast: str
+
+    def to_sql(self, params: list[Any]) -> str:
+        params.append(self.value)
+        return f"${len(params)}::{self.cast}"
+
+
+@dataclasses.dataclass
 class BinaryOp(Expression):
     """Binary operator expression (e.g., a = b)."""
 
-    left: Expression | FieldInfo | Any
+    left: Expression | Any
     operator: ComparisonOperator | str
-    right: Expression | FieldInfo | Any
+    right: Expression | Any
 
     def to_sql(self, params: list[Any]) -> str:
         left_sql = _expr_to_sql(self.left, params)
@@ -177,7 +88,7 @@ class LogicalOp(Expression):
 class InList(Expression):
     """IN expression (a IN (1, 2, 3))."""
 
-    column: Expression | FieldInfo
+    column: Expression
     values: tuple[Any, ...]
     negated: bool = False
 
@@ -197,7 +108,7 @@ class InList(Expression):
 class InSubquery(Expression):
     """IN (SELECT ...) expression."""
 
-    column: Expression | FieldInfo
+    column: Expression
     query: Any  # SelectQuery — typed as Any to avoid circular import
     negated: bool = False
 
@@ -215,7 +126,7 @@ class InSubquery(Expression):
 class Between(Expression):
     """BETWEEN expression."""
 
-    column: Expression | FieldInfo
+    column: Expression
     low: Any
     high: Any
 
@@ -232,7 +143,7 @@ class Between(Expression):
 class NullCheck(Expression):
     """IS NULL / IS NOT NULL expression."""
 
-    column: Expression | FieldInfo
+    column: Expression
     is_null: bool = True
 
     def to_sql(self, params: list[Any]) -> str:
@@ -245,7 +156,7 @@ class NullCheck(Expression):
 class Like(Expression):
     """LIKE/ILIKE pattern matching."""
 
-    column: Expression | FieldInfo
+    column: Expression
     pattern: str
     case_insensitive: bool = False
 
@@ -256,18 +167,11 @@ class Like(Expression):
         return f"({col_sql} {op} ${len(params)})"
 
 
-def _expr_to_sql(expr: Expression | FieldInfo | Any, params: list[Any]) -> str:
-    """Convert an expression, FieldInfo, or literal to SQL."""
+def _expr_to_sql(expr: Expression | Any, params: list[Any]) -> str:
+    """Convert an expression or literal to SQL."""
 
     if isinstance(expr, Expression):
         return expr.to_sql(params)
-    elif isinstance(expr, FieldInfo):
-        # FieldInfo stores table and column name
-        if expr._table_name and expr._field_name:
-            return f"{expr._table_name}.{expr._field_name}"
-        elif expr._field_name:
-            return expr._field_name
-        raise ValueError("FieldInfo missing table/column name metadata")
     else:
         # Literal value
         params.append(expr)
@@ -318,12 +222,176 @@ def sql(template: str, *values: Any) -> RawSQL:
     return RawSQL(template, values)
 
 
+class _TSQueryStyle(enum.StrEnum):
+    """PostgreSQL full-text query parser functions."""
+
+    PLAIN = "plainto_tsquery"
+    WEBSEARCH = "websearch_to_tsquery"
+    PHRASE = "phraseto_tsquery"
+
+    @classmethod
+    def from_short(cls, name: str) -> _TSQueryStyle:
+        """Resolve short name (``"websearch"``) or full enum value."""
+        _SHORT = {
+            "plain": cls.PLAIN,
+            "websearch": cls.WEBSEARCH,
+            "phrase": cls.PHRASE,
+        }
+        return _SHORT.get(name) or cls(name)
+
+
+def _ts_vector_sql(
+    column: Expression,
+    language: str,
+    params: list[Any],
+    *,
+    stored: bool = False,
+) -> str:
+    """Emit ``to_tsvector($lang::regconfig, col)`` or just ``col`` when
+    *stored* is True (for pre-computed tsvector columns)."""
+    col_sql = _expr_to_sql(column, params)
+    if stored:
+        return col_sql
+    params.append(language)
+    return f"to_tsvector(${len(params)}::regconfig, {col_sql})"
+
+
+def _ts_query_sql(
+    style: _TSQueryStyle,
+    language: str,
+    query: str,
+    params: list[Any],
+) -> str:
+    """Emit ``websearch_to_tsquery($lang::regconfig, $query)``."""
+    params.append(language)
+    lang_ph = f"${len(params)}"
+    params.append(query)
+    query_ph = f"${len(params)}"
+    return f"{style}({lang_ph}::regconfig, {query_ph})"
+
+
+@dataclasses.dataclass
+class TSMatch(Expression):
+    """Full-text search match (``@@ websearch_to_tsquery(...)``)."""
+
+    column: Expression
+    query: str
+    language: str = "english"
+    style: _TSQueryStyle = _TSQueryStyle.WEBSEARCH
+    stored: bool = False
+
+    def to_sql(self, params: list[Any]) -> str:
+        vec = _ts_vector_sql(self.column, self.language, params, stored=self.stored)
+        tsq = _ts_query_sql(self.style, self.language, self.query, params)
+        return f"({vec} @@ {tsq})"
+
+
+@dataclasses.dataclass
+class TSRank(Expression):
+    """Full-text search rank for ORDER BY."""
+
+    column: Expression
+    query: str
+    language: str = "english"
+    style: _TSQueryStyle = _TSQueryStyle.WEBSEARCH
+    stored: bool = False
+    _alias: str | None = dataclasses.field(default=None, repr=False)
+
+    def to_sql(self, params: list[Any]) -> str:
+        vec = _ts_vector_sql(self.column, self.language, params, stored=self.stored)
+        tsq = _ts_query_sql(self.style, self.language, self.query, params)
+        result = f"ts_rank({vec}, {tsq})"
+        if self._alias is not None:
+            result += f" AS {self._alias}"
+        return result
+
+    def as_(self, alias: str) -> TSRank:
+        """Return a copy with an AS alias."""
+        return TSRank(
+            self.column,
+            self.query,
+            self.language,
+            self.style,
+            self.stored,
+            _alias=alias,
+        )
+
+
+# Maps Python kwarg names → PostgreSQL ts_headline option names.
+_HEADLINE_OPTION_KEYS: dict[str, str] = {
+    "max_words": "MaxWords",
+    "min_words": "MinWords",
+    "max_fragments": "MaxFragments",
+    "start_sel": "StartSel",
+    "stop_sel": "StopSel",
+    "fragment_delimiter": "FragmentDelimiter",
+    "highlight_all": "HighlightAll",
+    "short_word": "ShortWord",
+}
+
+
+def _headline_options_to_pg(opts: dict[str, Any]) -> str | None:
+    """Build the PostgreSQL options string from non-None kwargs."""
+    parts: list[str] = []
+    for py_key, pg_key in _HEADLINE_OPTION_KEYS.items():
+        val = opts.get(py_key)
+        if val is None:
+            continue
+        if isinstance(val, bool):
+            parts.append(f"{pg_key}={'true' if val else 'false'}")
+        else:
+            parts.append(f"{pg_key}={val}")
+    return ", ".join(parts) if parts else None
+
+
+@dataclasses.dataclass
+class TSHeadline(Expression):
+    """Search result snippet with highlighted matches.
+
+    Produces ``ts_headline(lang::regconfig, col, query[, options])``.
+    """
+
+    column: Expression
+    query: str
+    language: str = "english"
+    style: _TSQueryStyle = _TSQueryStyle.WEBSEARCH
+    headline_options: dict[str, Any] = dataclasses.field(default_factory=dict)
+    _alias: str | None = dataclasses.field(default=None, repr=False)
+
+    def to_sql(self, params: list[Any]) -> str:
+        params.append(self.language)
+        lang_ph = f"${len(params)}"
+        col_sql = _expr_to_sql(self.column, params)
+        tsq = _ts_query_sql(self.style, self.language, self.query, params)
+        opts_str = _headline_options_to_pg(self.headline_options)
+        if opts_str is not None:
+            params.append(opts_str)
+            opts_ph = f", ${len(params)}"
+        else:
+            opts_ph = ""
+        result = f"ts_headline({lang_ph}::regconfig, {col_sql}, {tsq}{opts_ph})"
+        if self._alias is not None:
+            result += f" AS {self._alias}"
+        return result
+
+    def as_(self, alias: str) -> TSHeadline:
+        """Return a copy with an AS alias."""
+        return TSHeadline(
+            self.column,
+            self.query,
+            self.language,
+            self.style,
+            self.headline_options,
+            _alias=alias,
+        )
+
+
 @dataclasses.dataclass
 class AggregateFunc(Expression):
     """SQL aggregate function expression (COUNT, SUM, AVG, MIN, MAX)."""
 
     func: str
-    arg: Expression | FieldInfo
+    arg: Expression
     _alias: str | None = dataclasses.field(default=None, repr=False)
 
     def to_sql(self, params: list[Any]) -> str:
@@ -345,7 +413,7 @@ class CaseExpression(Expression):
     Simple CASE: ``CASE operand WHEN val THEN result ... END``
     """
 
-    operand: Expression | FieldInfo
+    operand: Expression
     whens: list[tuple[Any, Any]]
     else_value: Any | None = dataclasses.field(default=None)
     _alias: str | None = dataclasses.field(default=None, repr=False)
@@ -415,8 +483,8 @@ class ExistsExpr(Expression):
         return f"EXISTS {sub_sql}"
 
 
-def to_expr(value: Expression | FieldInfo | Any) -> Expression | FieldInfo:
-    """Ensure value is an expression or FieldInfo."""
-    if isinstance(value, Expression | FieldInfo):
+def to_expr(value: Expression | Any) -> Expression:
+    """Ensure value is an expression."""
+    if isinstance(value, Expression):
         return value
     return Literal(value)

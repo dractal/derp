@@ -5,12 +5,16 @@ from __future__ import annotations
 from types import TracebackType
 from typing import Any
 
-import aiobotocore.session
-from aiobotocore.client import AioBaseClient
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from etils import epy
 
 from derp.config import StorageConfig
+from derp.storage.exceptions import StorageNotConnectedError
+
+with epy.lazy_imports():
+    import aiobotocore.client as aio_client
+    import aiobotocore.session as aio_session
 
 
 class StorageClient:
@@ -36,15 +40,15 @@ class StorageClient:
             config: Storage configuration.
         """
         self._config = config
-        self._session: aiobotocore.session.AioSession | None = None
-        self._client: AioBaseClient | None = None
+        self._session: aio_session.AioSession | None = None
+        self._client: aio_client.AioBaseClient | None = None
 
     async def connect(self) -> None:
         """Establish connection to S3."""
         if self._client is not None:
             return
 
-        self._session = aiobotocore.session.get_session()
+        self._session = aio_session.get_session()
 
         config = Config(
             region_name=self._config.region,
@@ -81,15 +85,6 @@ class StorageClient:
         exc_tb: TracebackType | None,
     ) -> None:
         await self.disconnect()
-
-    @property
-    def client(self) -> AioBaseClient:
-        """Get the S3 client."""
-        if self._client is None:
-            raise RuntimeError(
-                "Storage not connected. Call connect() or use async context manager."
-            )
-        return self._client
 
     def get_url(self, *, bucket: str, key: str) -> str:
         """Get the URL for a file in S3.
@@ -141,6 +136,9 @@ class StorageClient:
                 metadata={"author": "user123"},
             )
         """
+        if self._client is None:
+            raise StorageNotConnectedError()
+
         put_kwargs: dict[str, Any] = {
             "Bucket": bucket,
             "Key": key,
@@ -156,7 +154,7 @@ class StorageClient:
         if extra_args:
             put_kwargs.update(extra_args)
 
-        await self.client.put_object(**put_kwargs)
+        await self._client.put_object(**put_kwargs)
 
     async def fetch_file(self, *, bucket: str, key: str) -> bytes:
         """Fetch a file from S3.
@@ -175,7 +173,10 @@ class StorageClient:
             # Save to local file
             await storage.fetch_file("remote/file.txt")
         """
-        response = await self.client.get_object(
+        if self._client is None:
+            raise StorageNotConnectedError()
+
+        response = await self._client.get_object(
             Bucket=bucket,
             Key=key,
         )
@@ -194,7 +195,10 @@ class StorageClient:
         Example:
             await storage.delete_file("remote/file.txt")
         """
-        await self.client.delete_object(Bucket=bucket, Key=key)
+        if self._client is None:
+            raise StorageNotConnectedError()
+
+        await self._client.delete_object(Bucket=bucket, Key=key)
 
     async def file_exists(self, *, bucket: str, key: str) -> bool:
         """Check if a file exists in S3.
@@ -208,8 +212,11 @@ class StorageClient:
         Example:
             exists = await storage.file_exists("remote/file.txt")
         """
+        if self._client is None:
+            raise StorageNotConnectedError()
+
         try:
-            await self.client.head_object(Bucket=bucket, Key=key)
+            await self._client.head_object(Bucket=bucket, Key=key)
             return True
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
@@ -229,7 +236,10 @@ class StorageClient:
             Dict with 'content_type', 'content_length', 'last_modified',
             'etag', and 'metadata' keys.
         """
-        response = await self.client.head_object(Bucket=bucket, Key=key)
+        if self._client is None:
+            raise StorageNotConnectedError()
+
+        response = await self._client.head_object(Bucket=bucket, Key=key)
         return {
             "content_type": response.get("ContentType", "application/octet-stream"),
             "content_length": response.get("ContentLength", 0),
@@ -254,6 +264,9 @@ class StorageClient:
         Example:
             files = await storage.list_files(bucket="my-bucket", prefix="folder/")
         """
+        if self._client is None:
+            raise StorageNotConnectedError()
+
         list_kwargs: dict[str, Any] = {
             "Bucket": bucket,
         }
@@ -264,7 +277,7 @@ class StorageClient:
         if max_keys:
             list_kwargs["MaxKeys"] = max_keys
 
-        response = await self.client.list_objects_v2(**list_kwargs)
+        response = await self._client.list_objects_v2(**list_kwargs)
 
         if "Contents" not in response:
             return []
@@ -277,7 +290,10 @@ class StorageClient:
         Returns:
             List of dicts with 'name' and 'creation_date' keys.
         """
-        response = await self.client.list_buckets()
+        if self._client is None:
+            raise StorageNotConnectedError()
+
+        response = await self._client.list_buckets()
         return [
             {
                 "name": b["Name"],
@@ -306,6 +322,9 @@ class StorageClient:
             Dict with 'objects' (list of object metadata dicts) and
             'prefixes' (list of prefix strings representing folders).
         """
+        if self._client is None:
+            raise StorageNotConnectedError()
+
         list_kwargs: dict[str, Any] = {
             "Bucket": bucket,
             "Prefix": prefix,
@@ -313,7 +332,7 @@ class StorageClient:
             "MaxKeys": max_keys,
         }
 
-        response = await self.client.list_objects_v2(**list_kwargs)
+        response = await self._client.list_objects_v2(**list_kwargs)
 
         objects = [
             {

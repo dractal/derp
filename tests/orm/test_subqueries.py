@@ -2,35 +2,42 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
-from derp.orm import Table
-from derp.orm.fields import Boolean, Field, Integer, Serial, Timestamp, Varchar
+from derp.orm import (
+    Boolean,
+    Field,
+    Integer,
+    Nullable,
+    Serial,
+    Table,
+    Timestamp,
+    Varchar,
+)
 from derp.orm.query.builder import InsertQuery, SelectQuery
 from derp.orm.query.expressions import _renumber_params, sql
 
 
 class User(Table, table="users"):
-    id: int = Field(Serial(), primary_key=True)
-    name: str = Field(Varchar(255))
-    email: str = Field(Varchar(255), unique=True)
-    age: int = Field(Integer(), nullable=True)
-    role: str = Field(Varchar(50))
-    created_at: datetime = Field(Timestamp(), default="now()")
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field(unique=True)
+    age: Nullable[Integer] = Field()
+    role: Varchar[50] = Field()
+    created_at: Timestamp = Field(default="now()")
 
 
 class Post(Table, table="posts"):
-    id: int = Field(Serial(), primary_key=True)
-    user_id: int = Field(Integer())
-    title: str = Field(Varchar(255))
-    published: bool = Field(Boolean(), default=False)
+    id: Serial = Field(primary=True)
+    user_id: Integer = Field()
+    title: Varchar[255] = Field()
+    published: Boolean = Field(default=False)
 
 
 class ArchivedUser(Table, table="archived_users"):
-    id: int = Field(Serial(), primary_key=True)
-    name: str = Field(Varchar(255))
-    email: str = Field(Varchar(255))
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field()
 
 
 # =============================================================================
@@ -72,8 +79,8 @@ class TestRenumberParams:
 class TestSubqueryInWhere:
     def test_in_subquery(self):
         """column.in_(subquery) produces IN (SELECT ...)."""
-        sub = SelectQuery[Any](None, (User.c.id,)).from_(User).where(User.c.age > 30)
-        query = SelectQuery[Post](None, (Post,)).where(Post.c.user_id.in_(sub))
+        sub = SelectQuery[Any](None, (User.id,)).from_(User).where(User.age > 30)
+        query = SelectQuery[Post](None, (Post,)).where(Post.user_id.in_(sub))
         s, params = query.build()
         assert "IN (SELECT users.id FROM users WHERE (users.age > $1))" in s
         assert params == [30]
@@ -81,27 +88,25 @@ class TestSubqueryInWhere:
     def test_not_in_subquery(self):
         """column.not_in(subquery) produces NOT IN (SELECT ...)."""
         sub = (
-            SelectQuery[Any](None, (User.c.id,))
-            .from_(User)
-            .where(User.c.role == "banned")
+            SelectQuery[Any](None, (User.id,)).from_(User).where(User.role == "banned")
         )
-        query = SelectQuery[Post](None, (Post,)).where(Post.c.user_id.not_in(sub))
+        query = SelectQuery[Post](None, (Post,)).where(Post.user_id.not_in(sub))
         s, params = query.build()
         assert "NOT IN (SELECT" in s
         assert params == ["banned"]
 
     def test_in_subquery_with_outer_params(self):
         """Subquery params are renumbered after outer params."""
-        sub = SelectQuery[Any](None, (User.c.id,)).from_(User).where(User.c.age > 30)
+        sub = SelectQuery[Any](None, (User.id,)).from_(User).where(User.age > 30)
         query = (
             SelectQuery[Post](None, (Post,))
-            .where(Post.c.published == True)  # noqa: E712
-            .where(Post.c.user_id.in_(sub))
+            .where(Post.published)
+            .where(Post.user_id.in_(sub))
         )
         s, params = query.build()
-        assert "(posts.published = $1)" in s
-        assert "users.age > $2" in s
-        assert params == [True, 30]
+        assert "posts.published" in s
+        assert "users.age > $1" in s
+        assert params == [30]
 
 
 # =============================================================================
@@ -113,11 +118,11 @@ class TestSubqueryInSelect:
     def test_scalar_subquery_in_select(self):
         """Subquery .as_() usable as a SELECT column."""
         sub = (
-            SelectQuery[Any](None, (Post.c.id.count(),))
+            SelectQuery[Any](None, (Post.id.count(),))
             .from_(Post)
-            .where(Post.c.user_id == User.c.id)
+            .where(Post.user_id == User.id)
         )
-        query = SelectQuery[Any](None, (User.c.name, sub.as_("post_count"))).from_(User)
+        query = SelectQuery[Any](None, (User.name, sub.as_("post_count"))).from_(User)
         s, params = query.build()
         assert "users.name" in s
         assert "(SELECT COUNT(posts.id) FROM posts" in s
@@ -133,9 +138,9 @@ class TestSubqueryInFrom:
     def test_from_subquery(self):
         """from_() accepts a subquery."""
         sub = (
-            SelectQuery[Any](None, (User.c.role, User.c.id.count().as_("cnt")))
+            SelectQuery[Any](None, (User.role, User.id.count().as_("cnt")))
             .from_(User)
-            .group_by(User.c.role)
+            .group_by(User.role)
         )
         query = SelectQuery[Any](None, (sql("*"),)).from_(sub.as_("stats"))
         s, params = query.build()
@@ -151,14 +156,14 @@ class TestSubqueryInFrom:
 class TestExists:
     def test_exists(self):
         """subquery.exists() produces EXISTS (SELECT ...)."""
-        sub = SelectQuery[Any](None, (Post,)).where(Post.c.user_id == User.c.id)
+        sub = SelectQuery[Any](None, (Post,)).where(Post.user_id == User.id)
         query = SelectQuery[User](None, (User,)).where(sub.exists())
         s, params = query.build()
         assert "WHERE EXISTS (SELECT" in s
 
     def test_not_exists(self):
         """~subquery.exists() produces NOT EXISTS (SELECT ...)."""
-        sub = SelectQuery[Any](None, (Post,)).where(Post.c.user_id == User.c.id)
+        sub = SelectQuery[Any](None, (Post,)).where(Post.user_id == User.id)
         query = SelectQuery[User](None, (User,)).where(~sub.exists())
         s, params = query.build()
         assert "NOT EXISTS (SELECT" in s
@@ -167,17 +172,17 @@ class TestExists:
         """EXISTS combined with other WHERE conditions."""
         sub = (
             SelectQuery[Any](None, (Post,))
-            .where(Post.c.user_id == User.c.id)
-            .where(Post.c.published == True)  # noqa: E712
+            .where(Post.user_id == User.id)
+            .where(Post.published)
         )
         query = (
-            SelectQuery[User](None, (User,)).where(User.c.age > 18).where(sub.exists())
+            SelectQuery[User](None, (User,)).where(User.age > 18).where(sub.exists())
         )
         s, params = query.build()
         assert "(users.age > $1)" in s
         assert "EXISTS (SELECT" in s
-        assert "(posts.published = $2)" in s
-        assert params == [18, True]
+        assert "posts.published" in s
+        assert params == [18]
 
 
 # =============================================================================
@@ -188,8 +193,8 @@ class TestExists:
 class TestSetOperations:
     def test_union(self):
         """q1.union(q2) produces UNION."""
-        q1 = SelectQuery[User](None, (User,)).where(User.c.age > 30)
-        q2 = SelectQuery[User](None, (User,)).where(User.c.role == "admin")
+        q1 = SelectQuery[User](None, (User,)).where(User.age > 30)
+        q2 = SelectQuery[User](None, (User,)).where(User.role == "admin")
         s, params = q1.union(q2).build()
         assert "UNION" in s
         assert "UNION ALL" not in s
@@ -197,33 +202,33 @@ class TestSetOperations:
 
     def test_union_all(self):
         """q1.union_all(q2) produces UNION ALL."""
-        q1 = SelectQuery[User](None, (User,)).where(User.c.age > 30)
-        q2 = SelectQuery[User](None, (User,)).where(User.c.role == "admin")
+        q1 = SelectQuery[User](None, (User,)).where(User.age > 30)
+        q2 = SelectQuery[User](None, (User,)).where(User.role == "admin")
         s, params = q1.union_all(q2).build()
         assert "UNION ALL" in s
         assert params == [30, "admin"]
 
     def test_intersect(self):
         """q1.intersect(q2) produces INTERSECT."""
-        q1 = SelectQuery[User](None, (User,)).where(User.c.age > 30)
-        q2 = SelectQuery[User](None, (User,)).where(User.c.role == "admin")
+        q1 = SelectQuery[User](None, (User,)).where(User.age > 30)
+        q2 = SelectQuery[User](None, (User,)).where(User.role == "admin")
         s, params = q1.intersect(q2).build()
         assert "INTERSECT" in s
 
     def test_except(self):
         """q1.except_(q2) produces EXCEPT."""
-        q1 = SelectQuery[User](None, (User,)).where(User.c.age > 30)
-        q2 = SelectQuery[User](None, (User,)).where(User.c.role == "admin")
+        q1 = SelectQuery[User](None, (User,)).where(User.age > 30)
+        q2 = SelectQuery[User](None, (User,)).where(User.role == "admin")
         s, params = q1.except_(q2).build()
         assert "EXCEPT" in s
 
     def test_union_param_renumbering(self):
         """Right-side params are renumbered correctly."""
         q1 = SelectQuery[User](None, (User,)).where(
-            (User.c.age > 18) & (User.c.name == "Alice")
+            (User.age > 18) & (User.name == "Alice")
         )
         q2 = SelectQuery[User](None, (User,)).where(
-            (User.c.age < 65) & (User.c.name == "Bob")
+            (User.age < 65) & (User.name == "Bob")
         )
         s, params = q1.union(q2).build()
         # Left uses $1, $2; right should use $3, $4
@@ -235,8 +240,8 @@ class TestSetOperations:
 
     def test_set_operation_with_order_by(self):
         """Set operation supports ORDER BY on the result."""
-        q1 = SelectQuery[User](None, (User,)).where(User.c.age > 30)
-        q2 = SelectQuery[User](None, (User,)).where(User.c.role == "admin")
+        q1 = SelectQuery[User](None, (User,)).where(User.age > 30)
+        q2 = SelectQuery[User](None, (User,)).where(User.role == "admin")
         s, params = q1.union(q2).order_by("name").limit(10).build()
         assert "UNION" in s
         assert "ORDER BY name ASC" in s
@@ -251,7 +256,7 @@ class TestSetOperations:
 class TestCTEs:
     def test_basic_cte(self):
         """with_cte() produces WITH ... AS (SELECT ...)."""
-        cte = SelectQuery[Any](None, (User,)).where(User.c.age > 18)
+        cte = SelectQuery[Any](None, (User,)).where(User.age > 18)
         query = (
             SelectQuery[Any](None, (sql("*"),))
             .from_("active_users")
@@ -264,10 +269,8 @@ class TestCTEs:
 
     def test_multiple_ctes(self):
         """Multiple with_cte() calls produce multiple CTEs."""
-        cte1 = SelectQuery[Any](None, (User,)).where(User.c.age > 18)
-        cte2 = SelectQuery[Any](None, (Post,)).where(
-            Post.c.published == True  # noqa: E712
-        )
+        cte1 = SelectQuery[Any](None, (User,)).where(User.age > 18)
+        cte2 = SelectQuery[Any](None, (Post,)).where(Post.published)
         query = (
             SelectQuery[Any](None, (sql("*"),))
             .from_("active_users")
@@ -277,11 +280,11 @@ class TestCTEs:
         s, params = query.build()
         assert "WITH active_users AS (" in s
         assert "published_posts AS (" in s
-        assert params == [18, True]
+        assert params == [18]
 
     def test_cte_param_renumbering(self):
         """CTE params are renumbered before main query params."""
-        cte = SelectQuery[Any](None, (User,)).where(User.c.age > 18)
+        cte = SelectQuery[Any](None, (User,)).where(User.age > 18)
         query = (
             SelectQuery[Any](None, (sql("*"),))
             .from_("active_users")
@@ -303,9 +306,9 @@ class TestInsertSelect:
     def test_insert_from_select(self):
         """INSERT INTO ... SELECT ... FROM ..."""
         sub = (
-            SelectQuery[Any](None, (User.c.name, User.c.email))
+            SelectQuery[Any](None, (User.name, User.email))
             .from_(User)
-            .where(User.c.age > 65)
+            .where(User.age > 65)
         )
         query = (
             InsertQuery[ArchivedUser](None, ArchivedUser)
@@ -321,9 +324,9 @@ class TestInsertSelect:
     def test_insert_from_select_with_returning(self):
         """INSERT ... SELECT ... RETURNING."""
         sub = (
-            SelectQuery[Any](None, (User.c.name, User.c.email))
+            SelectQuery[Any](None, (User.name, User.email))
             .from_(User)
-            .where(User.c.role == "inactive")
+            .where(User.role == "inactive")
         )
         query = (
             InsertQuery[ArchivedUser](None, ArchivedUser)
