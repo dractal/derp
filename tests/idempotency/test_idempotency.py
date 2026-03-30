@@ -71,6 +71,12 @@ class InMemoryKV(KVClient):
         self._store[key] = value
         return True
 
+    async def incr(self, key: bytes) -> int:
+        raw = self._store.get(key, b"0")
+        value = int(raw) + 1
+        self._store[key] = str(value).encode()
+        return value
+
     async def scan(
         self, *, prefix: bytes | None = None, limit: int | None = None
     ) -> AsyncIterator[bytes]:
