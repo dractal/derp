@@ -17,28 +17,14 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-try:
-    from sqlalchemy import (
-        Integer as SAInteger,
-    )
-    from sqlalchemy import String, func, select
-    from sqlalchemy import (
-        Text as SAText,
-    )
-    from sqlalchemy.ext.asyncio import (
-        AsyncSession,
-        create_async_engine,
-    )
-    from sqlalchemy.orm import (
-        DeclarativeBase,
-        Mapped,
-        mapped_column,
-    )
-except ImportError:
-    print("SQLAlchemy not installed. Run: uv sync --extra benchmark")
-    raise SystemExit(1)
-
 import testing.postgresql as tp
+from sqlalchemy import (
+    Integer as SAInteger,
+)
+from sqlalchemy import String, func, select
+from sqlalchemy import Text as SAText
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 # ── SQLAlchemy models ────────────────────────────────────────────
 

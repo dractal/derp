@@ -18,15 +18,9 @@ from collections.abc import Callable
 from typing import Any
 
 import testing.postgresql as tp
-
-try:
-    from tortoise import Tortoise, fields
-    from tortoise.functions import Sum
-    from tortoise.models import Model
-except ImportError:
-    print("Tortoise ORM not installed. Run: uv sync --extra benchmark")
-    raise SystemExit(1)
-
+from tortoise import Tortoise, fields
+from tortoise.functions import Sum
+from tortoise.models import Model
 
 # ── Tortoise models ──────────────────────────────────────────────
 
