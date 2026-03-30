@@ -200,6 +200,54 @@ class StorageClient:
 
         await self._client.delete_object(Bucket=bucket, Key=key)
 
+    async def delete_files(self, *, bucket: str, keys: list[str]) -> list[str]:
+        """Delete multiple files from S3 in a single request.
+
+        Args:
+            bucket: Name of the S3 bucket.
+            keys: List of S3 object keys to delete.
+
+        Returns:
+            List of keys that were successfully deleted.
+        """
+        if not keys:
+            return []
+
+        if self._client is None:
+            raise StorageNotConnectedError()
+
+        response = await self._client.delete_objects(
+            Bucket=bucket,
+            Delete={"Objects": [{"Key": k} for k in keys]},
+        )
+
+        return [obj["Key"] for obj in response.get("Deleted", [])]
+
+    async def copy_file(
+        self,
+        *,
+        src_bucket: str,
+        src_key: str,
+        dst_bucket: str | None = None,
+        dst_key: str,
+    ) -> None:
+        """Copy an object between keys or buckets (server-side).
+
+        Args:
+            src_bucket: Source bucket name.
+            src_key: Source object key.
+            dst_bucket: Destination bucket name. Defaults to src_bucket.
+            dst_key: Destination object key.
+        """
+        if self._client is None:
+            raise StorageNotConnectedError()
+
+        await self._client.copy_object(
+            Bucket=dst_bucket or src_bucket,
+            Key=dst_key,
+            CopySource={"Bucket": src_bucket, "Key": src_key},
+        )
+
     async def file_exists(self, *, bucket: str, key: str) -> bool:
         """Check if a file exists in S3.
 
@@ -283,6 +331,64 @@ class StorageClient:
             return []
 
         return [obj["Key"] for obj in response["Contents"]]
+
+    async def signed_download_url(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        expires_in: int = 3600,
+    ) -> str:
+        """Generate a presigned URL for downloading (GET) an object.
+
+        Args:
+            bucket: Name of the S3 bucket.
+            key: S3 object key (path in bucket).
+            expires_in: URL expiry in seconds (default 3600).
+
+        Returns:
+            Presigned URL string.
+        """
+        if self._client is None:
+            raise StorageNotConnectedError()
+
+        return await self._client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=expires_in,
+        )
+
+    async def signed_upload_url(
+        self,
+        *,
+        bucket: str,
+        key: str,
+        expires_in: int = 3600,
+        content_type: str | None = None,
+    ) -> str:
+        """Generate a presigned URL for uploading (PUT) an object.
+
+        Args:
+            bucket: Name of the S3 bucket.
+            key: S3 object key (path in bucket).
+            expires_in: URL expiry in seconds (default 3600).
+            content_type: MIME type the uploader must use.
+
+        Returns:
+            Presigned URL string.
+        """
+        if self._client is None:
+            raise StorageNotConnectedError()
+
+        params: dict[str, str] = {"Bucket": bucket, "Key": key}
+        if content_type:
+            params["ContentType"] = content_type
+
+        return await self._client.generate_presigned_url(
+            "put_object",
+            Params=params,
+            ExpiresIn=expires_in,
+        )
 
     async def list_buckets(self) -> list[dict[str, Any]]:
         """List all S3 buckets.

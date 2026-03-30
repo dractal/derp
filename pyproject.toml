@@ -50,10 +50,6 @@ docs = [
     "celery>=5.6.2",
     "clerk-backend-api>=5.0.2",
 ]
-benchmark = [
-    "sqlalchemy[asyncio]>=2.0",
-    "tortoise-orm>=0.22",
-]
 
 [dependency-groups]
 docs = [
@@ -76,9 +72,7 @@ dev = [
     "valkey-glide",
     "celery>=5.6.2",
     "clerk-backend-api>=5.0.2",
-    "moto[cognitoidp,server]>=5.1.22",
-]
-benchmark = [
+    "moto[cognitoidp,s3,server]>=5.1.22",
     "sqlalchemy[asyncio]>=2.0",
     "tortoise-orm>=0.22",
 ]

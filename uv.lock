@@ -718,7 +718,7 @@ wheels = [
 
 [[package]]
 name = "derp-py"
-version = "0.2.0"
+version = "0.2.2"
 source = { editable = "." }
 dependencies = [
     { name = "aiobotocore" },
@@ -738,10 +738,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-benchmark = [
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "tortoise-orm" },
-]
 docs = [
     { name = "celery" },
     { name = "clerk-backend-api" },
@@ -753,22 +749,20 @@ docs = [
 ]
 
 [package.dev-dependencies]
-benchmark = [
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "tortoise-orm" },
-]
 dev = [
     { name = "celery" },
     { name = "clerk-backend-api" },
     { name = "fastapi" },
-    { name = "moto", extra = ["cognitoidp", "server"] },
+    { name = "moto", extra = ["cognitoidp", "s3", "server"] },
     { name = "pydantic-settings" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-benchmark" },
     { name = "python-multipart" },
     { name = "ruff" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "testing-postgresql" },
+    { name = "tortoise-orm" },
     { name = "ty" },
     { name = "uvicorn" },
     { name = "valkey-glide" },
@@ -799,32 +793,28 @@ requires-dist = [
     { name = "sphinx", marker = "extra == 'docs'", specifier = ">=8.0" },
     { name = "sphinx-copybutton", marker = "extra == 'docs'", specifier = ">=0.5" },
     { name = "sphinx-design", marker = "extra == 'docs'", specifier = ">=0.6" },
-    { name = "sqlalchemy", extras = ["asyncio"], marker = "extra == 'benchmark'", specifier = ">=2.0" },
     { name = "stripe", extras = ["async"], specifier = ">=13.0.1" },
-    { name = "tortoise-orm", marker = "extra == 'benchmark'", specifier = ">=0.22" },
     { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", specifier = ">=0.40.0" },
     { name = "valkey-glide", marker = "extra == 'docs'" },
 ]
-provides-extras = ["docs", "benchmark"]
+provides-extras = ["docs"]
 
 [package.metadata.requires-dev]
-benchmark = [
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
-    { name = "tortoise-orm", specifier = ">=0.22" },
-]
 dev = [
     { name = "celery", specifier = ">=5.6.2" },
     { name = "clerk-backend-api", specifier = ">=5.0.2" },
     { name = "fastapi", specifier = ">=0.128.0" },
-    { name = "moto", extras = ["cognitoidp", "server"], specifier = ">=5.1.22" },
+    { name = "moto", extras = ["cognitoidp", "s3", "server"], specifier = ">=5.1.22" },
     { name = "pydantic-settings", specifier = ">=2.12.0" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "pytest-benchmark", specifier = ">=5.0" },
     { name = "python-multipart", specifier = ">=0.0.22" },
     { name = "ruff", specifier = ">=0.9" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0" },
     { name = "testing-postgresql", specifier = ">=1.3.0" },
+    { name = "tortoise-orm", specifier = ">=0.22" },
     { name = "ty", specifier = ">=0.0.1a5" },
     { name = "uvicorn", specifier = ">=0.40.0" },
     { name = "valkey-glide" },
@@ -1410,6 +1400,10 @@ wheels = [
 [package.optional-dependencies]
 cognitoidp = [
     { name = "joserfc" },
+]
+s3 = [
+    { name = "py-partiql-parser" },
+    { name = "pyyaml" },
 ]
 server = [
     { name = "antlr4-python3-runtime" },
