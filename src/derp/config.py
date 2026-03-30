@@ -352,6 +352,23 @@ class QueueConfig(BaseModel):
         return self
 
 
+class ModalConfig(BaseModel):
+    """Configuration for Modal."""
+
+    token_id: str
+    token_secret: str
+    endpoint_url: str
+
+
+class AIConfig(BaseModel):
+    """AI configuration for OpenAI-compatible providers."""
+
+    api_key: str
+    base_url: str | None = None
+    fal_api_key: str | None = None
+    modal_config: ModalConfig | None = None
+
+
 class DerpConfig(BaseModel):
     """Derp configuration."""
 
@@ -362,6 +379,7 @@ class DerpConfig(BaseModel):
     kv: KVConfig | None = None
     payments: PaymentsConfig | None = None
     queue: QueueConfig | None = None
+    ai: AIConfig | None = None
 
     _env_vars: dict[tuple[str, ...], str] = {}
 
@@ -454,4 +472,8 @@ migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # team_id = "team_xxx"
 # project_id = "prj_xxx"
 # default_queue = "default"
+
+# [ai]
+# api_key = "$OPENAI_API_KEY"
+# base_url = "https://api.openai.com/v1"  # Optional, for OpenAI-compatible providers
 """

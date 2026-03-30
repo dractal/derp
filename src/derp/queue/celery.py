@@ -77,9 +77,11 @@ class CeleryQueueClient(QueueClient):
         task_name: str,
         payload: dict[str, Any] | None = None,
         *,
+        task_id: str | None = None,
         queue: str | None = None,
-        delay: timedelta | None = None,
+        delay: int | timedelta | None = None,
     ) -> str:
+        del task_id
         if self._app is None:
             raise QueueNotConnectedError()
 
@@ -87,7 +89,10 @@ class CeleryQueueClient(QueueClient):
         if queue is not None:
             kwargs["queue"] = queue
         if delay is not None:
-            kwargs["countdown"] = delay.total_seconds()
+            if isinstance(delay, timedelta):
+                kwargs["countdown"] = int(delay.total_seconds())
+            else:
+                kwargs["countdown"] = delay
 
         try:
             result = await asyncio.to_thread(

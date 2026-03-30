@@ -3,7 +3,7 @@ Derp
 
 An async Python backend toolkit. One client, one config file.
 
-**ORM** · **Auth** · **Payments** · **Storage** · **KV** · **Queues** · **CLI** · **Studio**
+**ORM** · **Auth** · **Payments** · **Storage** · **KV** · **Queues** · **AI** · **CLI** · **Studio**
 
 .. warning::
 
@@ -60,13 +60,19 @@ An async Python backend toolkit. One client, one config file.
       :link: guide/kv
       :link-type: doc
 
-      Valkey: caching, stampede protection, idempotency, webhook dedup.
+      Valkey: caching, stampede protection, idempotency, webhook dedup, rate limiting.
 
    .. grid-item-card:: Task Queue
       :link: guide/queue
       :link-type: doc
 
       Celery or Vercel: enqueue, delay, schedules, status polling.
+
+   .. grid-item-card:: AI
+      :link: guide/ai
+      :link-type: doc
+
+      OpenAI, Fal, Modal: chat, streaming with Vercel/TanStack adapters.
 
 .. toctree::
    :maxdepth: 2
@@ -88,6 +94,7 @@ An async Python backend toolkit. One client, one config file.
    guide/storage
    guide/payments
    guide/queue
+   guide/ai
    guide/cli
    guide/config
 

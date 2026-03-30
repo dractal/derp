@@ -137,6 +137,9 @@ class ValkeyClient(KVClient):
     async def expire(self, key: bytes, ttl: float) -> bool:
         return bool(await self.client.expire(key, math.ceil(ttl)))
 
+    async def incr(self, key: bytes) -> int:
+        return await self.client.incr(key)
+
     async def scan(
         self, *, prefix: bytes | None = None, limit: int | None = None
     ) -> AsyncIterator[bytes]:

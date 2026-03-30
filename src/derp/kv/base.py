@@ -5,8 +5,21 @@ from __future__ import annotations
 import abc
 import asyncio
 import json
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass(frozen=True, slots=True)
+class RateLimitResult:
+    """Result of a rate limit check."""
+
+    allowed: bool
+    count: int
+    limit: int
+    remaining: int
+    retry_after: float | None
 
 
 class KVClient(abc.ABC):
@@ -67,6 +80,13 @@ class KVClient(abc.ABC):
         self, key: bytes, value: bytes, *, ttl: float | None = None
     ) -> bool:
         """Set a value only if the key does not exist. Returns True if set."""
+
+    @abc.abstractmethod
+    async def incr(self, key: bytes) -> int:
+        """Increment a key by 1 and return the new value.
+
+        Creates the key with value 1 if it does not exist.
+        """
 
     @abc.abstractmethod
     async def scan(
@@ -197,3 +217,43 @@ class KVClient(abc.ABC):
         cache_key = f"{key_prefix}:{event_id}".encode()
         acquired = await self.set_nx(cache_key, b"1", ttl=ttl)
         return not acquired
+
+    async def rate_limit(
+        self,
+        key: str,
+        *,
+        limit: int,
+        window: float,
+        key_prefix: str = "derp:ratelimit",
+    ) -> RateLimitResult:
+        """Fixed-window rate limit check.
+
+        Increments a counter for the given key. The counter resets after
+        ``window`` seconds. Returns a :class:`RateLimitResult` indicating
+        whether the request is allowed.
+
+        Args:
+            key: Identifier to rate limit (e.g. ``f"checkout:{user_id}"``).
+            limit: Maximum number of requests per window.
+            window: Window duration in seconds.
+            key_prefix: KV key prefix.
+        """
+        cache_key = f"{key_prefix}:{key}".encode()
+        count = await self.incr(cache_key)
+        if count == 1:
+            await self.expire(cache_key, window)
+
+        remaining = max(0, limit - count)
+        allowed = count <= limit
+        retry_after = None
+        if not allowed:
+            ttl = await self.ttl(cache_key)
+            retry_after = math.ceil(ttl) if ttl is not None else window
+
+        return RateLimitResult(
+            allowed=allowed,
+            count=count,
+            limit=limit,
+            remaining=remaining,
+            retry_after=retry_after,
+        )

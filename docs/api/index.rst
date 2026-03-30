@@ -15,3 +15,4 @@ API Reference
    storage
    payments
    queue
+   ai

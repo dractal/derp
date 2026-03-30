@@ -18,11 +18,11 @@ uv run pytest tests/test_query.py -v
 uv run pytest tests/test_query.py::test_select_where -v
 
 # Lint and format
-uv run ruff check --select I --fix src/
-uv run ruff format src/
+uv run ruff check --select I --fix src/ tests/ examples/ benchmarks/
+uv run ruff format src/ tests/ examples/ benchmarks/
 
 # Type check
-uv run ty check src/
+uv run ty check src/ tests/ examples/ benchmarks/
 ```
 
 ## Style Guidelines
@@ -33,7 +33,17 @@ uv run ty check src/
 
 ## Configuration
 
-CLI uses `derp.toml` with typed config in `src/derp/config.py`:
+CLI uses `derp.toml` with typed config in `src/derp/config.py`.
+
+## Modules
+
+- **ORM** (`src/derp/orm/`) — PostgreSQL query builder, migrations, schema diffing
+- **Auth** (`src/derp/auth/`) — Native, Clerk, Cognito, Supabase backends with orgs/RBAC
+- **Payments** (`src/derp/payments/`) — Stripe: checkout, Connect, payouts, webhooks
+- **Storage** (`src/derp/storage/`) — S3: upload/download, signed URLs, batch delete, copy
+- **KV** (`src/derp/kv/`) — Valkey: cache, stampede protection, idempotency, rate limiting
+- **Queue** (`src/derp/queue/`) — Celery/Vercel: enqueue, schedules, cron
+- **AI** (`src/derp/ai/`) — OpenAI, fal, Modal: chat, streaming, Vercel/TanStack protocol adapters
 
 ## Code style
 

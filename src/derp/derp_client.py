@@ -6,6 +6,7 @@ import datetime
 from types import TracebackType
 from typing import Self
 
+from derp.ai import AIClient
 from derp.auth.base import BaseAuthClient
 from derp.auth.clerk_client import ClerkAuthClient
 from derp.auth.cognito_client import CognitoAuthClient
@@ -107,6 +108,9 @@ class DerpClient:
                         for sc in self._config.queue.schedules
                     ]
                 )
+        self._ai: AIClient | None = (
+            AIClient(self._config.ai) if self._config.ai is not None else None
+        )
         self._router: ReplicaRouter | None = None
         self._in_session = False
 
@@ -142,6 +146,8 @@ class DerpClient:
                 self._auth.set_kv(self._kv)
         if self._kv is not None:
             self._db.set_cache(self._kv)
+        if self._ai is not None:
+            await self._ai.connect()
 
         # Set up replica router if replica is configured
         if self._replica_db is not None:
@@ -177,6 +183,7 @@ class DerpClient:
             self._kv,
             self._payments,
             self._queue,
+            self._ai,
         ]:
             if client is not None:
                 try:
@@ -190,7 +197,6 @@ class DerpClient:
             self._auth.set_email(None)
             self._auth.set_kv(None)
         self._db.set_cache(None)
-
         self._in_session = False
 
         if errors:
@@ -268,6 +274,15 @@ class DerpClient:
         if self._queue is None:
             raise ValueError("`QueueConfig` was not passed to `DerpConfig`.")
         return self._queue
+
+    @property
+    def ai(self) -> AIClient:
+        """Get the AI client."""
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        if self._ai is None:
+            raise ValueError("`AIConfig` was not passed to `DerpConfig`.")
+        return self._ai
 
     @property
     def config(self) -> DerpConfig:

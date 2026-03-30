@@ -8,7 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from derp.ai import AIClient
 from derp.config import (
+    AIConfig,
     DatabaseConfig,
     DerpConfig,
     KVConfig,
@@ -27,6 +29,7 @@ def _config(
     storage: StorageConfig | None = None,
     kv: KVConfig | None = None,
     payments: PaymentsConfig | None = None,
+    ai: AIConfig | None = None,
 ) -> DerpConfig:
     return DerpConfig(
         database=DatabaseConfig(
@@ -37,6 +40,7 @@ def _config(
         storage=storage,
         kv=kv,
         payments=payments,
+        ai=ai,
     )
 
 
@@ -270,3 +274,71 @@ async def test_storage_service_available_in_session(
                 await _delete_bucket_with_objects(client, bucket)
         finally:
             await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_ai_property_without_config_raises(client_schema_path: str) -> None:
+    mock_db = MagicMock()
+    mock_db.connect = AsyncMock()
+    mock_db.disconnect = AsyncMock()
+    with patch("derp.derp_client.DatabaseEngine", return_value=mock_db):
+        client = DerpClient(
+            _config(db_url="postgresql://unused", schema_path=client_schema_path)
+        )
+        await client.connect()
+        with pytest.raises(ValueError, match="`AIConfig` was not passed"):
+            _ = client.ai
+        await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_ai_property_returns_ai_client(client_schema_path: str) -> None:
+    mock_db = MagicMock()
+    mock_db.connect = AsyncMock()
+    mock_db.disconnect = AsyncMock()
+    with patch("derp.derp_client.DatabaseEngine", return_value=mock_db):
+        client = DerpClient(
+            _config(
+                db_url="postgresql://unused",
+                schema_path=client_schema_path,
+                ai=AIConfig(api_key="sk-test-123"),
+            )
+        )
+        await client.connect()
+        assert isinstance(client.ai, AIClient)
+        await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_ai_client_uses_custom_base_url(client_schema_path: str) -> None:
+    mock_db = MagicMock()
+    mock_db.connect = AsyncMock()
+    mock_db.disconnect = AsyncMock()
+    with patch("derp.derp_client.DatabaseEngine", return_value=mock_db):
+        client = DerpClient(
+            _config(
+                db_url="postgresql://unused",
+                schema_path=client_schema_path,
+                ai=AIConfig(
+                    api_key="sk-test-123",
+                    base_url="https://api.openrouter.ai/v1",
+                ),
+            )
+        )
+        await client.connect()
+        assert str(client.ai._openai_client.base_url) == "https://api.openrouter.ai/v1/"
+        await client.disconnect()
+
+
+def test_ai_requires_session(client_schema_path: str) -> None:
+    mock_db = MagicMock()
+    with patch("derp.derp_client.DatabaseEngine", return_value=mock_db):
+        client = DerpClient(
+            _config(
+                db_url="postgresql://unused",
+                schema_path=client_schema_path,
+                ai=AIConfig(api_key="sk-test-123"),
+            )
+        )
+        with pytest.raises(ValueError, match="Not in a session"):
+            _ = client.ai

@@ -72,8 +72,9 @@ class QueueClient(abc.ABC):
         task_name: str,
         payload: dict[str, Any] | None = None,
         *,
+        task_id: str | None = None,
         queue: str | None = None,
-        delay: timedelta | None = None,
+        delay: int | timedelta | None = None,
     ) -> str:
         """Enqueue a task. Returns a task ID."""
 

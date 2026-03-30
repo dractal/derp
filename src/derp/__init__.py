@@ -1,5 +1,6 @@
 """Derp - A backend framework for building scalable and efficient applications."""
 
+from derp.ai import AIClient
 from derp.auth import (
     AuthConfig,
     AuthUser,
@@ -16,6 +17,7 @@ from derp.auth import (
 )
 from derp.auth.email import EmailClient
 from derp.config import (
+    AIConfig,
     CeleryConfig,
     DatabaseConfig,
     DerpConfig,
@@ -32,6 +34,8 @@ from derp.queue import CeleryQueueClient, QueueClient, VercelQueueClient
 from derp.storage import StorageClient
 
 __all__ = [
+    "AIClient",
+    "AIConfig",
     "CeleryConfig",
     "CeleryQueueClient",
     "DerpClient",

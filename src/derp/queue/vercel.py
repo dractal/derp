@@ -11,7 +11,7 @@ from urllib.parse import quote
 import httpx
 
 from derp.config import VercelQueueConfig
-from derp.queue.base import QueueClient, Schedule, ScheduleType, TaskState, TaskStatus
+from derp.queue.base import QueueClient, Schedule, ScheduleType, TaskStatus
 from derp.queue.exceptions import QueueNotConnectedError, QueueProviderError
 
 VERCEL_API_BASE = "https://api.vercel.com"
@@ -58,14 +58,16 @@ class VercelQueueClient(QueueClient):
         task_name: str,
         payload: dict[str, Any] | None = None,
         *,
+        task_id: str | None = None,
         queue: str | None = None,
-        delay: timedelta | None = None,
+        delay: int | timedelta | None = None,
     ) -> str:
         if self._client is None:
             raise QueueNotConnectedError()
 
         queue_name = queue or self._config.default_queue
-        task_id = uuid.uuid4().hex
+        if task_id is None:
+            task_id = uuid.uuid4().hex
 
         body: dict[str, Any] = {
             "task_name": task_name,
@@ -73,7 +75,10 @@ class VercelQueueClient(QueueClient):
             "payload": payload or {},
         }
         if delay is not None:
-            body["delay_seconds"] = int(delay.total_seconds())
+            if isinstance(delay, timedelta):
+                body["delay_seconds"] = int(delay.total_seconds())
+            else:
+                body["delay_seconds"] = delay
 
         try:
             resp = await self._client.post(
@@ -81,23 +86,19 @@ class VercelQueueClient(QueueClient):
                 json=body,
                 params=self._build_params(),
             )
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise QueueProviderError(
-                f"Vercel API error: {exc.response.status_code} {exc.response.text}",
-                code="vercel_api_error",
-            ) from exc
         except Exception as exc:
             raise QueueProviderError(str(exc) or "Failed to enqueue task") from exc
+
+        if resp.status_code != 200:
+            raise QueueProviderError(
+                f"Error connecting to Vercel API: {resp.status_code} {resp.text}",
+            )
 
         return task_id
 
     async def get_status(self, task_id: str) -> TaskStatus:
         """Vercel queues do not expose per-message status."""
-        return TaskStatus(
-            task_id=task_id,
-            state=TaskState.UNKNOWN,
-        )
+        raise NotImplementedError("Vercel queues do not expose per-message status.")
 
     def register_schedules(self, schedules: Sequence[Schedule]) -> None:
         """Register recurring schedules. Vercel only supports cron expressions."""

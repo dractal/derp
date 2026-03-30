@@ -69,6 +69,12 @@ class InMemoryKV(KVClient):
         self._store[key] = value
         return True
 
+    async def incr(self, key: bytes) -> int:
+        raw = self._store.get(key, b"0")
+        value = int(raw) + 1
+        self._store[key] = str(value).encode()
+        return value
+
     async def scan(
         self, *, prefix: bytes | None = None, limit: int | None = None
     ) -> AsyncIterator[bytes]:
@@ -185,3 +191,60 @@ async def test_fallthrough_on_permanent_lock() -> None:
     )
     assert result == b"fallthrough"
     assert call_count == 1
+
+
+# ── rate_limit ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_allows_under_limit() -> None:
+    kv = InMemoryKV()
+    result = await kv.rate_limit("user:1", limit=5, window=60)
+    assert result.allowed is True
+    assert result.count == 1
+    assert result.remaining == 4
+    assert result.retry_after is None
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_allows_up_to_limit() -> None:
+    kv = InMemoryKV()
+    for _ in range(5):
+        result = await kv.rate_limit("user:2", limit=5, window=60)
+    assert result.allowed is True
+    assert result.count == 5
+    assert result.remaining == 0
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_denies_over_limit() -> None:
+    kv = InMemoryKV()
+    for _ in range(5):
+        await kv.rate_limit("user:3", limit=5, window=60)
+
+    result = await kv.rate_limit("user:3", limit=5, window=60)
+    assert result.allowed is False
+    assert result.count == 6
+    assert result.remaining == 0
+    assert result.retry_after is not None
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_separate_keys() -> None:
+    kv = InMemoryKV()
+    for _ in range(5):
+        await kv.rate_limit("user:a", limit=5, window=60)
+
+    result = await kv.rate_limit("user:b", limit=5, window=60)
+    assert result.allowed is True
+    assert result.count == 1
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_result_fields() -> None:
+    kv = InMemoryKV()
+    result = await kv.rate_limit("user:4", limit=10, window=60)
+    assert result.limit == 10
+    assert result.count == 1
+    assert result.remaining == 9
+    assert result.allowed is True

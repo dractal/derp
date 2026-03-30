@@ -8,7 +8,7 @@
 
 An async Python backend toolkit. One client, one config file.
 
-**ORM** · **Auth** · **Payments** · **Storage** · **KV** · **Queues** · **CLI** · **Studio**
+**ORM** · **Auth** · **Payments** · **Storage** · **KV** · **Queues** · **AI** · **CLI** · **Studio**
 
 > **Warning:** Derp is in alpha. The API is unstable and may change without notice before 1.0.
 
@@ -132,6 +132,10 @@ api_key = "$STRIPE_SECRET_KEY"
 
 [queue.celery]
 broker_url = "$CELERY_BROKER_URL"
+
+[ai]
+api_key = "$OPENAI_API_KEY"
+# base_url = "https://api.openrouter.ai/v1"  # for other providers
 ```
 
 Environment variables starting with `$` are resolved at load time.
@@ -166,6 +170,14 @@ event = await derp.payments.verify_webhook_event(payload=body, signature=sig)
 ```python
 await derp.storage.upload_file(bucket="assets", key="avatar.jpg", data=img, content_type="image/jpeg")
 data = await derp.storage.fetch_file(bucket="assets", key="avatar.jpg")
+
+# Signed URLs for direct client access
+url = await derp.storage.signed_download_url(bucket="assets", key="avatar.jpg")
+url = await derp.storage.signed_upload_url(bucket="assets", key="uploads/new.jpg", content_type="image/jpeg")
+
+# Batch delete and server-side copy
+await derp.storage.delete_files(bucket="assets", keys=["tmp/a.txt", "tmp/b.txt"])
+await derp.storage.copy_file(src_bucket="uploads", src_key="tmp.jpg", dst_bucket="assets", dst_key="final.jpg")
 ```
 
 ### KV (Valkey)
@@ -182,6 +194,28 @@ body, status, is_replay = await derp.kv.idempotent_execute(
 # Webhook dedup
 if await derp.kv.already_processed(event_id=event["id"]):
     return {"status": "duplicate"}
+
+# Rate limiting
+result = await derp.kv.rate_limit(f"api:{user.id}", limit=100, window=3600)
+if not result.allowed:
+    raise HTTPException(429, headers={"Retry-After": str(result.retry_after)})
+```
+
+### AI (OpenAI / Fal / Modal)
+
+```python
+# Chat
+response = await derp.ai.chat(model="gpt-4o-mini", messages=[{"role": "user", "content": "Hello"}])
+print(response.content)
+
+# Streaming with Vercel AI SDK format
+async for chunk in derp.ai.stream_chat(model="gpt-4o-mini", messages=messages):
+    for event in chunk.vercel_ai_json(message_id="msg-1"):
+        yield event.dump()  # "data: {...}\n\n"
+
+# Image generation via fal
+request_id = await derp.ai.fal_call(application="fal-ai/flux", inputs={"prompt": "a cat"})
+status = await derp.ai.fal_poll("fal-ai/flux", request_id)
 ```
 
 ### Queue (Celery / Vercel)

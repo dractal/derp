@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from derp.config import VercelQueueConfig
-from derp.queue.base import TaskState
 from derp.queue.exceptions import QueueNotConnectedError, QueueProviderError
 from derp.queue.vercel import VercelQueueClient
 
@@ -90,6 +89,7 @@ async def test_disconnect_idempotent() -> None:
 async def test_enqueue_basic() -> None:
     client, mock_http = _connected_client()
     mock_response = MagicMock()
+    mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
     mock_http.post.return_value = mock_response
 
@@ -116,6 +116,7 @@ async def test_enqueue_basic() -> None:
 async def test_enqueue_with_queue_and_delay() -> None:
     client, mock_http = _connected_client()
     mock_response = MagicMock()
+    mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
     mock_http.post.return_value = mock_response
 
@@ -136,6 +137,7 @@ async def test_enqueue_with_queue_and_delay() -> None:
 async def test_enqueue_without_team_or_project() -> None:
     client, mock_http = _connected_client(team_id=None, project_id=None)
     mock_response = MagicMock()
+    mock_response.status_code = 200
     mock_response.raise_for_status = MagicMock()
     mock_http.post.return_value = mock_response
 
@@ -171,7 +173,7 @@ async def test_enqueue_http_error() -> None:
     )
     mock_http.post.return_value = mock_response
 
-    with pytest.raises(QueueProviderError, match="Vercel API error"):
+    with pytest.raises(QueueProviderError, match="Error connecting to Vercel API"):
         await client.enqueue("my_task")
 
 
@@ -188,15 +190,11 @@ async def test_enqueue_connection_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_status_always_unknown() -> None:
+async def test_get_status_raises_not_implemented() -> None:
     client, _ = _connected_client()
 
-    status = await client.get_status("task-abc")
-
-    assert status.task_id == "task-abc"
-    assert status.state == TaskState.UNKNOWN
-    assert status.result is None
-    assert status.error is None
+    with pytest.raises(NotImplementedError, match="not expose per-message status"):
+        await client.get_status("task-abc")
 
 
 # -- capabilities --

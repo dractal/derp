@@ -47,11 +47,9 @@ async def create_channel(
     # Check name uniqueness within workspace
     existing = await (
         derp.db.select(Channel)
-        .where(
-            (Channel.workspace_id == workspace_id)
-            & (Channel.name == data.name)
-            & ~Channel.is_dm
-        )
+        .where(Channel.workspace_id == workspace_id)
+        .where(Channel.name == data.name)
+        .where(~Channel.is_dm)
         .first_or_none()
     )
     if existing:
@@ -137,10 +135,6 @@ async def start_dm(
                 derp.db.select(ChannelMember)
                 .where(ChannelMember.channel_id == dm.id)
                 .where(ChannelMember.user_id == data.user_id)
-                .where(
-                    (ChannelMember.channel_id == dm.id)
-                    & (ChannelMember.user_id == data.user_id)
-                )
                 .first_or_none()
             )
             if other_member:
@@ -221,10 +215,8 @@ async def get_channel(
     if channel.is_private:
         membership = await (
             derp.db.select(ChannelMember)
-            .where(
-                (ChannelMember.channel_id == channel_id)
-                & (ChannelMember.user_id == user.id)
-            )
+            .where(ChannelMember.channel_id == channel_id)
+            .where(ChannelMember.user_id == user.id)
             .first_or_none()
         )
         if not membership:
@@ -265,10 +257,8 @@ async def update_channel(
 
     membership = await (
         derp.db.select(ChannelMember)
-        .where(
-            (ChannelMember.channel_id == channel_id)
-            & (ChannelMember.user_id == user.id)
-        )
+        .where(ChannelMember.channel_id == channel_id)
+        .where(ChannelMember.user_id == user.id)
         .first_or_none()
     )
     if not membership:
@@ -346,10 +336,8 @@ async def join_channel(
 
     existing = await (
         derp.db.select(ChannelMember)
-        .where(
-            (ChannelMember.channel_id == channel_id)
-            & (ChannelMember.user_id == user.id)
-        )
+        .where(ChannelMember.channel_id == channel_id)
+        .where(ChannelMember.user_id == user.id)
         .first_or_none()
     )
     if existing:
@@ -379,10 +367,8 @@ async def leave_channel(
 
     await (
         derp.db.delete(ChannelMember)
-        .where(
-            (ChannelMember.channel_id == channel_id)
-            & (ChannelMember.user_id == user.id)
-        )
+        .where(ChannelMember.channel_id == channel_id)
+        .where(ChannelMember.user_id == user.id)
         .execute()
     )
 
@@ -400,10 +386,8 @@ async def list_channel_members(
     """List members of a channel."""
     membership = await (
         derp.db.select(ChannelMember)
-        .where(
-            (ChannelMember.channel_id == channel_id)
-            & (ChannelMember.user_id == user.id)
-        )
+        .where(ChannelMember.channel_id == channel_id)
+        .where(ChannelMember.user_id == user.id)
         .first_or_none()
     )
     if not membership:
@@ -466,10 +450,8 @@ async def list_messages(
     """Get messages in a channel (newest first)."""
     membership = await (
         derp.db.select(ChannelMember)
-        .where(
-            (ChannelMember.channel_id == channel_id)
-            & (ChannelMember.user_id == user.id)
-        )
+        .where(ChannelMember.channel_id == channel_id)
+        .where(ChannelMember.user_id == user.id)
         .first_or_none()
     )
     if not membership:
@@ -508,10 +490,8 @@ async def send_message(
     """Send a message to a channel."""
     membership = await (
         derp.db.select(ChannelMember)
-        .where(
-            (ChannelMember.channel_id == channel_id)
-            & (ChannelMember.user_id == user.id)
-        )
+        .where(ChannelMember.channel_id == channel_id)
+        .where(ChannelMember.user_id == user.id)
         .first_or_none()
     )
     if not membership:

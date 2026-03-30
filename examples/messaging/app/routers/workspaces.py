@@ -18,7 +18,6 @@ from app.schemas import (
     WorkspaceResponse,
 )
 from derp import DerpClient
-from derp.auth.exceptions import OrgAlreadyExistsError, OrgMemberExistsError
 from derp.auth.models import OrgMemberInfo, UserInfo
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -31,15 +30,12 @@ async def create_workspace(
     derp: DerpClient = Depends(get_derp),
 ) -> WorkspaceResponse:
     """Create a new workspace. The creator becomes the owner."""
-    try:
-        org = await derp.auth.create_org(
-            name=data.name, slug=data.slug, creator_id=user.id
-        )
-    except OrgAlreadyExistsError:
+    org = await derp.auth.create_org(name=data.name, slug=data.slug, creator_id=user.id)
+    if org is None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A workspace with this slug already exists",
-        ) from None
+        )
 
     # Create default #general channel
     channel = await (
@@ -137,32 +133,25 @@ async def invite_member(
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
 
-    try:
-        new_member = await derp.auth.add_org_member(
-            org_id=workspace_id, user_id=data.user_id, role=data.role
-        )
-    except OrgMemberExistsError:
-        raise HTTPException(
-            status_code=409, detail="User is already a member"
-        ) from None
+    new_member = await derp.auth.add_org_member(
+        org_id=workspace_id, user_id=data.user_id, role=data.role
+    )
+    if new_member is None:
+        raise HTTPException(status_code=409, detail="User is already a member")
 
     # Auto-join them to #general
     general = await (
         derp.db.select(Channel)
-        .where(
-            (Channel.workspace_id == workspace_id)
-            & (Channel.name == "general")
-            & (Channel.is_dm == False)  # noqa: E712
-        )
+        .where(Channel.workspace_id == workspace_id)
+        .where(Channel.name == "general")
+        .where(~Channel.is_dm)
         .first_or_none()
     )
     if general:
         existing = await (
             derp.db.select(ChannelMember)
-            .where(
-                (ChannelMember.channel_id == general.id)
-                & (ChannelMember.user_id == data.user_id)
-            )
+            .where(ChannelMember.channel_id == general.id)
+            .where(ChannelMember.user_id == data.user_id)
             .first_or_none()
         )
         if not existing:
@@ -201,9 +190,8 @@ async def remove_member(
     for ch in channels:
         await (
             derp.db.delete(ChannelMember)
-            .where(
-                (ChannelMember.channel_id == ch.id) & (ChannelMember.user_id == user_id)
-            )
+            .where(ChannelMember.channel_id == ch.id)
+            .where(ChannelMember.user_id == user_id)
             .execute()
         )
 

@@ -131,6 +131,45 @@ Returns a tuple of ``(body, status_code, is_replay)``. ``is_replay`` is
        key_prefix="myapp:idem", # custom key prefix
    )
 
+Rate Limiting
+-------------
+
+``rate_limit`` implements a fixed-window counter. Returns a
+:class:`~derp.kv.base.RateLimitResult` instead of raising, so you decide what
+to do when the limit is exceeded.
+
+.. code-block:: python
+
+   result = await derp.kv.rate_limit(
+       f"checkout:{user.id}",
+       limit=5,
+       window=60,
+   )
+   if not result.allowed:
+       raise HTTPException(
+           status_code=429,
+           headers={"Retry-After": str(result.retry_after)},
+       )
+
+The result carries everything you need for response headers:
+
+- ``allowed`` -- ``True`` if the request is within the limit
+- ``count`` -- current request count in the window
+- ``limit`` -- the configured limit
+- ``remaining`` -- requests left in the window
+- ``retry_after`` -- seconds until the window resets (only set when denied)
+
+Custom key prefix:
+
+.. code-block:: python
+
+   result = await derp.kv.rate_limit(
+       f"api:{user.id}",
+       limit=100,
+       window=3600,
+       key_prefix="myapp:rl",
+   )
+
 Webhook Deduplication
 ---------------------
 
