@@ -74,7 +74,7 @@ class AIClient:
             self._modal_client = None
 
     async def chat(
-        self, *, model: str, messages: list[dict[str, Any]], **kwargs: Any
+        self, model: str, *, messages: list[dict[str, Any]], **kwargs: Any
     ) -> ChatResponse:
         """Create a chat completion.
 
@@ -108,7 +108,7 @@ class AIClient:
         )
 
     async def stream_chat(
-        self, *, model: str, messages: list[dict[str, Any]], **kwargs: Any
+        self, model: str, *, messages: list[dict[str, Any]], **kwargs: Any
     ) -> AsyncIterator[ChatChunk]:
         """Create a streaming chat completion.
 
@@ -163,12 +163,12 @@ class AIClient:
             )
 
     async def fal_call(
-        self, *, application: str, inputs: dict[str, Any], start_timeout: float = 10.0
+        self, app: str, *, inputs: dict[str, Any], start_timeout: float = 10.0
     ) -> str:
         """Call a Fal application.
 
         Args:
-            application: Fal application name.
+            app: Fal application name.
             inputs: Inputs to the model.
             start_timeout: Start timeout in seconds. Default is 10 seconds.
 
@@ -178,17 +178,17 @@ class AIClient:
         if self._fal_client is None:
             raise FalMissingCredentialsError()
         result = await self._fal_client.submit(
-            application,
+            app,
             arguments=inputs,
             start_timeout=start_timeout,
         )
         return result.request_id
 
-    async def fal_poll(self, application: str, request_id: str) -> JobStatus:
+    async def fal_poll(self, app: str, request_id: str) -> JobStatus:
         """Poll the status of a fal job.
 
         Args:
-            application: Fal application name.
+            app: Fal application name.
             request_id: Request ID returned by fal_call.
 
         Returns:
@@ -196,7 +196,7 @@ class AIClient:
         """
         if self._fal_client is None:
             raise FalMissingCredentialsError()
-        handle = self._fal_client.get_handle(application, request_id)
+        handle = self._fal_client.get_handle(app, request_id)
         status = await handle.status()
 
         if isinstance(status, fal_client.Queued):
@@ -217,11 +217,11 @@ class AIClient:
             )
         return JobStatus(state=JobState.UNKNOWN)
 
-    async def fal_get(self, application: str, request_id: str) -> dict[str, Any]:
+    async def fal_get(self, app: str, request_id: str) -> dict[str, Any]:
         """Get the result of a fal job.
 
         Args:
-            application: Fal application name.
+            app: Fal application name.
             request_id: Request ID returned by fal_call.
 
         Returns:
@@ -229,15 +229,15 @@ class AIClient:
         """
         if self._fal_client is None:
             raise FalMissingCredentialsError()
-        handle = self._fal_client.get_handle(application, request_id)
+        handle = self._fal_client.get_handle(app, request_id)
         result = await handle.get()
         return result
 
-    async def fal_cancel(self, application: str, request_id: str) -> CancelResult:
+    async def fal_cancel(self, app: str, request_id: str) -> CancelResult:
         """Cancel a fal job.
 
         Args:
-            application: Fal application name.
+            app: Fal application name.
             request_id: Request ID returned by fal_call.
 
         Returns:
@@ -250,7 +250,7 @@ class AIClient:
         if self._fal_client is None:
             raise FalMissingCredentialsError()
 
-        handle = self._fal_client.get_handle(application, request_id)
+        handle = self._fal_client.get_handle(app, request_id)
         status = await handle.status()
 
         if isinstance(status, fal_client.Queued):
@@ -272,14 +272,14 @@ class AIClient:
                 raise FalJobAlreadyCompletedError() from exc
             if exc.status_code == 404:
                 raise FalJobNotFoundError() from exc
-            raise
+            raise exc
         return CancelResult(
             state=CancelState.CANCELLATION_REQUESTED,
             job_state=job_state,
         )
 
     async def modal_call(
-        self, *, endpoint: str, inputs: dict[str, Any], timeout: float = 30.0
+        self, endpoint: str, *, inputs: dict[str, Any], timeout: float = 30.0
     ) -> dict[str, Any]:
         """Call a Modal endpoint.
 
