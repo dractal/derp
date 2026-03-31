@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from typing import Any
 from unittest.mock import AsyncMock
@@ -14,26 +13,6 @@ from derp.config import DatabaseConfig, DerpConfig, StorageConfig
 from derp.derp_client import DerpClient
 from derp.orm import DatabaseEngine
 from tests.conftest import bearer_request
-
-
-async def _create_bucket_with_retry(
-    client: DerpClient, bucket: str, retries: int = 30
-) -> None:
-    for attempt in range(retries):
-        try:
-            await client.storage._client.create_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
-            return
-        except Exception:
-            if attempt == retries - 1:
-                raise
-            await asyncio.sleep(0.1)
-
-
-async def _delete_bucket_with_objects(client: DerpClient, bucket: str) -> None:
-    keys = await client.storage.list_files(bucket=bucket)
-    for key in keys:
-        await client.storage.delete_file(bucket=bucket, key=key)
-    await client.storage._client.delete_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
 
 
 async def _create_backend_tables(db: DatabaseEngine) -> None:
@@ -161,7 +140,7 @@ def _auth_config() -> AuthConfig:
 @pytest.mark.asyncio
 async def test_backend_handler_auth_storage_db_chain(
     clean_database: str,
-    minio_server: dict[str, str],
+    moto_server: dict[str, str],
     client_schema_path: str,
     mock_smtp: AsyncMock,
 ) -> None:
@@ -175,9 +154,9 @@ async def test_backend_handler_auth_storage_db_chain(
             email=_email_config(),
             auth=_auth_config(),
             storage=StorageConfig(
-                endpoint_url=minio_server["endpoint_url"],
-                access_key_id=minio_server["access_key_id"],
-                secret_access_key=minio_server["secret_access_key"],
+                endpoint_url=moto_server["endpoint_url"],
+                access_key_id=moto_server["access_key_id"],
+                secret_access_key=moto_server["secret_access_key"],
                 use_ssl=False,
                 region="us-east-1",
             ),
@@ -185,9 +164,7 @@ async def test_backend_handler_auth_storage_db_chain(
     )
 
     bucket = f"assets-{uuid.uuid4().hex}"
-    key = ""
     content = b"backend-asset"
-    bucket_created = False
 
     await derp.connect()
     try:
@@ -207,8 +184,7 @@ async def test_backend_handler_auth_storage_db_chain(
 
         key = f"users/{signup_result.user.id}/profile.txt"
 
-        await _create_bucket_with_retry(derp, bucket)
-        bucket_created = True
+        await derp.storage._client.create_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
         await derp.storage.upload_file(
             bucket=bucket,
             key=key,
@@ -249,8 +225,4 @@ async def test_backend_handler_auth_storage_db_chain(
         assert log["object_key"] == key
         assert log["object_size"] == len(content)
     finally:
-        try:
-            if bucket_created:
-                await _delete_bucket_with_objects(derp, bucket)
-        finally:
-            await derp.disconnect()
+        await derp.disconnect()

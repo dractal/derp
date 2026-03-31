@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -42,26 +41,6 @@ def _config(
         payments=payments,
         ai=ai,
     )
-
-
-async def _create_bucket_with_retry(
-    client: DerpClient, bucket: str, retries: int = 30
-) -> None:
-    for attempt in range(retries):
-        try:
-            await client.storage._client.create_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
-            return
-        except Exception:
-            if attempt == retries - 1:
-                raise
-            await asyncio.sleep(0.1)
-
-
-async def _delete_bucket_with_objects(client: DerpClient, bucket: str) -> None:
-    keys = await client.storage.list_files(bucket=bucket)
-    for key in keys:
-        await client.storage.delete_file(bucket=bucket, key=key)
-    await client.storage._client.delete_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
 
 
 def test_properties_require_active_session(client_schema_path: str) -> None:
@@ -234,7 +213,7 @@ async def test_kv_service_available_in_session(
 @pytest.mark.asyncio
 async def test_storage_service_available_in_session(
     clean_database: str,
-    minio_server: dict[str, str],
+    moto_server: dict[str, str],
     client_schema_path: str,
 ) -> None:
     client = DerpClient(
@@ -242,9 +221,9 @@ async def test_storage_service_available_in_session(
             db_url=clean_database,
             schema_path=client_schema_path,
             storage=StorageConfig(
-                endpoint_url=minio_server["endpoint_url"],
-                access_key_id=minio_server["access_key_id"],
-                secret_access_key=minio_server["secret_access_key"],
+                endpoint_url=moto_server["endpoint_url"],
+                access_key_id=moto_server["access_key_id"],
+                secret_access_key=moto_server["secret_access_key"],
                 use_ssl=False,
                 region="us-east-1",
             ),
@@ -255,11 +234,9 @@ async def test_storage_service_available_in_session(
     bucket = f"bucket-{uuid.uuid4().hex}"
     key = f"files/{uuid.uuid4().hex}.txt"
     content = b"derp-storage-content"
-    bucket_created = False
 
     try:
-        await _create_bucket_with_retry(client, bucket)
-        bucket_created = True
+        await client.storage._client.create_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
         await client.storage.upload_file(
             bucket=bucket,
             key=key,
@@ -269,11 +246,7 @@ async def test_storage_service_available_in_session(
         fetched = await client.storage.fetch_file(bucket=bucket, key=key)
         assert fetched == content
     finally:
-        try:
-            if bucket_created:
-                await _delete_bucket_with_objects(client, bucket)
-        finally:
-            await client.disconnect()
+        await client.disconnect()
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import socket
 import subprocess
@@ -12,6 +11,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+import requests
+from moto.moto_server.threaded_moto_server import ThreadedMotoServer
 
 from derp.auth.models import AuthSession, AuthUser
 from derp.orm import (
@@ -96,51 +97,26 @@ def valkey_server() -> Iterator[tuple[str, int]]:
 
 
 @pytest.fixture(scope="module")
-def minio_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, str]]:
-    if shutil.which("minio") is None:
-        pytest.skip("minio binary not found on PATH")
-
-    host = "127.0.0.1"
-    api_port = _pick_free_port()
-    console_port = _pick_free_port()
-    access_key = "minioadmin"
-    secret_key = "minioadmin"
-    data_dir = tmp_path_factory.mktemp("minio-client-data")
-
-    env = {
-        **os.environ,
-        "MINIO_ROOT_USER": access_key,
-        "MINIO_ROOT_PASSWORD": secret_key,
-    }
-
-    process = subprocess.Popen(
-        [
-            "minio",
-            "server",
-            str(data_dir),
-            "--address",
-            f"{host}:{api_port}",
-            "--console-address",
-            f"{host}:{console_port}",
-            "--quiet",
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-    )
+def moto_server() -> Iterator[dict[str, str]]:
+    """Start a moto server for S3-compatible storage tests."""
+    server = ThreadedMotoServer(port=0, verbose=False)
+    server.start()
+    endpoint = f"http://localhost:{server._server.server_address[1]}"  # ty:ignore[possibly-missing-attribute]
     try:
-        _wait_for_port(host, api_port)
         yield {
-            "endpoint_url": f"http://{host}:{api_port}",
-            "access_key_id": access_key,
-            "secret_access_key": secret_key,
+            "endpoint_url": endpoint,
+            "access_key_id": "testing",
+            "secret_access_key": "testing",
         }
     finally:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
+        server.stop()
+
+
+@pytest.fixture(autouse=True)
+def _reset_moto(moto_server: dict[str, str]) -> Iterator[None]:
+    """Reset moto state before each test."""
+    requests.post(f"{moto_server['endpoint_url']}/moto-api/reset")
+    yield
 
 
 @pytest.fixture
