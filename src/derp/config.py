@@ -96,6 +96,8 @@ class DatabaseConfig(BaseModel):
     introspect_schemas: Sequence[str] = ("public",)
     introspect_exclude_tables: Sequence[str] = (MIGRATIONS_TABLE,)
 
+    ignore_rls: bool = False
+
     pool_min_size: int = 2
     pool_max_size: int = 5
     # Default to 0, for PgBouncer compatibility
@@ -428,6 +430,7 @@ schema_path = "src/schema.py"  # Path to your schema module
 migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # introspect_schemas = ["public"]   # Schemas to introspect
 # introspect_exclude_tables = ["{MIGRATIONS_TABLE}"]  # Tables to exclude
+# ignore_rls = false  # Ignore RLS and policy changes in migrations
 
 # [email]
 # site_name = "My App"  # Site name for email templates

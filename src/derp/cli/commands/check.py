@@ -8,6 +8,7 @@ import typer
 
 from derp.config import ConfigError, DerpConfig
 from derp.orm.loader import discover_tables
+from derp.orm.migrations.filters import filter_rls_statements
 from derp.orm.migrations.journal import load_journal, load_latest_snapshot
 from derp.orm.migrations.snapshot.differ import SnapshotDiffer
 from derp.orm.migrations.snapshot.models import SchemaSnapshot
@@ -98,6 +99,10 @@ def check() -> None:
     # Diff
     differ = SnapshotDiffer(prev_norm, current_norm)
     statements = differ.diff()
+
+    # Filter out RLS/policy changes when ignore_rls is enabled
+    if config.database.ignore_rls:
+        statements = filter_rls_statements(statements)
 
     if not statements:
         typer.echo("Schema is up to date. No changes detected.")

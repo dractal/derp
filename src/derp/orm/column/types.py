@@ -218,13 +218,13 @@ class DoublePrecision(Column[float]):
 # =============================================================================
 
 
-class JSON(Column[dict[str, Any]]):
+class JSON(Column[Any]):
     """JSON type."""
 
     _sql_type = "JSON"
 
 
-class JSONB(Column[dict[str, Any]]):
+class JSONB(Column[Any]):
     """Binary JSON type (JSONB)."""
 
     _sql_type = "JSONB"

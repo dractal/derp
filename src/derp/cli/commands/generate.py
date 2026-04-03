@@ -25,6 +25,7 @@ from derp.orm.migrations.convertors import (  # noqa: F401
     table,
 )
 from derp.orm.migrations.convertors.base import ConvertorRegistry
+from derp.orm.migrations.filters import filter_rls_statements
 from derp.orm.migrations.journal import (
     get_next_version,
     load_journal,
@@ -228,6 +229,10 @@ def generate(
     differ = SnapshotDiffer(prev_norm, current_norm, rename_callback)
     statements = differ.diff()
 
+    # Filter out RLS/policy changes when ignore_rls is enabled
+    if config.database.ignore_rls:
+        statements = filter_rls_statements(statements)
+
     if not statements:
         typer.echo("No changes detected. Schema is up to date.")
         return
@@ -250,6 +255,8 @@ def generate(
     # Generate reverse (down) SQL by diffing in the opposite direction
     reverse_differ = SnapshotDiffer(current_norm, prev_norm, rename_callback)
     reverse_statements = reverse_differ.diff()
+    if config.database.ignore_rls:
+        reverse_statements = filter_rls_statements(reverse_statements)
     down_sql = (
         ConvertorRegistry.convert_all(reverse_statements) if reverse_statements else ""
     )

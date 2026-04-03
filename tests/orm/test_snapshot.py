@@ -6,6 +6,7 @@ from derp.orm import (
     Boolean,
     Field,
     Index,
+    IndexColumn,
     Integer,
     Nullable,
     Serial,
@@ -52,6 +53,15 @@ class Post(Table, table="posts"):
     @classmethod
     def indexes(cls) -> list[Index]:
         return [Index(cls.author_id)]
+
+
+class AuditLog(Table, table="audit_logs"):
+    id: Serial = Field(primary=True)
+    actor_id: Integer = Field()
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [Index(IndexColumn(cls.actor_id))]
 
 
 class TestColumnSnapshot:
@@ -253,6 +263,14 @@ class TestSerializeTable:
 
         # author_id has an index via __indexes__
         assert len(table.indexes) >= 1
+
+    def test_serialize_table_with_indexcolumn_column(self):
+        """Test serializing table index built from IndexColumn(Column)."""
+        table = serialize_table(AuditLog)
+
+        assert len(table.indexes) == 1
+        index = next(iter(table.indexes.values()))
+        assert index.columns == ["actor_id"]
 
     def test_serialize_table_with_unique_constraint(self):
         """Test serializing a table with unique constraint."""

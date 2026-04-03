@@ -1,6 +1,6 @@
 [project]
 name = "derp-py"
-version = "0.2.3"
+version = "0.2.6"
 description = "An async Python backend toolkit for building web apps."
 readme = "README.md"
 authors = [{ name = "hilly12", email = "aahilmehta12@gmail.com" }]

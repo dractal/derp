@@ -52,14 +52,18 @@ def _serialize_default(default: Any) -> str | None:
     if isinstance(default, int | float):
         return str(default)
     if isinstance(default, str):
-        # Check if it's a SQL function or expression
+        # Check if it's a SQL function or expression that should not be quoted.
+        # This includes function calls like gen_random_uuid(), SQL keywords like
+        # CURRENT_TIMESTAMP, expressions with parentheses, and pre-formatted
+        # SQL literals with type casts like  '0'::bigint  or  '{}'::jsonb.
         if (
             default.endswith("()")
             or default.upper() in ("CURRENT_TIMESTAMP", "TRUE", "FALSE")
             or "(" in default
+            or (default.startswith("'") and "::" in default)
         ):
             return default
-        # Otherwise it's a string literal
+        # Otherwise it's a string literal — wrap in SQL single-quotes
         return f"'{default}'"
     return str(default)
 

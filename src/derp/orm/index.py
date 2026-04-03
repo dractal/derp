@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, NamedTuple
+from typing import Any
 
 
 class IndexMethod(StrEnum):
@@ -33,7 +34,8 @@ class NullsPosition(StrEnum):
     LAST = "LAST"
 
 
-class IndexColumn(NamedTuple):
+@dataclass(frozen=True)
+class IndexColumn:
     """Per-column configuration within an index.
 
     Either *name* or *expression* must be provided::
@@ -44,12 +46,17 @@ class IndexColumn(NamedTuple):
         IndexColumn("embedding", opclass="vector_cosine_ops")
     """
 
-    name: str | None = None
+    name: str | Any | None = None
     expression: str | None = None
     opclass: str | None = None
     order: SortOrder | None = None
     nulls: NullsPosition | None = None
     collation: str | None = None
+
+    def __post_init__(self) -> None:
+        """Allow Column descriptors as `name` input."""
+        if self.name is not None and not isinstance(self.name, str):
+            object.__setattr__(self, "name", _resolve_column_name(self.name))
 
     def to_ddl(self) -> str:
         """Generate the DDL fragment for this column."""
