@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
 import httpx
@@ -21,7 +21,11 @@ from derp.ai.models import (
     ChatResponse,
     JobState,
     JobStatus,
+    Tool,
+    ToolCall,
     Usage,
+    _build_tool_map,
+    _parse_tool_call,
 )
 from derp.config import AIConfig
 
@@ -74,18 +78,28 @@ class AIClient:
             self._modal_client = None
 
     async def chat(
-        self, model: str, *, messages: list[dict[str, Any]], **kwargs: Any
+        self,
+        model: str,
+        *,
+        messages: list[dict[str, Any]],
+        tools: Sequence[type[Tool]] = (),
+        **kwargs: Any,
     ) -> ChatResponse:
         """Create a chat completion.
 
         Args:
             model: Model ID to use.
             messages: List of message dicts.
+            tools: Optional list of Tool subclasses.
             **kwargs: Additional arguments forwarded to the API.
 
         Returns:
             ChatResponse with content, usage, and protocol adapters.
         """
+        name_map: dict[str, type[Tool]] | None = None
+        if tools:
+            schemas, name_map = _build_tool_map(tools)
+            kwargs["tools"] = schemas
         completion = await self._openai_client.chat.completions.create(
             model=model,
             messages=messages,
@@ -99,27 +113,44 @@ class AIClient:
                 completion_tokens=completion.usage.completion_tokens,
                 total_tokens=completion.usage.total_tokens,
             )
+        parsed_tool_calls: list[ToolCall] = []
+        if choice.message.tool_calls:
+            parsed_tool_calls = [
+                _parse_tool_call(tc, name_map) for tc in choice.message.tool_calls
+            ]
         return ChatResponse(
             content=choice.message.content or "",
             role=choice.message.role,
             model=completion.model,
             usage=usage,
             finish_reason=choice.finish_reason or "stop",
+            tool_calls=parsed_tool_calls,
         )
 
     async def stream_chat(
-        self, model: str, *, messages: list[dict[str, Any]], **kwargs: Any
+        self,
+        model: str,
+        *,
+        messages: list[dict[str, Any]],
+        tools: Sequence[type[Tool]] = (),
+        **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
         """Create a streaming chat completion.
 
         Args:
             model: Model ID to use.
             messages: List of message dicts.
+            tools: Optional list of Tool subclasses.
             **kwargs: Additional arguments forwarded to the API.
 
         Yields:
-            ChatChunk for each text delta.
+            ChatChunk for each text delta. The final chunk includes
+            parsed tool_calls when the model invokes tools.
         """
+        name_map: dict[str, type[Tool]] | None = None
+        if tools:
+            schemas, name_map = _build_tool_map(tools)
+            kwargs["tools"] = schemas
         kwargs.setdefault("stream_options", {"include_usage": True})
         stream = await self._openai_client.chat.completions.create(
             model=model,
@@ -132,6 +163,9 @@ class AIClient:
         finish_model: str = model
         usage: Usage | None = None
 
+        # Accumulate streamed tool call fragments: index -> [id, name, args]
+        tc_acc: dict[int, list[Any]] = {}
+
         async for chunk in stream:
             if chunk.choices:
                 choice = chunk.choices[0]
@@ -143,6 +177,27 @@ class AIClient:
                         is_first=first,
                     )
                     first = False
+                # Accumulate tool call deltas
+                if choice.delta.tool_calls:
+                    for tc_delta in choice.delta.tool_calls:
+                        idx = tc_delta.index
+                        if idx not in tc_acc:
+                            tc_acc[idx] = [
+                                tc_delta.id or "",
+                                (
+                                    tc_delta.function.name or ""
+                                    if tc_delta.function
+                                    else ""
+                                ),
+                                "",
+                            ]
+                        else:
+                            if tc_delta.id:
+                                tc_acc[idx][0] = tc_delta.id
+                            if tc_delta.function and tc_delta.function.name:
+                                tc_acc[idx][1] = tc_delta.function.name
+                        if tc_delta.function and tc_delta.function.arguments:
+                            tc_acc[idx][2] += tc_delta.function.arguments
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
                     finish_model = getattr(chunk, "model", model)
@@ -153,14 +208,104 @@ class AIClient:
                     total_tokens=chunk.usage.total_tokens,
                 )
 
+        # Build parsed tool calls from accumulated fragments
+        parsed_tool_calls: list[ToolCall] = []
+        for idx in sorted(tc_acc):
+            tc_id, fn_name, raw_args = tc_acc[idx]
+            parsed: Any = None
+            if name_map and fn_name in name_map:
+                parsed = name_map[fn_name].model_validate_json(raw_args)
+            parsed_tool_calls.append(
+                ToolCall(
+                    id=tc_id,
+                    function_name=fn_name,
+                    arguments=raw_args,
+                    args=parsed,
+                )
+            )
+
         if finish_reason:
             yield ChatChunk(
                 delta="",
                 model=finish_model,
                 finish_reason=finish_reason,
                 usage=usage,
+                tool_calls=parsed_tool_calls,
                 is_last=True,
             )
+
+    async def stream_agent(
+        self,
+        model: str,
+        *,
+        messages: list[dict[str, Any]],
+        tools: Sequence[type[Tool]] = (),
+        max_turns: int = 10,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatChunk]:
+        """Stream a chat completion loop, auto-executing tool calls.
+
+        Streams via :meth:`stream_chat` in a loop. Text deltas are yielded
+        as they arrive. When the model returns tool calls, each tool is
+        executed via its :meth:`~Tool.run` method, results are appended
+        as tool messages, and the next round starts automatically.
+
+        The loop continues until the model returns a text response
+        (no tool calls) or *max_turns* is reached.
+
+        Args:
+            model: Model ID to use.
+            messages: List of message dicts (mutated in place).
+            tools: Tool subclasses available to the model.
+            max_turns: Maximum number of tool-call round-trips.
+            **kwargs: Additional arguments forwarded to the API.
+
+        Yields:
+            ChatChunk for each text delta across all turns.
+        """
+        import json as _json
+
+        for _ in range(max_turns):
+            last_chunk: ChatChunk | None = None
+            async for chunk in self.stream_chat(
+                model=model, messages=messages, tools=tools, **kwargs
+            ):
+                last_chunk = chunk
+                yield chunk
+
+            if last_chunk is None or not last_chunk.tool_calls:
+                return
+
+            # Append the assistant message with tool calls
+            messages.append(
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function_name,
+                                "arguments": tc.arguments,
+                            },
+                        }
+                        for tc in last_chunk.tool_calls
+                    ],
+                }
+            )
+
+            # Execute each tool and append results
+            for tc in last_chunk.tool_calls:
+                result = await tc.run()
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": (
+                            result if isinstance(result, str) else _json.dumps(result)
+                        ),
+                    }
+                )
 
     async def fal_call(
         self, app: str, *, inputs: dict[str, Any], start_timeout: float = 10.0

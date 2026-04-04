@@ -194,7 +194,7 @@ def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnap
 
         # Unique constraint (if not already PK which implies unique)
         if col.unique and not col.primary_key:
-            uc_name = f"{table_name}_{col_name}_unique"
+            uc_name = f"{table_name}_{col_name}_key"
             unique_constraints[uc_name] = UniqueConstraintSnapshot(
                 name=uc_name,
                 columns=[col_name],

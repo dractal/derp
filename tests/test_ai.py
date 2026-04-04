@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from derp.ai import AIClient, ChatChunk, ChatResponse, Usage
-from derp.ai.models import SSEDone, SSEEvent
+from derp.ai import AIClient, ChatChunk, ChatResponse, Tool, ToolCall, Usage
+from derp.ai.models import SSEDone, SSEEvent, _snake_case
 from derp.config import AIConfig
 
 
@@ -31,11 +32,13 @@ def _mock_completion(
     prompt_tokens: int = 10,
     completion_tokens: int = 5,
     total_tokens: int = 15,
+    tool_calls: list[Any] | None = None,
 ) -> MagicMock:
     """Build a mock OpenAI ChatCompletion."""
     choice = MagicMock()
     choice.message.content = content
     choice.message.role = role
+    choice.message.tool_calls = tool_calls
     choice.finish_reason = finish_reason
 
     usage = MagicMock()
@@ -48,6 +51,19 @@ def _mock_completion(
     completion.model = model
     completion.usage = usage
     return completion
+
+
+def _mock_tool_call(
+    tc_id: str = "call_123",
+    name: str = "get_weather",
+    arguments: str = '{"city":"London"}',
+) -> MagicMock:
+    """Build a mock OpenAI tool call object."""
+    tc = MagicMock()
+    tc.id = tc_id
+    tc.function.name = name
+    tc.function.arguments = arguments
+    return tc
 
 
 def _mock_stream_chunks(
@@ -66,6 +82,7 @@ def _mock_stream_chunks(
             delta = MagicMock()
             delta.content = text
             delta.role = "assistant"
+            delta.tool_calls = None
             choice = MagicMock(delta=delta)
             choice.finish_reason = None
             chunk.choices = [choice]
@@ -77,6 +94,7 @@ def _mock_stream_chunks(
         final_delta = MagicMock()
         final_delta.content = None
         final_delta.role = None
+        final_delta.tool_calls = None
         final_choice = MagicMock(delta=final_delta)
         final_choice.finish_reason = "stop"
         final.choices = [final_choice]
@@ -93,6 +111,71 @@ def _mock_stream_chunks(
         else:
             usage_chunk.usage = None
         yield usage_chunk
+
+    return _aiter()
+
+
+def _mock_stream_tool_call_chunks(
+    tc_id: str = "call_abc",
+    name: str = "get_weather",
+    arg_fragments: list[str] | None = None,
+    *,
+    model: str = "gpt-4o-mini",
+) -> AsyncMock:
+    """Build a mock async stream with tool call deltas."""
+    if arg_fragments is None:
+        arg_fragments = ['{"city":', '"London"}']
+
+    async def _aiter():
+        # First chunk: tool call id + function name + first arg fragment
+        first_tc = MagicMock()
+        first_tc.index = 0
+        first_tc.id = tc_id
+        first_tc.function.name = name
+        first_tc.function.arguments = arg_fragments[0] if arg_fragments else ""
+
+        chunk0 = MagicMock()
+        chunk0.model = model
+        chunk0.usage = None
+        delta0 = MagicMock()
+        delta0.content = None
+        delta0.role = "assistant"
+        delta0.tool_calls = [first_tc]
+        choice0 = MagicMock(delta=delta0)
+        choice0.finish_reason = None
+        chunk0.choices = [choice0]
+        yield chunk0
+
+        # Subsequent arg fragment chunks
+        for frag in arg_fragments[1:]:
+            tc_delta = MagicMock()
+            tc_delta.index = 0
+            tc_delta.id = None
+            tc_delta.function.name = None
+            tc_delta.function.arguments = frag
+
+            chunk = MagicMock()
+            chunk.model = model
+            chunk.usage = None
+            delta = MagicMock()
+            delta.content = None
+            delta.tool_calls = [tc_delta]
+            choice = MagicMock(delta=delta)
+            choice.finish_reason = None
+            chunk.choices = [choice]
+            yield chunk
+
+        # Final chunk with finish_reason
+        final = MagicMock()
+        final.model = model
+        final.usage = None
+        final_delta = MagicMock()
+        final_delta.content = None
+        final_delta.tool_calls = None
+        final_choice = MagicMock(delta=final_delta)
+        final_choice.finish_reason = "tool_calls"
+        final.choices = [final_choice]
+        yield final
 
     return _aiter()
 
@@ -471,3 +554,307 @@ class TestSSEEvent:
         output = "".join(e.dump() for e in events)
         assert output.startswith("data: ")
         assert output.endswith("data: [DONE]\n\n")
+
+
+# ── Tool ─────────────────────────────────────────────────────────
+
+
+class GetWeather(Tool):
+    """Get the current weather for a city."""
+
+    city: str
+    unit: str = "celsius"
+
+    async def run(self) -> dict[str, Any]:
+        return {"temperature": 22, "unit": self.unit, "city": self.city}
+
+
+class SendEmail(Tool):
+    """Send an email to a recipient."""
+
+    to: str
+    body: str
+
+    async def run(self) -> str:
+        return f"Sent to {self.to}"
+
+
+class TestSnakeCase:
+    def test_simple(self) -> None:
+        assert _snake_case("GetWeather") == "get_weather"
+
+    def test_consecutive_caps(self) -> None:
+        assert _snake_case("HTMLParser") == "html_parser"
+
+    def test_single_word(self) -> None:
+        assert _snake_case("Tool") == "tool"
+
+
+class TestTool:
+    def test_function_name(self) -> None:
+        assert GetWeather.function_name() == "get_weather"
+        assert SendEmail.function_name() == "send_email"
+
+    def test_openai_schema(self) -> None:
+        schema = GetWeather.openai_schema()
+        assert schema["type"] == "function"
+        assert schema["function"]["name"] == "get_weather"
+        assert (
+            schema["function"]["description"] == "Get the current weather for a city."
+        )
+        params = schema["function"]["parameters"]
+        assert "city" in params["properties"]
+        assert "unit" in params["properties"]
+        assert params["required"] == ["city"]
+
+    @pytest.mark.asyncio
+    async def test_run(self) -> None:
+        tool = GetWeather(city="London", unit="fahrenheit")
+        result = await tool.run()
+        assert result == {"temperature": 22, "unit": "fahrenheit", "city": "London"}
+
+
+class TestToolCall:
+    def test_attributes(self) -> None:
+        tc = ToolCall(
+            id="call_1",
+            function_name="get_weather",
+            arguments='{"city":"London"}',
+        )
+        assert tc.id == "call_1"
+        assert tc.function_name == "get_weather"
+        assert tc.arguments == '{"city":"London"}'
+        assert tc.args is None
+
+    @pytest.mark.asyncio
+    async def test_run_with_parsed_args(self) -> None:
+        tool_instance = GetWeather(city="Paris")
+        tc = ToolCall(
+            id="call_1",
+            function_name="get_weather",
+            arguments='{"city":"Paris"}',
+            args=tool_instance,
+        )
+        result = await tc.run()
+        assert result["city"] == "Paris"
+
+    @pytest.mark.asyncio
+    async def test_run_without_parsed_args_raises(self) -> None:
+        tc = ToolCall(
+            id="call_1",
+            function_name="get_weather",
+            arguments='{"city":"London"}',
+        )
+        with pytest.raises(TypeError, match="args were not parsed"):
+            await tc.run()
+
+
+# ── chat with tools ──────────────────────────────────────────────
+
+
+class TestChatWithTools:
+    @pytest.mark.asyncio
+    async def test_passes_tool_schemas(self, ai_client: AIClient) -> None:
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion(content="hi")
+        )
+
+        await ai_client.chat(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[GetWeather],
+        )
+
+        call_kwargs = ai_client._openai_client.chat.completions.create.call_args
+        assert "tools" in call_kwargs.kwargs
+        schemas = call_kwargs.kwargs["tools"]
+        assert len(schemas) == 1
+        assert schemas[0]["function"]["name"] == "get_weather"
+
+    @pytest.mark.asyncio
+    async def test_parses_tool_calls(self, ai_client: AIClient) -> None:
+        mock_tc = _mock_tool_call(
+            tc_id="call_abc",
+            name="get_weather",
+            arguments='{"city":"London","unit":"celsius"}',
+        )
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[mock_tc],
+            )
+        )
+
+        result = await ai_client.chat(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "weather?"}],
+            tools=[GetWeather],
+        )
+
+        assert len(result.tool_calls) == 1
+        tc = result.tool_calls[0]
+        assert tc.id == "call_abc"
+        assert tc.function_name == "get_weather"
+        assert isinstance(tc.args, GetWeather)
+        assert tc.args.city == "London"
+        assert tc.args.unit == "celsius"
+
+    @pytest.mark.asyncio
+    async def test_no_tools_returns_empty_list(self, ai_client: AIClient) -> None:
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            return_value=_mock_completion(content="hello")
+        )
+
+        result = await ai_client.chat(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        assert result.tool_calls == []
+
+
+# ── stream_chat with tools ───────────────────────────────────────
+
+
+class TestStreamChatWithTools:
+    @pytest.mark.asyncio
+    async def test_accumulates_tool_calls(self, ai_client: AIClient) -> None:
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            return_value=_mock_stream_tool_call_chunks(
+                tc_id="call_xyz",
+                name="get_weather",
+                arg_fragments=['{"city":', '"London"}'],
+            )
+        )
+
+        chunks = [
+            c
+            async for c in ai_client.stream_chat(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "weather?"}],
+                tools=[GetWeather],
+            )
+        ]
+
+        last = chunks[-1]
+        assert last.is_last is True
+        assert last.finish_reason == "tool_calls"
+        assert len(last.tool_calls) == 1
+        tc = last.tool_calls[0]
+        assert tc.id == "call_xyz"
+        assert tc.function_name == "get_weather"
+        assert tc.arguments == '{"city":"London"}'
+        assert isinstance(tc.args, GetWeather)
+        assert tc.args.city == "London"
+
+    @pytest.mark.asyncio
+    async def test_no_tool_calls_empty(self, ai_client: AIClient) -> None:
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            return_value=_mock_stream_chunks(["hello"])
+        )
+
+        chunks = [
+            c
+            async for c in ai_client.stream_chat(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+        ]
+
+        last = chunks[-1]
+        assert last.tool_calls == []
+
+
+# ── run (agentic loop) ──────────────────────────────────────────
+
+
+class TestRun:
+    @pytest.mark.asyncio
+    async def test_text_response_no_loop(self, ai_client: AIClient) -> None:
+        """When no tool calls, run yields chunks and returns."""
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            return_value=_mock_stream_chunks(["hello", " world"])
+        )
+
+        chunks = [
+            c
+            async for c in ai_client.stream_agent(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=[GetWeather],
+            )
+        ]
+
+        assert chunks[0].delta == "hello"
+        assert chunks[1].delta == " world"
+        assert chunks[-1].is_last is True
+
+    @pytest.mark.asyncio
+    async def test_tool_call_then_text(self, ai_client: AIClient) -> None:
+        """Tool call is executed and result fed back, second turn returns text."""
+        call_count = 0
+
+        async def _create(**kwargs: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: model returns tool call
+                return _mock_stream_tool_call_chunks(
+                    tc_id="call_1",
+                    name="get_weather",
+                    arg_fragments=['{"city":"Tokyo"}'],
+                )
+            else:
+                # Second call: model returns text
+                return _mock_stream_chunks(["It's 22° in Tokyo"])
+
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            side_effect=_create
+        )
+
+        messages: list[dict[str, Any]] = [
+            {"role": "user", "content": "What's the weather in Tokyo?"}
+        ]
+        chunks = [
+            c
+            async for c in ai_client.stream_agent(
+                model="gpt-4o",
+                messages=messages,
+                tools=[GetWeather],
+            )
+        ]
+
+        # Should have chunks from both turns
+        text_chunks = [c for c in chunks if c.delta]
+        assert any("22°" in c.delta for c in text_chunks)
+
+        # Messages should have been mutated with tool call + result
+        assert any(m.get("role") == "tool" for m in messages)
+        tool_msg = next(m for m in messages if m.get("role") == "tool")
+        assert "Tokyo" in tool_msg["content"]
+
+    @pytest.mark.asyncio
+    async def test_max_turns_respected(self, ai_client: AIClient) -> None:
+        """Loop stops after max_turns even if model keeps calling tools."""
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            side_effect=lambda **_: _mock_stream_tool_call_chunks(
+                tc_id="call_loop",
+                name="get_weather",
+                arg_fragments=['{"city":"X"}'],
+            )
+        )
+
+        chunks = [
+            c
+            async for c in ai_client.stream_agent(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "loop"}],
+                tools=[GetWeather],
+                max_turns=2,
+            )
+        ]
+
+        # Should have yielded chunks from exactly 2 turns
+        last_chunks = [c for c in chunks if c.is_last]
+        assert len(last_chunks) == 2

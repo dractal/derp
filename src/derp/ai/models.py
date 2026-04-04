@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import abc
 import json
+import re
 import time
 import uuid
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -50,6 +53,103 @@ class Usage(BaseModel):
         }
 
 
+def _snake_case(name: str) -> str:
+    """Convert CamelCase to snake_case."""
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name)
+    return re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", "_", s).lower()
+
+
+class Tool(BaseModel, abc.ABC):
+    """Base class for defining AI tools.
+
+    Subclass with typed fields for parameters, a docstring for the
+    description, and implement :meth:`run`::
+
+        class GetWeather(Tool):
+            \"\"\"Get the current weather for a city.\"\"\"
+            city: str
+            unit: str = "celsius"
+
+            async def run(self) -> str:
+                return f"22° {self.unit}"
+
+    Pass the *class* (not an instance) to ``chat()`` or ``run()``::
+
+        response = await ai.chat(model="gpt-4o", messages=msgs, tools=[GetWeather])
+    """
+
+    @abc.abstractmethod
+    async def run(self) -> Any:
+        """Execute the tool. Override in subclasses."""
+
+    @classmethod
+    def function_name(cls) -> str:
+        """The function name sent to the LLM (snake_cased class name)."""
+        return _snake_case(cls.__name__)
+
+    @classmethod
+    def openai_schema(cls) -> dict[str, Any]:
+        """Generate the OpenAI function-tool JSON schema."""
+        schema = cls.model_json_schema()
+        # Remove pydantic metadata keys that OpenAI doesn't expect
+        schema.pop("title", None)
+        fn: dict[str, Any] = {
+            "name": cls.function_name(),
+            "parameters": schema,
+        }
+        if cls.__doc__:
+            fn["description"] = cls.__doc__.strip()
+        return {"type": "function", "function": fn}
+
+
+class ToolCall(BaseModel):
+    """A parsed tool call returned by the LLM."""
+
+    id: str
+    function_name: str
+    arguments: str
+    args: Any = None  # Raw JSON arguments from the API.
+
+    async def run(self) -> Any:
+        """Execute the tool call. Only works when *args* is a Tool instance."""
+        if not isinstance(self.args, Tool):
+            raise TypeError(
+                f"Cannot run tool call '{self.function_name}': "
+                "args were not parsed into a Tool instance."
+            )
+        return await self.args.run()
+
+
+def _build_tool_map(
+    tools: Sequence[type[Tool]],
+) -> tuple[list[dict[str, Any]], dict[str, type[Tool]]]:
+    """Build OpenAI tool schemas and a name→class lookup from Tool subclasses."""
+    schemas: list[dict[str, Any]] = []
+    name_map: dict[str, type[Tool]] = {}
+    for tool_cls in tools:
+        schemas.append(tool_cls.openai_schema())
+        name_map[tool_cls.function_name()] = tool_cls
+    return schemas, name_map
+
+
+def _parse_tool_call(
+    tc: Any,
+    name_map: dict[str, type[Tool]] | None,
+) -> ToolCall:
+    """Parse a single OpenAI tool call object into a ToolCall model."""
+    fn_name = tc.function.name
+    raw_args = tc.function.arguments
+    parsed: Any = None
+    if name_map and fn_name in name_map:
+        parsed = name_map[fn_name].model_validate_json(raw_args)
+    return ToolCall(
+        id=tc.id,
+        function_name=fn_name,
+        arguments=raw_args,
+        args=parsed,
+    )
+
+
 class ChatResponse(BaseModel):
     """Non-streaming chat completion response."""
 
@@ -58,6 +158,7 @@ class ChatResponse(BaseModel):
     model: str
     usage: Usage | None = None
     finish_reason: str = "stop"
+    tool_calls: list[ToolCall] = []
 
     def vercel_ai_json(self, *, message_id: str | None = None) -> list[SSEEvent]:
         """Format as Vercel AI SDK data stream protocol events."""
@@ -143,6 +244,7 @@ class ChatChunk(BaseModel):
     model: str | None = None
     finish_reason: str | None = None
     usage: Usage | None = None
+    tool_calls: list[ToolCall] = []
     is_first: bool = False
     is_last: bool = False
 
