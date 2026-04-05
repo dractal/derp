@@ -142,6 +142,31 @@ replica_url = "$TEST_REPLICA_URL"
     assert config.database.replica_url == ""
 
 
+def test_extra_fields_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "derp.toml"
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("TEST_AI_KEY", "sk-test")
+
+    _write_config(
+        config_path,
+        """
+[database]
+db_url = "$TEST_DATABASE_URL"
+schema_path = "src/schema.py"
+
+[ai]
+api_key = "$TEST_AI_KEY"
+
+[ai.model]
+token_id = "tok"
+token_secret = "sec"
+""",
+    )
+
+    with pytest.raises(ConfigError):
+        DerpConfig.load(config_path)
+
+
 def test_queue_config_rejects_both_backends() -> None:
     with pytest.raises(ValidationError, match="Only one queue backend"):
         QueueConfig(

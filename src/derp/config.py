@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 CONFIG_FILE = "derp.toml"
 MIGRATIONS_TABLE = "derp_migrations"
@@ -85,7 +85,11 @@ def _resolve_env_value(
     return result
 
 
-class DatabaseConfig(BaseModel):
+class _StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class DatabaseConfig(_StrictModel):
     """Database configuration."""
 
     db_url: str
@@ -113,7 +117,7 @@ class DatabaseConfig(BaseModel):
     replica_lag_check_interval_seconds: float = 5.0
 
 
-class EmailConfig(BaseModel):
+class EmailConfig(_StrictModel):
     """Configuration for email sending via SMTP."""
 
     site_name: str
@@ -130,7 +134,7 @@ class EmailConfig(BaseModel):
     start_tls: bool = False
 
 
-class JWTConfig(BaseModel):
+class JWTConfig(_StrictModel):
     """Configuration for JWT tokens."""
 
     secret: str
@@ -141,7 +145,7 @@ class JWTConfig(BaseModel):
     audience: str | None = None
 
 
-class PasswordConfig(BaseModel):
+class PasswordConfig(_StrictModel):
     """Configuration for password validation."""
 
     min_length: int = 8
@@ -152,7 +156,7 @@ class PasswordConfig(BaseModel):
     require_special: bool = False
 
 
-class GoogleOAuthConfig(BaseModel):
+class GoogleOAuthConfig(_StrictModel):
     """Configuration for Google OAuth."""
 
     client_id: str
@@ -161,7 +165,7 @@ class GoogleOAuthConfig(BaseModel):
     scopes: Sequence[str] = ("openid", "email", "profile")
 
 
-class GitHubOAuthConfig(BaseModel):
+class GitHubOAuthConfig(_StrictModel):
     """Configuration for GitHub OAuth."""
 
     client_id: str
@@ -170,7 +174,7 @@ class GitHubOAuthConfig(BaseModel):
     scopes: Sequence[str] = ("user:email",)
 
 
-class NativeAuthConfig(BaseModel):
+class NativeAuthConfig(_StrictModel):
     """Configuration for native authentication (email/password, magic link, OAuth)."""
 
     jwt: JWTConfig
@@ -194,7 +198,7 @@ class NativeAuthConfig(BaseModel):
     cache_user_ttl_seconds: int = 300
 
 
-class ClerkConfig(BaseModel):
+class ClerkConfig(_StrictModel):
     """Configuration for Clerk authentication."""
 
     secret_key: str
@@ -202,7 +206,7 @@ class ClerkConfig(BaseModel):
     authorized_parties: Sequence[str] = ()
 
 
-class CognitoConfig(BaseModel):
+class CognitoConfig(_StrictModel):
     """Configuration for AWS Cognito authentication."""
 
     user_pool_id: str
@@ -215,7 +219,7 @@ class CognitoConfig(BaseModel):
     redirect_uri: str | None = None
 
 
-class SupabaseConfig(BaseModel):
+class SupabaseConfig(_StrictModel):
     """Configuration for Supabase GoTrue authentication."""
 
     url: str
@@ -225,7 +229,7 @@ class SupabaseConfig(BaseModel):
     redirect_uri: str | None = None
 
 
-class AuthConfig(BaseModel):
+class AuthConfig(_StrictModel):
     """Auth configuration — exactly one backend must be set."""
 
     native: NativeAuthConfig | None = None
@@ -248,7 +252,7 @@ class AuthConfig(BaseModel):
         return self
 
 
-class StorageConfig(BaseModel):
+class StorageConfig(_StrictModel):
     """Storage configuration."""
 
     endpoint_url: str | None = None
@@ -261,7 +265,7 @@ class StorageConfig(BaseModel):
     verify: bool | str = True
 
 
-class PaymentsConfig(BaseModel):
+class PaymentsConfig(_StrictModel):
     """Payments configuration."""
 
     api_key: str
@@ -277,7 +281,7 @@ class ValkeyMode(StrEnum):
     CLUSTER = "cluster"
 
 
-class ValkeyConfig(BaseModel):
+class ValkeyConfig(_StrictModel):
     """Configuration for Valkey GLIDE connections."""
 
     addresses: Sequence[tuple[str, int]] = (("localhost", 6379),)
@@ -287,13 +291,13 @@ class ValkeyConfig(BaseModel):
     mode: ValkeyMode = ValkeyMode.STANDALONE
 
 
-class KVConfig(BaseModel):
+class KVConfig(_StrictModel):
     """KV configuration."""
 
     valkey: ValkeyConfig | None = None
 
 
-class CeleryConfig(BaseModel):
+class CeleryConfig(_StrictModel):
     """Configuration for Celery task queue."""
 
     broker_url: str
@@ -303,7 +307,7 @@ class CeleryConfig(BaseModel):
     task_default_queue: str = "default"
 
 
-class VercelQueueConfig(BaseModel):
+class VercelQueueConfig(_StrictModel):
     """Configuration for Vercel queue (REST-based)."""
 
     api_token: str
@@ -312,7 +316,7 @@ class VercelQueueConfig(BaseModel):
     default_queue: str = "default"
 
 
-class ScheduleConfig(BaseModel):
+class ScheduleConfig(_StrictModel):
     """A single recurring task schedule."""
 
     name: str
@@ -337,7 +341,7 @@ class ScheduleConfig(BaseModel):
         return self
 
 
-class QueueConfig(BaseModel):
+class QueueConfig(_StrictModel):
     """Queue configuration."""
 
     celery: CeleryConfig | None = None
@@ -354,7 +358,7 @@ class QueueConfig(BaseModel):
         return self
 
 
-class ModalConfig(BaseModel):
+class ModalConfig(_StrictModel):
     """Configuration for Modal."""
 
     token_id: str
@@ -362,16 +366,16 @@ class ModalConfig(BaseModel):
     endpoint_url: str | None = None
 
 
-class AIConfig(BaseModel):
+class AIConfig(_StrictModel):
     """AI configuration for OpenAI-compatible providers."""
 
     api_key: str
     base_url: str | None = None
     fal_api_key: str | None = None
-    modal_config: ModalConfig | None = None
+    modal: ModalConfig | None = None
 
 
-class DerpConfig(BaseModel):
+class DerpConfig(_StrictModel):
     """Derp configuration."""
 
     database: DatabaseConfig

@@ -40,7 +40,7 @@ class ModalNotConnectedError(AIError):
         self,
         message: str = (
             "Modal client not connected. Call connect() first and "
-            "make sure `ModalConfig` is set in the configuration."
+            "make sure `[ai.modal]` is set in the configuration."
         ),
     ):
         super().__init__(message, code="modal_not_connected")

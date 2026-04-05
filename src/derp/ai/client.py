@@ -64,13 +64,13 @@ class AIClient:
         self._modal_client: httpx.AsyncClient | None = None
 
     async def connect(self) -> None:
-        if self._config.modal_config is not None:
+        if self._config.modal is not None:
             self._modal_client = httpx.AsyncClient(
                 headers={
-                    "Modal-Key": self._config.modal_config.token_id,
-                    "Modal-Secret": self._config.modal_config.token_secret,
+                    "Modal-Key": self._config.modal.token_id,
+                    "Modal-Secret": self._config.modal.token_secret,
                 },
-                base_url=self._config.modal_config.endpoint_url or "",
+                base_url=self._config.modal.endpoint_url or "",
             )
 
     async def disconnect(self) -> None:
