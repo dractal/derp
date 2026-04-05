@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
 
@@ -263,7 +264,6 @@ class AIClient:
         Yields:
             ChatChunk for each text delta across all turns.
         """
-        import json as _json
 
         for _ in range(max_turns):
             last_chunk: ChatChunk | None = None

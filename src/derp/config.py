@@ -38,7 +38,7 @@ def _resolve_env_value(
             if not env_name:
                 raise ConfigError("Invalid environment variable reference: '$'")
             env_value = os.environ.get(env_name)
-            if not env_value:
+            if env_value is None:
                 _missing.append(env_name)
                 return value
             _env_vars[_path] = env_name
@@ -359,7 +359,7 @@ class ModalConfig(BaseModel):
 
     token_id: str
     token_secret: str
-    endpoint_url: str
+    endpoint_url: str | None = None
 
 
 class AIConfig(BaseModel):

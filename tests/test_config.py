@@ -121,6 +121,27 @@ timeout_seconds = 45.5
     assert config.payments.timeout_seconds == 45.5
 
 
+def test_empty_env_var_resolves_to_empty_string(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "derp.toml"
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("TEST_REPLICA_URL", "")
+
+    _write_config(
+        config_path,
+        """
+[database]
+db_url = "$TEST_DATABASE_URL"
+schema_path = "src/schema.py"
+replica_url = "$TEST_REPLICA_URL"
+""",
+    )
+
+    config = DerpConfig.load(config_path)
+    assert config.database.replica_url == ""
+
+
 def test_queue_config_rejects_both_backends() -> None:
     with pytest.raises(ValidationError, match="Only one queue backend"):
         QueueConfig(
