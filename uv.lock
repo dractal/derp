@@ -718,7 +718,7 @@ wheels = [
 
 [[package]]
 name = "derp-py"
-version = "0.2.7"
+version = "0.2.11"
 source = { editable = "." }
 dependencies = [
     { name = "aiobotocore" },
@@ -746,6 +746,7 @@ docs = [
     { name = "sphinx-copybutton" },
     { name = "sphinx-design" },
     { name = "valkey-glide" },
+    { name = "workos" },
 ]
 
 [package.dev-dependencies]
@@ -768,6 +769,7 @@ dev = [
     { name = "ty" },
     { name = "uvicorn" },
     { name = "valkey-glide" },
+    { name = "workos" },
 ]
 docs = [
     { name = "furo" },
@@ -799,6 +801,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", specifier = ">=0.40.0" },
     { name = "valkey-glide", marker = "extra == 'docs'" },
+    { name = "workos", marker = "extra == 'docs'", specifier = ">=5.0.0" },
 ]
 provides-extras = ["docs"]
 
@@ -822,6 +825,7 @@ dev = [
     { name = "ty", specifier = ">=0.0.1a5" },
     { name = "uvicorn", specifier = ">=0.40.0" },
     { name = "valkey-glide" },
+    { name = "workos", specifier = ">=5.0.0" },
 ]
 docs = [
     { name = "furo", specifier = ">=2024.8" },
@@ -3003,6 +3007,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b5/43/76ded108b296a49f52de6bac5192ca1c4be84e886f9b5c9ba8427d9694fd/werkzeug-3.1.7.tar.gz", hash = "sha256:fb8c01fe6ab13b9b7cdb46892b99b1d66754e1d7ab8e542e865ec13f526b5351", size = 875700, upload-time = "2026-03-24T01:08:07.687Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/b2/0bba9bbb4596d2d2f285a16c2ab04118f6b957d8441566e1abb892e6a6b2/werkzeug-3.1.7-py3-none-any.whl", hash = "sha256:4b314d81163a3e1a169b6a0be2a000a0e204e8873c5de6586f453c55688d422f", size = 226295, upload-time = "2026-03-24T01:08:06.133Z" },
+]
+
+[[package]]
+name = "workos"
+version = "5.45.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "pyjwt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/49/c3/ff568845c87d1d136dfc3adf845c771a5fb423557ce66475db22a8364dc8/workos-5.45.0.tar.gz", hash = "sha256:a0c73f53c2d1a3af9460132dd8ad61bc757de8a36920a96dc56cba3ca22cc6b4", size = 65166, upload-time = "2026-03-09T20:02:06.666Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/b0/41b277978305fced2e6f19bb76a244bdf32b56875cd62b2164750de68656/workos-5.45.0-py3-none-any.whl", hash = "sha256:d3572bf62de3644aa8f7fa7eea9c0a8dce138e487625a03f22e265da7f03ee09", size = 120217, upload-time = "2026-03-09T20:02:07.708Z" },
 ]
 
 [[package]]

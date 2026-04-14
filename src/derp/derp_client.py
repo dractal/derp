@@ -13,6 +13,7 @@ from derp.auth.cognito_client import CognitoAuthClient
 from derp.auth.email import EmailClient
 from derp.auth.native_client import NativeAuthClient
 from derp.auth.supabase_client import SupabaseAuthClient
+from derp.auth.workos_client import WorkOSAuthClient
 from derp.config import DerpConfig
 from derp.kv.base import KVClient
 from derp.kv.valkey import ValkeyClient
@@ -70,6 +71,8 @@ class DerpClient:
                 self._auth = CognitoAuthClient(self._config.auth.cognito)
             elif self._config.auth.supabase is not None:
                 self._auth = SupabaseAuthClient(self._config.auth.supabase)
+            elif self._config.auth.workos is not None:
+                self._auth = WorkOSAuthClient(self._config.auth.workos)
         self._kv: KVClient | None = (
             ValkeyClient(self._config.kv.valkey)
             if self._config.kv is not None and self._config.kv.valkey is not None

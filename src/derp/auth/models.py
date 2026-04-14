@@ -75,6 +75,15 @@ class AuthResult:
     tokens: TokenPair
 
 
+@dataclass(frozen=True, kw_only=True)
+class CursorResult[T]:
+    """Cursor-paginated result."""
+
+    data: list[T]
+    has_more: bool
+    next_cursor: str | None = None
+
+
 class SessionInfo(BaseModel):
     """Unified session information returned by authenticate."""
 

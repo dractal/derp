@@ -12,6 +12,7 @@ from derp.auth.models import (
     AuthProvider,
     AuthRequest,
     AuthResult,
+    CursorResult,
     OrgInfo,
     OrgMemberInfo,
     SessionInfo,
@@ -349,6 +350,46 @@ class BaseAuthClient(abc.ABC):
         user_id: str | uuid.UUID,
     ) -> OrgMemberInfo | None:
         """Get a single membership record."""
+        raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Cursor-based pagination (optional)
+    # ------------------------------------------------------------------
+
+    async def list_users_by_cursor(
+        self, *, limit: int = 10, after: str | None = None
+    ) -> CursorResult[UserInfo]:
+        """List users with cursor-based pagination."""
+        raise NotImplementedError
+
+    async def list_sessions_by_cursor(
+        self,
+        *,
+        user_id: str | uuid.UUID,
+        limit: int = 10,
+        after: str | None = None,
+    ) -> CursorResult[Any]:
+        """List sessions with cursor-based pagination."""
+        raise NotImplementedError
+
+    async def list_orgs_by_cursor(
+        self,
+        *,
+        user_id: str | uuid.UUID | None = None,
+        limit: int = 10,
+        after: str | None = None,
+    ) -> CursorResult[OrgInfo]:
+        """List organizations with cursor-based pagination."""
+        raise NotImplementedError
+
+    async def list_org_members_by_cursor(
+        self,
+        org_id: str | uuid.UUID,
+        *,
+        limit: int = 10,
+        after: str | None = None,
+    ) -> CursorResult[OrgMemberInfo]:
+        """List organization members with cursor-based pagination."""
         raise NotImplementedError
 
     # ------------------------------------------------------------------

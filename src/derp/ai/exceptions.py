@@ -33,6 +33,13 @@ class FalJobNotFoundError(AIError):
         super().__init__(message, code="fal_job_not_found")
 
 
+class FalJobFailedError(AIError):
+    """Raised when a fal job fails."""
+
+    def __init__(self, message: str = "Fal job failed."):
+        super().__init__(message, code="fal_job_failed")
+
+
 class ModalNotConnectedError(AIError):
     """Raised when Modal client is used before connect()."""
 

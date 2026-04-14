@@ -15,7 +15,7 @@ Config
    # base_url = "https://api.openrouter.ai/v1"  # for other providers
    # fal_api_key = "$FAL_API_KEY"
 
-   # [ai.modal_config]
+   # [ai.modal]
    # token_id = "$MODAL_TOKEN_ID"
    # token_secret = "$MODAL_TOKEN_SECRET"
    # endpoint_url = "https://your-app.modal.run"
@@ -105,13 +105,17 @@ Fal (Image Generation)
 
 .. code-block:: python
 
-   # Submit a job
-   request_id = await derp.ai.fal_call(
-       application="fal-ai/flux",
+   # One-shot: submit, poll, and return the result
+   result = await derp.ai.fal_call(
+       "fal-ai/flux",
        inputs={"prompt": "a cat in space"},
    )
 
-   # Poll for status
+   # Or manage the lifecycle yourself
+   request_id = await derp.ai.fal_submit(
+       "fal-ai/flux",
+       inputs={"prompt": "a cat in space"},
+   )
    status = await derp.ai.fal_poll("fal-ai/flux", request_id)
    if status.is_completed:
        ...
@@ -137,5 +141,5 @@ Call Modal serverless endpoints directly:
        timeout=30.0,
    )
 
-Requires ``[ai.modal_config]`` in config. The client connects/disconnects
+Requires ``[ai.modal]`` in config. The client connects/disconnects
 with the ``DerpClient`` lifecycle.

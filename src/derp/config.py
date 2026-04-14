@@ -229,6 +229,14 @@ class SupabaseConfig(_StrictModel):
     redirect_uri: str | None = None
 
 
+class WorkOSConfig(_StrictModel):
+    """Configuration for WorkOS authentication."""
+
+    api_key: str
+    client_id: str
+    redirect_uri: str | None = None
+
+
 class AuthConfig(_StrictModel):
     """Auth configuration — exactly one backend must be set."""
 
@@ -236,16 +244,17 @@ class AuthConfig(_StrictModel):
     clerk: ClerkConfig | None = None
     cognito: CognitoConfig | None = None
     supabase: SupabaseConfig | None = None
+    workos: WorkOSConfig | None = None
 
     @model_validator(mode="after")
     def _check_single_backend(self) -> AuthConfig:
-        backends = [self.native, self.clerk, self.cognito, self.supabase]
+        backends = [self.native, self.clerk, self.cognito, self.supabase, self.workos]
         configured = sum(1 for b in backends if b is not None)
         if configured > 1:
             raise ValueError(
                 "Only one auth backend can be configured at a time. "
                 "Set exactly one of [auth.native], [auth.clerk], "
-                "[auth.cognito], or [auth.supabase]."
+                "[auth.cognito], [auth.supabase], or [auth.workos]."
             )
         if configured == 0:
             raise ValueError("At least one auth backend must be configured.")
@@ -456,6 +465,11 @@ migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 
 # [auth.clerk]
 # secret_key = "$CLERK_SECRET_KEY"
+
+# [auth.workos]
+# api_key = "$WORKOS_API_KEY"
+# client_id = "$WORKOS_CLIENT_ID"
+# redirect_uri = "https://yourapp.com/callback"
 
 # [kv.valkey]
 # addresses = [["localhost", 6379]]

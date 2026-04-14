@@ -253,6 +253,21 @@ class TestPushCommand:
         assert result.exit_code == 0, result.output
         assert "No changes" in result.stdout
 
+    def test_push_ignores_rls_changes_when_configured(self, cli_env: dict):
+        """Push should ignore standalone RLS drift when ignore_rls is enabled."""
+        result = runner.invoke(app, ["push", "--force"])
+        assert result.exit_code == 0, result.output
+
+        db_url = cli_env["TEST_DATABASE_URL"]
+        _query(db_url, 'ALTER TABLE "users" ENABLE ROW LEVEL SECURITY')
+
+        config_path = Path(cli_env["cwd"]) / "derp.toml"
+        config_path.write_text(config_path.read_text() + "ignore_rls = true\n")
+
+        result = runner.invoke(app, ["push", "--force", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "No changes" in result.stdout
+
 
 class TestPullCommand:
     """Tests for the pull command."""

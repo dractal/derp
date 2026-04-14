@@ -8,6 +8,7 @@ from derp.ai.models import (
     JobStatus,
     Tool,
     ToolCall,
+    ToolEventType,
     Usage,
 )
 from derp.config import AIConfig
@@ -21,5 +22,6 @@ __all__ = [
     "JobStatus",
     "Tool",
     "ToolCall",
+    "ToolEventType",
     "Usage",
 ]

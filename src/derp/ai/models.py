@@ -79,7 +79,7 @@ class Tool(BaseModel, abc.ABC):
     """
 
     @abc.abstractmethod
-    async def run(self) -> Any:
+    async def run(self, *args: Any, **kwargs: Any) -> Any:
         """Execute the tool. Override in subclasses."""
 
     @classmethod
@@ -110,14 +110,19 @@ class ToolCall(BaseModel):
     arguments: str
     args: Any = None  # Raw JSON arguments from the API.
 
-    async def run(self) -> Any:
-        """Execute the tool call. Only works when *args* is a Tool instance."""
+    async def run(self, *args: Any, **kwargs: Any) -> Any:
+        """Execute the tool call. Only works when *args* is a Tool instance.
+
+        Extra positional and keyword arguments are forwarded to
+        :meth:`Tool.run`, allowing request-scoped state to be
+        injected without closures.
+        """
         if not isinstance(self.args, Tool):
             raise TypeError(
                 f"Cannot run tool call '{self.function_name}': "
                 "args were not parsed into a Tool instance."
             )
-        return await self.args.run()
+        return await self.args.run(*args, **kwargs)
 
 
 def _build_tool_map(
@@ -236,6 +241,14 @@ class ChatResponse(BaseModel):
         ]
 
 
+class ToolEventType(StrEnum):
+    """Type of tool lifecycle event emitted during agentic streaming."""
+
+    INPUT_START = "input_start"
+    INPUT_AVAILABLE = "input_available"
+    OUTPUT_AVAILABLE = "output_available"
+
+
 class ChatChunk(BaseModel):
     """A single chunk from a streaming chat completion."""
 
@@ -248,13 +261,53 @@ class ChatChunk(BaseModel):
     is_first: bool = False
     is_last: bool = False
 
+    # Tool lifecycle events (set by stream_agent)
+    tool_event: ToolEventType | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    tool_input: dict[str, Any] | None = None
+    tool_output: Any = None
+
     def vercel_ai_json(
         self, *, message_id: str, stream_id: str = "text-1"
     ) -> list[SSEEvent]:
         """Format as Vercel AI SDK events.
 
         Includes lifecycle events when is_first/is_last are set.
+        When *tool_event* is set, emits tool lifecycle events instead.
         """
+        if self.tool_event == ToolEventType.INPUT_START:
+            return [
+                SSEEvent(
+                    {
+                        "type": "tool-input-start",
+                        "toolCallId": self.tool_call_id,
+                        "toolName": self.tool_name,
+                    }
+                )
+            ]
+        if self.tool_event == ToolEventType.INPUT_AVAILABLE:
+            return [
+                SSEEvent(
+                    {
+                        "type": "tool-input-available",
+                        "toolCallId": self.tool_call_id,
+                        "toolName": self.tool_name,
+                        "input": self.tool_input,
+                    }
+                )
+            ]
+        if self.tool_event == ToolEventType.OUTPUT_AVAILABLE:
+            return [
+                SSEEvent(
+                    {
+                        "type": "tool-output-available",
+                        "toolCallId": self.tool_call_id,
+                        "output": self.tool_output,
+                    }
+                )
+            ]
+
         events: list[SSEEvent] = []
         if self.is_first:
             events.append(SSEEvent({"type": "start", "messageId": message_id}))
@@ -295,7 +348,39 @@ class ChatChunk(BaseModel):
         """Format as TanStack AG-UI events.
 
         Includes lifecycle events when is_first/is_last are set.
+        When *tool_event* is set, emits AG-UI tool call events instead.
         """
+        if self.tool_event == ToolEventType.INPUT_START:
+            return [
+                SSEEvent(
+                    {
+                        "type": "TOOL_CALL_START",
+                        "toolCallId": self.tool_call_id,
+                        "toolCallName": self.tool_name,
+                    }
+                )
+            ]
+        if self.tool_event == ToolEventType.INPUT_AVAILABLE:
+            return [
+                SSEEvent(
+                    {
+                        "type": "TOOL_CALL_ARGS",
+                        "toolCallId": self.tool_call_id,
+                        "delta": (
+                            json.dumps(self.tool_input) if self.tool_input else "{}"
+                        ),
+                    }
+                ),
+                SSEEvent(
+                    {
+                        "type": "TOOL_CALL_END",
+                        "toolCallId": self.tool_call_id,
+                    }
+                ),
+            ]
+        if self.tool_event == ToolEventType.OUTPUT_AVAILABLE:
+            return []
+
         rid = run_id or f"run-{uuid.uuid4().hex}"
         ts = int(time.time() * 1000)
         events: list[SSEEvent] = []

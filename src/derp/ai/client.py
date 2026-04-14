@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
@@ -11,6 +12,7 @@ from etils import epy
 
 from derp.ai.exceptions import (
     FalJobAlreadyCompletedError,
+    FalJobFailedError,
     FalJobNotFoundError,
     FalMissingCredentialsError,
     ModalNotConnectedError,
@@ -24,6 +26,7 @@ from derp.ai.models import (
     JobStatus,
     Tool,
     ToolCall,
+    ToolEventType,
     Usage,
     _build_tool_map,
     _parse_tool_call,
@@ -241,6 +244,7 @@ class AIClient:
         *,
         messages: list[dict[str, Any]],
         tools: Sequence[type[Tool]] = (),
+        tool_args: Sequence[Any] = (),
         max_turns: int = 10,
         **kwargs: Any,
     ) -> AsyncIterator[ChatChunk]:
@@ -258,6 +262,8 @@ class AIClient:
             model: Model ID to use.
             messages: List of message dicts (mutated in place).
             tools: Tool subclasses available to the model.
+            tool_args: Extra positional args forwarded to each
+                :meth:`Tool.run` call (e.g. request-scoped state).
             max_turns: Maximum number of tool-call round-trips.
             **kwargs: Additional arguments forwarded to the API.
 
@@ -294,9 +300,32 @@ class AIClient:
                 }
             )
 
-            # Execute each tool and append results
+            # Execute each tool, yield lifecycle events, append results
             for tc in last_chunk.tool_calls:
-                result = await tc.run()
+                args = _json.loads(tc.arguments) if tc.arguments else {}
+                yield ChatChunk(
+                    delta="",
+                    tool_event=ToolEventType.INPUT_START,
+                    tool_call_id=tc.id,
+                    tool_name=tc.function_name,
+                )
+                yield ChatChunk(
+                    delta="",
+                    tool_event=ToolEventType.INPUT_AVAILABLE,
+                    tool_call_id=tc.id,
+                    tool_name=tc.function_name,
+                    tool_input=args,
+                )
+
+                result = await tc.run(*tool_args)
+
+                yield ChatChunk(
+                    delta="",
+                    tool_event=ToolEventType.OUTPUT_AVAILABLE,
+                    tool_call_id=tc.id,
+                    tool_name=tc.function_name,
+                    tool_output=result,
+                )
                 messages.append(
                     {
                         "role": "tool",
@@ -307,10 +336,10 @@ class AIClient:
                     }
                 )
 
-    async def fal_call(
+    async def fal_submit(
         self, app: str, *, inputs: dict[str, Any], start_timeout: float = 10.0
     ) -> str:
-        """Call a Fal application.
+        """Submit a job to a Fal application.
 
         Args:
             app: Fal application name.
@@ -329,12 +358,55 @@ class AIClient:
         )
         return result.request_id
 
+    async def fal_call(
+        self,
+        app: str,
+        *,
+        inputs: dict[str, Any],
+        poll_interval: float = 2.0,
+        timeout: float = 60.0,
+        start_timeout: float = 10.0,
+    ) -> dict[str, Any]:
+        """Submit a fal job and wait for the result.
+
+        Convenience method combining :meth:`fal_submit`, :meth:`fal_poll`,
+        and :meth:`fal_get` into a single call.
+
+        Args:
+            app: Fal application name.
+            inputs: Inputs to the model.
+            poll_interval: Seconds between status polls. Default is 2.
+            timeout: Maximum seconds to wait. Default is 60.
+            start_timeout: Start timeout in seconds. Default is 10.
+
+        Returns:
+            Result dict from the completed job.
+
+        Raises:
+            FalJobFailedError: If the job fails.
+            TimeoutError: If the job does not complete within *timeout*.
+        """
+        request_id = await self.fal_submit(
+            app, inputs=inputs, start_timeout=start_timeout
+        )
+
+        async def _poll() -> dict[str, Any]:
+            while True:
+                status = await self.fal_poll(app, request_id)
+                if status.is_completed:
+                    return await self.fal_get(app, request_id)
+                if status.is_failed:
+                    raise FalJobFailedError(status.error or "Fal job failed")
+                await asyncio.sleep(poll_interval)
+
+        return await asyncio.wait_for(_poll(), timeout=timeout)
+
     async def fal_poll(self, app: str, request_id: str) -> JobStatus:
         """Poll the status of a fal job.
 
         Args:
             app: Fal application name.
-            request_id: Request ID returned by fal_call.
+            request_id: Request ID returned by fal_submit.
 
         Returns:
             JobStatus with the current state of the job.
@@ -367,7 +439,7 @@ class AIClient:
 
         Args:
             app: Fal application name.
-            request_id: Request ID returned by fal_call.
+            request_id: Request ID returned by fal_submit.
 
         Returns:
             Result of the job as a dict.
@@ -383,7 +455,7 @@ class AIClient:
 
         Args:
             app: Fal application name.
-            request_id: Request ID returned by fal_call.
+            request_id: Request ID returned by fal_submit.
 
         Returns:
             CancelResult with the cancellation state and job state.

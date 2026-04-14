@@ -22,6 +22,7 @@ from derp.auth.models import (
     AuthResult,
     AuthSession,
     AuthUser,
+    CursorResult,
     OrgInfo,
     OrgMemberInfo,
     SessionInfo,
@@ -42,6 +43,7 @@ from derp.auth.providers import (
     OAuthUserInfo,
 )
 from derp.auth.supabase_client import SupabaseAuthClient
+from derp.auth.workos_client import WorkOSAuthClient
 from derp.config import (
     AuthConfig,
     ClerkConfig,
@@ -53,6 +55,7 @@ from derp.config import (
     NativeAuthConfig,
     PasswordConfig,
     SupabaseConfig,
+    WorkOSConfig,
 )
 
 __all__ = [
@@ -67,6 +70,7 @@ __all__ = [
     "NativeAuthConfig",
     "PasswordConfig",
     "SupabaseConfig",
+    "WorkOSConfig",
     # Exceptions
     "AuthError",
     "ConfirmationURLMissingError",
@@ -78,6 +82,7 @@ __all__ = [
     "TokenPayload",
     # Models
     "AuthResult",
+    "CursorResult",
     "AuthOrgMember",
     "AuthOrganization",
     "AuthProvider",
@@ -107,4 +112,5 @@ __all__ = [
     "NativeAuthClient",
     "SupabaseAuthClient",
     "SupabaseOrgMember",
+    "WorkOSAuthClient",
 ]

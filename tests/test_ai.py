@@ -7,8 +7,18 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from derp.ai import AIClient, ChatChunk, ChatResponse, Tool, ToolCall, Usage
-from derp.ai.models import SSEDone, SSEEvent, _snake_case
+from derp.ai import (
+    AIClient,
+    ChatChunk,
+    ChatResponse,
+    JobState,
+    JobStatus,
+    Tool,
+    ToolCall,
+    Usage,
+)
+from derp.ai.exceptions import FalJobFailedError, FalMissingCredentialsError
+from derp.ai.models import SSEDone, SSEEvent, ToolEventType, _snake_case
 from derp.config import AIConfig
 
 
@@ -579,6 +589,19 @@ class SendEmail(Tool):
         return f"Sent to {self.to}"
 
 
+class StageRoom(Tool):
+    """Stage a room with furniture."""
+
+    design_style: str
+
+    async def run(self, derp: Any, user_id: str) -> dict[str, Any]:
+        return {
+            "style": self.design_style,
+            "user_id": user_id,
+            "has_client": derp is not None,
+        }
+
+
 class TestSnakeCase:
     def test_simple(self) -> None:
         assert _snake_case("GetWeather") == "get_weather"
@@ -637,6 +660,23 @@ class TestToolCall:
         )
         result = await tc.run()
         assert result["city"] == "Paris"
+
+    @pytest.mark.asyncio
+    async def test_run_forwards_extra_args(self) -> None:
+        tool_instance = StageRoom(design_style="modern")
+        tc = ToolCall(
+            id="call_1",
+            function_name="stage_room",
+            arguments='{"design_style":"modern"}',
+            args=tool_instance,
+        )
+        fake_derp = object()
+        result = await tc.run(fake_derp, "user-42")
+        assert result == {
+            "style": "modern",
+            "user_id": "user-42",
+            "has_client": True,
+        }
 
     @pytest.mark.asyncio
     async def test_run_without_parsed_args_raises(self) -> None:
@@ -858,3 +898,298 @@ class TestRun:
         # Should have yielded chunks from exactly 2 turns
         last_chunks = [c for c in chunks if c.is_last]
         assert len(last_chunks) == 2
+
+
+# ── fal_submit (renamed from fal_call) ─────────────────────────
+
+
+class TestFalSubmit:
+    @pytest.mark.asyncio
+    async def test_submits_and_returns_request_id(self, ai_client: AIClient) -> None:
+        mock_fal = AsyncMock()
+        mock_fal.submit = AsyncMock(return_value=MagicMock(request_id="req-123"))
+        ai_client._fal_client = mock_fal
+
+        request_id = await ai_client.fal_submit("fal-ai/flux", inputs={"prompt": "cat"})
+
+        assert request_id == "req-123"
+        mock_fal.submit.assert_awaited_once_with(
+            "fal-ai/flux",
+            arguments={"prompt": "cat"},
+            start_timeout=10.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_raises_without_credentials(self, ai_client: AIClient) -> None:
+        ai_client._fal_client = None
+        with pytest.raises(FalMissingCredentialsError):
+            await ai_client.fal_submit("fal-ai/flux", inputs={})
+
+
+# ── fal_call (submit + poll + get) ─────────────────────────────
+
+
+class TestFalCall:
+    @pytest.mark.asyncio
+    async def test_submits_polls_and_returns_result(self, ai_client: AIClient) -> None:
+        ai_client.fal_submit = AsyncMock(return_value="req-123")
+        ai_client.fal_poll = AsyncMock(
+            side_effect=[
+                JobStatus(state=JobState.QUEUED, position=1),
+                JobStatus(state=JobState.IN_PROGRESS),
+                JobStatus(state=JobState.COMPLETED),
+            ]
+        )
+        expected = {"images": [{"url": "http://example.com/img.jpg"}]}
+        ai_client.fal_get = AsyncMock(return_value=expected)
+
+        result = await ai_client.fal_call(
+            "fal-ai/flux",
+            inputs={"prompt": "cat"},
+            poll_interval=0,
+        )
+
+        assert result == expected
+        ai_client.fal_submit.assert_awaited_once()
+        assert ai_client.fal_poll.await_count == 3
+        ai_client.fal_get.assert_awaited_once_with("fal-ai/flux", "req-123")
+
+    @pytest.mark.asyncio
+    async def test_raises_on_failure(self, ai_client: AIClient) -> None:
+        ai_client.fal_submit = AsyncMock(return_value="req-123")
+        ai_client.fal_poll = AsyncMock(
+            return_value=JobStatus(state=JobState.FAILED, error="OOM")
+        )
+
+        with pytest.raises(FalJobFailedError, match="OOM"):
+            await ai_client.fal_call("fal-ai/flux", inputs={}, poll_interval=0)
+
+    @pytest.mark.asyncio
+    async def test_timeout(self, ai_client: AIClient) -> None:
+        ai_client.fal_submit = AsyncMock(return_value="req-123")
+        ai_client.fal_poll = AsyncMock(
+            return_value=JobStatus(state=JobState.IN_PROGRESS)
+        )
+
+        with pytest.raises(TimeoutError):
+            await ai_client.fal_call(
+                "fal-ai/flux",
+                inputs={},
+                poll_interval=0.01,
+                timeout=0.05,
+            )
+
+
+# ── ChatChunk tool events ──────────────────────────────────────
+
+
+class TestChatChunkToolEvents:
+    def test_vercel_input_start(self) -> None:
+        chunk = ChatChunk(
+            delta="",
+            tool_event=ToolEventType.INPUT_START,
+            tool_call_id="call_1",
+            tool_name="get_weather",
+        )
+        events = chunk.vercel_ai_json(message_id="msg-1")
+        assert len(events) == 1
+        assert events[0] == {
+            "type": "tool-input-start",
+            "toolCallId": "call_1",
+            "toolName": "get_weather",
+        }
+
+    def test_vercel_input_available(self) -> None:
+        chunk = ChatChunk(
+            delta="",
+            tool_event=ToolEventType.INPUT_AVAILABLE,
+            tool_call_id="call_1",
+            tool_name="get_weather",
+            tool_input={"city": "London"},
+        )
+        events = chunk.vercel_ai_json(message_id="msg-1")
+        assert len(events) == 1
+        assert events[0] == {
+            "type": "tool-input-available",
+            "toolCallId": "call_1",
+            "toolName": "get_weather",
+            "input": {"city": "London"},
+        }
+
+    def test_vercel_output_available(self) -> None:
+        chunk = ChatChunk(
+            delta="",
+            tool_event=ToolEventType.OUTPUT_AVAILABLE,
+            tool_call_id="call_1",
+            tool_output={"temperature": 22},
+        )
+        events = chunk.vercel_ai_json(message_id="msg-1")
+        assert len(events) == 1
+        assert events[0] == {
+            "type": "tool-output-available",
+            "toolCallId": "call_1",
+            "output": {"temperature": 22},
+        }
+
+    def test_tanstack_input_start(self) -> None:
+        chunk = ChatChunk(
+            delta="",
+            tool_event=ToolEventType.INPUT_START,
+            tool_call_id="call_1",
+            tool_name="get_weather",
+        )
+        events = chunk.tanstack_ai_json(message_id="msg-1")
+        assert len(events) == 1
+        assert events[0] == {
+            "type": "TOOL_CALL_START",
+            "toolCallId": "call_1",
+            "toolCallName": "get_weather",
+        }
+
+    def test_tanstack_input_available(self) -> None:
+        chunk = ChatChunk(
+            delta="",
+            tool_event=ToolEventType.INPUT_AVAILABLE,
+            tool_call_id="call_1",
+            tool_name="get_weather",
+            tool_input={"city": "London"},
+        )
+        events = chunk.tanstack_ai_json(message_id="msg-1")
+        assert len(events) == 2
+        assert events[0]["type"] == "TOOL_CALL_ARGS"
+        assert events[0]["toolCallId"] == "call_1"
+        assert events[1] == {
+            "type": "TOOL_CALL_END",
+            "toolCallId": "call_1",
+        }
+
+    def test_tanstack_output_available_empty(self) -> None:
+        chunk = ChatChunk(
+            delta="",
+            tool_event=ToolEventType.OUTPUT_AVAILABLE,
+            tool_call_id="call_1",
+            tool_output={"temp": 22},
+        )
+        events = chunk.tanstack_ai_json(message_id="msg-1")
+        assert events == []
+
+
+# ── stream_agent tool events ───────────────────────────────────
+
+
+class TestStreamAgentToolEvents:
+    @pytest.mark.asyncio
+    async def test_yields_tool_lifecycle_events(self, ai_client: AIClient) -> None:
+        call_count = 0
+
+        async def _create(**kwargs: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_stream_tool_call_chunks(
+                    tc_id="call_1",
+                    name="get_weather",
+                    arg_fragments=['{"city":"Tokyo"}'],
+                )
+            else:
+                return _mock_stream_chunks(["It's 22°"])
+
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            side_effect=_create
+        )
+
+        chunks = [
+            c
+            async for c in ai_client.stream_agent(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "weather?"}],
+                tools=[GetWeather],
+            )
+        ]
+
+        tool_events = [c for c in chunks if c.tool_event is not None]
+        assert len(tool_events) == 3
+        assert tool_events[0].tool_event == ToolEventType.INPUT_START
+        assert tool_events[0].tool_call_id == "call_1"
+        assert tool_events[0].tool_name == "get_weather"
+        assert tool_events[1].tool_event == ToolEventType.INPUT_AVAILABLE
+        assert tool_events[1].tool_input == {"city": "Tokyo"}
+        assert tool_events[2].tool_event == ToolEventType.OUTPUT_AVAILABLE
+        assert tool_events[2].tool_output["city"] == "Tokyo"
+
+    @pytest.mark.asyncio
+    async def test_tool_events_serialize_to_vercel(self, ai_client: AIClient) -> None:
+        """Tool event chunks produce valid Vercel AI SSE."""
+        call_count = 0
+
+        async def _create(**kwargs: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_stream_tool_call_chunks(
+                    tc_id="call_1",
+                    name="get_weather",
+                    arg_fragments=['{"city":"London"}'],
+                )
+            else:
+                return _mock_stream_chunks(["22° celsius"])
+
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            side_effect=_create
+        )
+
+        all_events: list[str] = []
+        async for chunk in ai_client.stream_agent(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "weather?"}],
+            tools=[GetWeather],
+        ):
+            for event in chunk.vercel_ai_json(message_id="msg-1"):
+                all_events.append(event.dump())
+
+        sse_text = "".join(all_events)
+        assert "tool-input-start" in sse_text
+        assert "tool-input-available" in sse_text
+        assert "tool-output-available" in sse_text
+        assert sse_text.endswith("data: [DONE]\n\n")
+
+    @pytest.mark.asyncio
+    async def test_tool_args_forwarded_to_run(self, ai_client: AIClient) -> None:
+        """tool_args are passed through to Tool.run()."""
+        call_count = 0
+
+        async def _create(**kwargs: Any) -> Any:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return _mock_stream_tool_call_chunks(
+                    tc_id="call_1",
+                    name="stage_room",
+                    arg_fragments=['{"design_style":"modern"}'],
+                )
+            else:
+                return _mock_stream_chunks(["Staged!"])
+
+        ai_client._openai_client.chat.completions.create = AsyncMock(
+            side_effect=_create
+        )
+
+        fake_derp = object()
+        chunks = [
+            c
+            async for c in ai_client.stream_agent(
+                model="gpt-4o",
+                messages=[{"role": "user", "content": "stage it"}],
+                tools=[StageRoom],
+                tool_args=[fake_derp, "user-42"],
+            )
+        ]
+
+        output_events = [
+            c for c in chunks if c.tool_event == ToolEventType.OUTPUT_AVAILABLE
+        ]
+        assert len(output_events) == 1
+        result = output_events[0].tool_output
+        assert result["style"] == "modern"
+        assert result["user_id"] == "user-42"
+        assert result["has_client"] is True

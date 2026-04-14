@@ -213,9 +213,8 @@ async for chunk in derp.ai.stream_chat(model="gpt-4o-mini", messages=messages):
     for event in chunk.vercel_ai_json(message_id="msg-1"):
         yield event.dump()  # "data: {...}\n\n"
 
-# Image generation via fal
-request_id = await derp.ai.fal_call("fal-ai/flux", inputs={"prompt": "a cat"})
-status = await derp.ai.fal_poll("fal-ai/flux", request_id)
+# Image generation via fal (submit + poll + get in one call)
+result = await derp.ai.fal_call("fal-ai/flux", inputs={"prompt": "a cat"})
 ```
 
 ### Queue (Celery / Vercel)

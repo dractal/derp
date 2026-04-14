@@ -25,6 +25,7 @@ from derp.orm.migrations.convertors import (  # noqa: F401
     table,
 )
 from derp.orm.migrations.convertors.base import ConvertorRegistry
+from derp.orm.migrations.filters import filter_rls_statements
 from derp.orm.migrations.introspect.postgres import PostgresIntrospector
 from derp.orm.migrations.safety import (
     detect_destructive_operations,
@@ -110,6 +111,10 @@ def push(
             # Diff
             differ = SnapshotDiffer(db_norm, desired_norm, rename_callback)
             statements = differ.diff()
+
+            # Filter out RLS/policy changes when ignore_rls is enabled
+            if config.database.ignore_rls:
+                statements = filter_rls_statements(statements)
 
             if not statements:
                 typer.echo("No changes detected. Schema is up to date.")

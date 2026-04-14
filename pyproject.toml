@@ -1,6 +1,6 @@
 [project]
 name = "derp-py"
-version = "0.2.8"
+version = "0.2.11"
 description = "An async Python backend toolkit for building web apps."
 readme = "README.md"
 authors = [{ name = "hilly12", email = "aahilmehta12@gmail.com" }]
@@ -49,6 +49,7 @@ docs = [
     "valkey-glide",
     "celery>=5.6.2",
     "clerk-backend-api>=5.0.2",
+    "workos>=5.0.0",
 ]
 
 [dependency-groups]
@@ -72,6 +73,7 @@ dev = [
     "valkey-glide",
     "celery>=5.6.2",
     "clerk-backend-api>=5.0.2",
+    "workos>=5.0.0",
     "moto[cognitoidp,s3,server]>=5.1.22",
     "openai>=2.30.0",
     "sqlalchemy[asyncio]>=2.0",
