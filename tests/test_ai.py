@@ -30,7 +30,7 @@ def ai_config() -> AIConfig:
 @pytest.fixture
 def ai_client(ai_config: AIConfig) -> AIClient:
     client = AIClient(ai_config)
-    client._openai_client = MagicMock()
+    client.client = MagicMock()
     return client
 
 
@@ -196,7 +196,7 @@ def _mock_stream_tool_call_chunks(
 class TestAIClientInit:
     def test_creates_with_api_key(self, ai_config: AIConfig) -> None:
         client = AIClient(ai_config)
-        assert client._openai_client.api_key == "sk-test-123"
+        assert client.client.api_key == "sk-test-123"
 
     def test_creates_with_custom_base_url(self) -> None:
         config = AIConfig(
@@ -204,11 +204,11 @@ class TestAIClientInit:
             base_url="https://api.openrouter.ai/v1",
         )
         client = AIClient(config)
-        assert str(client._openai_client.base_url) == "https://api.openrouter.ai/v1/"
+        assert str(client.client.base_url) == "https://api.openrouter.ai/v1/"
 
     def test_default_base_url_is_openai(self, ai_config: AIConfig) -> None:
         client = AIClient(ai_config)
-        assert "api.openai.com" in str(client._openai_client.base_url)
+        assert "api.openai.com" in str(client.client.base_url)
 
 
 # ── chat ─────────────────────────────────────────────────────────
@@ -217,7 +217,7 @@ class TestAIClientInit:
 class TestChat:
     @pytest.mark.asyncio
     async def test_returns_chat_response(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_completion(content="hi there", model="gpt-4o")
         )
 
@@ -234,7 +234,7 @@ class TestChat:
 
     @pytest.mark.asyncio
     async def test_includes_usage(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_completion(
                 prompt_tokens=20, completion_tokens=10, total_tokens=30
             )
@@ -252,7 +252,7 @@ class TestChat:
 
     @pytest.mark.asyncio
     async def test_forwards_kwargs(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_completion()
         )
 
@@ -263,7 +263,7 @@ class TestChat:
             max_tokens=100,
         )
 
-        ai_client._openai_client.chat.completions.create.assert_awaited_once_with(
+        ai_client.client.chat.completions.create.assert_awaited_once_with(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": "hello"}],
             temperature=0.5,
@@ -277,7 +277,7 @@ class TestChat:
 class TestStreamChat:
     @pytest.mark.asyncio
     async def test_yields_chat_chunks(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_stream_chunks(["hello", " world"])
         )
 
@@ -297,7 +297,7 @@ class TestStreamChat:
 
     @pytest.mark.asyncio
     async def test_first_chunk_is_marked(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_stream_chunks(["hi"])
         )
 
@@ -315,7 +315,7 @@ class TestStreamChat:
 
     @pytest.mark.asyncio
     async def test_model_propagated_to_chunks(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_stream_chunks(["x"], model="gpt-4o")
         )
 
@@ -331,7 +331,7 @@ class TestStreamChat:
 
     @pytest.mark.asyncio
     async def test_usage_on_last_chunk(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_stream_chunks(["hi"], include_usage=True)
         )
 
@@ -352,7 +352,7 @@ class TestStreamChat:
 
     @pytest.mark.asyncio
     async def test_last_chunk_without_usage(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_stream_chunks(["hi"], include_usage=False)
         )
 
@@ -695,7 +695,7 @@ class TestToolCall:
 class TestChatWithTools:
     @pytest.mark.asyncio
     async def test_passes_tool_schemas(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_completion(content="hi")
         )
 
@@ -705,7 +705,7 @@ class TestChatWithTools:
             tools=[GetWeather],
         )
 
-        call_kwargs = ai_client._openai_client.chat.completions.create.call_args
+        call_kwargs = ai_client.client.chat.completions.create.call_args
         assert "tools" in call_kwargs.kwargs
         schemas = call_kwargs.kwargs["tools"]
         assert len(schemas) == 1
@@ -718,7 +718,7 @@ class TestChatWithTools:
             name="get_weather",
             arguments='{"city":"London","unit":"celsius"}',
         )
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_completion(
                 content="",
                 finish_reason="tool_calls",
@@ -742,7 +742,7 @@ class TestChatWithTools:
 
     @pytest.mark.asyncio
     async def test_no_tools_returns_empty_list(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_completion(content="hello")
         )
 
@@ -760,7 +760,7 @@ class TestChatWithTools:
 class TestStreamChatWithTools:
     @pytest.mark.asyncio
     async def test_accumulates_tool_calls(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_stream_tool_call_chunks(
                 tc_id="call_xyz",
                 name="get_weather",
@@ -790,7 +790,7 @@ class TestStreamChatWithTools:
 
     @pytest.mark.asyncio
     async def test_no_tool_calls_empty(self, ai_client: AIClient) -> None:
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_stream_chunks(["hello"])
         )
 
@@ -813,7 +813,7 @@ class TestRun:
     @pytest.mark.asyncio
     async def test_text_response_no_loop(self, ai_client: AIClient) -> None:
         """When no tool calls, run yields chunks and returns."""
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             return_value=_mock_stream_chunks(["hello", " world"])
         )
 
@@ -849,9 +849,7 @@ class TestRun:
                 # Second call: model returns text
                 return _mock_stream_chunks(["It's 22° in Tokyo"])
 
-        ai_client._openai_client.chat.completions.create = AsyncMock(
-            side_effect=_create
-        )
+        ai_client.client.chat.completions.create = AsyncMock(side_effect=_create)
 
         messages: list[dict[str, Any]] = [
             {"role": "user", "content": "What's the weather in Tokyo?"}
@@ -877,7 +875,7 @@ class TestRun:
     @pytest.mark.asyncio
     async def test_max_turns_respected(self, ai_client: AIClient) -> None:
         """Loop stops after max_turns even if model keeps calling tools."""
-        ai_client._openai_client.chat.completions.create = AsyncMock(
+        ai_client.client.chat.completions.create = AsyncMock(
             side_effect=lambda **_: _mock_stream_tool_call_chunks(
                 tc_id="call_loop",
                 name="get_weather",
@@ -1094,9 +1092,7 @@ class TestStreamAgentToolEvents:
             else:
                 return _mock_stream_chunks(["It's 22°"])
 
-        ai_client._openai_client.chat.completions.create = AsyncMock(
-            side_effect=_create
-        )
+        ai_client.client.chat.completions.create = AsyncMock(side_effect=_create)
 
         chunks = [
             c
@@ -1134,9 +1130,7 @@ class TestStreamAgentToolEvents:
             else:
                 return _mock_stream_chunks(["22° celsius"])
 
-        ai_client._openai_client.chat.completions.create = AsyncMock(
-            side_effect=_create
-        )
+        ai_client.client.chat.completions.create = AsyncMock(side_effect=_create)
 
         all_events: list[str] = []
         async for chunk in ai_client.stream_agent(
@@ -1170,9 +1164,7 @@ class TestStreamAgentToolEvents:
             else:
                 return _mock_stream_chunks(["Staged!"])
 
-        ai_client._openai_client.chat.completions.create = AsyncMock(
-            side_effect=_create
-        )
+        ai_client.client.chat.completions.create = AsyncMock(side_effect=_create)
 
         fake_derp = object()
         chunks = [

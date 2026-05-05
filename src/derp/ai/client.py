@@ -53,17 +53,16 @@ class AIClient:
 
     def __init__(self, config: AIConfig):
         self._config = config
-        self._openai_client: openai.AsyncOpenAI = openai.AsyncOpenAI(
+        self.client: openai.AsyncOpenAI = openai.AsyncOpenAI(
             api_key=config.api_key,
             base_url=config.base_url,
         )
-        self._fal_client: fal_client.AsyncClient | None = (
-            fal_client.AsyncClient(
+        if config.fal_api_key is not None:
+            self._fal_client: fal_client.AsyncClient | None = fal_client.AsyncClient(
                 key=config.fal_api_key,
             )
-            if config.fal_api_key is not None
-            else None
-        )
+        else:
+            self._fal_client = None
         self._modal_client: httpx.AsyncClient | None = None
 
     async def connect(self) -> None:
@@ -104,7 +103,7 @@ class AIClient:
         if tools:
             schemas, name_map = _build_tool_map(tools)
             kwargs["tools"] = schemas
-        completion = await self._openai_client.chat.completions.create(
+        completion = await self.client.chat.completions.create(
             model=model,
             messages=messages,
             **kwargs,
@@ -156,7 +155,7 @@ class AIClient:
             schemas, name_map = _build_tool_map(tools)
             kwargs["tools"] = schemas
         kwargs.setdefault("stream_options", {"include_usage": True})
-        stream = await self._openai_client.chat.completions.create(
+        stream = await self.client.chat.completions.create(
             model=model,
             messages=messages,
             stream=True,

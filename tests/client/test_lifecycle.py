@@ -299,7 +299,7 @@ async def test_ai_client_uses_custom_base_url(client_schema_path: str) -> None:
             )
         )
         await client.connect()
-        assert str(client.ai._openai_client.base_url) == "https://api.openrouter.ai/v1/"
+        assert str(client.ai.client.base_url) == "https://api.openrouter.ai/v1/"
         await client.disconnect()
 
 
