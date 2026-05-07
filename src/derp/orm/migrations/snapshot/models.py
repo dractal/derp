@@ -94,11 +94,31 @@ class ForeignKeySnapshot(BaseModel):
         use_enum_values = True
 
 
+class IndexColumnSnapshot(BaseModel):
+    """Per-column configuration within an index.
+
+    Captures the metadata that ``IndexColumn`` carries beyond the column name
+    so that opclass / sort order / nulls position survive a snapshot round-trip.
+    Either ``name`` or ``expression`` is set; the other fields are optional.
+    """
+
+    name: str | None = None
+    expression: str | None = None
+    opclass: str | None = None
+    order: Literal["ASC", "DESC"] | None = None
+    nulls: Literal["FIRST", "LAST"] | None = None
+    collation: str | None = None
+
+
 class IndexSnapshot(BaseModel):
     """Serialized index definition."""
 
     name: str
     columns: list[str]
+    # Richer per-column metadata. When present, takes precedence over ``columns``
+    # for emission. Older snapshots (pre-IndexColumnSnapshot) leave this empty
+    # and the bare ``columns`` list is used.
+    column_specs: list[IndexColumnSnapshot] = Field(default_factory=list)
     unique: bool = False
     where: str | None = None  # Partial index condition
     method: IndexMethod = IndexMethod.BTREE

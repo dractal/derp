@@ -32,6 +32,7 @@ from derp.orm.migrations.statements.types import (
     DropTableStatement,
     DropUniqueConstraintStatement,
     ForeignKeyDefinition,
+    IndexColumnSpec,
     PrimaryKeyDefinition,
     RenameColumnStatement,
     RenameTableStatement,
@@ -664,6 +665,72 @@ class TestIndexConvertors:
         sql = ConvertorRegistry.convert(stmt)
 
         assert 'INCLUDE ("name", "created_at")' in sql
+
+    def test_create_index_with_opclass(self):
+        """opclass on a column spec ends up in the column list."""
+        stmt = CreateIndexStatement(
+            name="items_embedding_idx",
+            table_name="items",
+            columns=["embedding"],
+            column_specs=[
+                IndexColumnSpec(name="embedding", opclass="vector_cosine_ops"),
+            ],
+            method="hnsw",
+        )
+
+        sql = ConvertorRegistry.convert(stmt)
+
+        assert "USING HNSW" in sql
+        assert '("embedding" vector_cosine_ops)' in sql
+
+    def test_create_index_with_sort_order_and_nulls(self):
+        """ASC/DESC and NULLS FIRST/LAST are emitted per column."""
+        stmt = CreateIndexStatement(
+            name="events_recent_idx",
+            table_name="events",
+            columns=["user_id", "created_at"],
+            column_specs=[
+                IndexColumnSpec(name="user_id"),
+                IndexColumnSpec(name="created_at", order="DESC", nulls="LAST"),
+            ],
+        )
+
+        sql = ConvertorRegistry.convert(stmt)
+
+        assert '("user_id", "created_at" DESC NULLS LAST)' in sql
+
+    def test_create_index_with_options(self):
+        """``with_options`` becomes a ``WITH (k = v, …)`` clause."""
+        stmt = CreateIndexStatement(
+            name="items_embedding_idx",
+            table_name="items",
+            columns=["embedding"],
+            column_specs=[
+                IndexColumnSpec(name="embedding", opclass="vector_cosine_ops"),
+            ],
+            method="hnsw",
+            with_options={"m": "16", "ef_construction": "64"},
+        )
+
+        sql = ConvertorRegistry.convert(stmt)
+
+        # Both options should appear; order isn't asserted (dicts are
+        # insertion-ordered but tests shouldn't rely on caller order).
+        assert "WITH (" in sql
+        assert "m = 16" in sql
+        assert "ef_construction = 64" in sql
+
+    def test_create_index_falls_back_to_columns_without_specs(self):
+        """Old callers that only set ``columns`` keep working."""
+        stmt = CreateIndexStatement(
+            name="users_email_idx",
+            table_name="users",
+            columns=["email"],
+        )
+
+        sql = ConvertorRegistry.convert(stmt)
+
+        assert 'CREATE INDEX "users_email_idx" ON "users" ("email")' in sql
 
     def test_drop_index(self):
         """Test dropping an index."""

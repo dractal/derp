@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 from derp.orm import (
     Boolean,
+    Enum,
     Field,
     Index,
     IndexColumn,
+    IndexMethod,
     Integer,
     Nullable,
     Serial,
+    SortOrder,
     Table,
     Text,
     Timestamp,
@@ -17,6 +22,7 @@ from derp.orm import (
 )
 from derp.orm.migrations.snapshot.models import (
     ColumnSnapshot,
+    EnumSnapshot,
     ForeignKeySnapshot,
     PrimaryKeySnapshot,
     SchemaSnapshot,
@@ -26,6 +32,7 @@ from derp.orm.migrations.snapshot.models import (
     ForeignKeyAction as SnapshotFKAction,
 )
 from derp.orm.migrations.snapshot.serializer import (
+    extract_enums,
     serialize_column,
     serialize_schema,
     serialize_table,
@@ -315,3 +322,109 @@ class TestSerializeSchema:
         assert restored.id == original.id
         assert set(restored.tables.keys()) == set(original.tables.keys())
         assert restored.tables["users"].name == original.tables["users"].name
+
+
+# =============================================================================
+# Enum extraction
+# =============================================================================
+
+
+class _Plan(StrEnum):
+    STARTER = "starter"
+    PRO = "pro"
+    ENTERPRISE = "enterprise"
+
+
+class _Account(Table, table="accounts"):
+    id: Serial = Field(primary=True)
+    plan: Enum[_Plan] = Field(default="starter")
+
+
+class TestExtractEnums:
+    """``extract_enums`` should pick up Enum columns and their values.
+
+    Without this, every snapshot's ``enums`` is empty and ``derp generate``
+    re-emits ``CREATE TYPE`` on each run, which fails against any DB that
+    already has the type.
+    """
+
+    def test_extracts_enum_with_values(self):
+        enums = extract_enums([_Account])
+
+        assert "_plan" in enums
+        snap = enums["_plan"]
+        assert isinstance(snap, EnumSnapshot)
+        assert snap.values == ["starter", "pro", "enterprise"]
+        assert snap.schema_name == "public"
+
+    def test_no_enum_columns_yields_empty(self):
+        # User has no Enum columns
+        assert extract_enums([User]) == {}
+
+    def test_serialize_schema_includes_enums(self):
+        """End-to-end: ``serialize_schema`` populates ``enums`` from Enum cols."""
+        schema = serialize_schema([_Account])
+        assert "_plan" in schema.enums
+        assert schema.enums["_plan"].values == ["starter", "pro", "enterprise"]
+
+
+# =============================================================================
+# Index column metadata (opclass / sort order / WITH options)
+# =============================================================================
+
+
+class _Items(Table, table="items"):
+    id: Serial = Field(primary=True)
+    user_id: Integer = Field()
+    created_at: Timestamp = Field()
+    embedding: Text = Field()  # Stand-in for vector(N) — opclass is what matters
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [
+            Index(
+                cls.user_id,
+                IndexColumn(cls.created_at, order=SortOrder.DESC),
+                name="items_user_recent_idx",
+            ),
+            Index(
+                IndexColumn(cls.embedding, opclass="vector_cosine_ops"),
+                method=IndexMethod.HNSW,
+                with_params={"m": "16", "ef_construction": "64"},
+                name="items_embedding_idx",
+            ),
+        ]
+
+
+class TestIndexColumnSpecs:
+    """``serialize_table`` must capture per-column index metadata so
+    opclass / ASC|DESC / NULLS FIRST|LAST / collation aren't lost."""
+
+    def test_per_column_sort_order_captured(self):
+        snap = serialize_table(_Items)
+        idx = snap.indexes["items_user_recent_idx"]
+
+        # Flat ``columns`` is preserved for backwards compat
+        assert idx.columns == ["user_id", "created_at"]
+
+        # Richer ``column_specs`` carries the order info
+        assert len(idx.column_specs) == 2
+        assert idx.column_specs[0].name == "user_id"
+        assert idx.column_specs[0].order is None
+        assert idx.column_specs[1].name == "created_at"
+        assert idx.column_specs[1].order == "DESC"
+
+    def test_opclass_captured(self):
+        snap = serialize_table(_Items)
+        idx = snap.indexes["items_embedding_idx"]
+
+        assert idx.method.value == "hnsw"
+        assert len(idx.column_specs) == 1
+        assert idx.column_specs[0].name == "embedding"
+        assert idx.column_specs[0].opclass == "vector_cosine_ops"
+
+    def test_with_options_captured(self):
+        snap = serialize_table(_Items)
+        idx = snap.indexes["items_embedding_idx"]
+
+        assert idx.with_options == {"m": "16", "ef_construction": "64"}

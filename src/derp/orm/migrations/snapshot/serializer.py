@@ -11,12 +11,14 @@ from typing import Any
 
 from derp.orm.column.base import FK as OrmFK
 from derp.orm.column.base import Column
+from derp.orm.column.types import Enum as EnumColumn
 from derp.orm.index import _expression_to_literal_sql
 from derp.orm.migrations.snapshot.models import (
     ColumnSnapshot,
     EnumSnapshot,
     ForeignKeyAction,
     ForeignKeySnapshot,
+    IndexColumnSnapshot,
     IndexMethod,
     IndexSnapshot,
     PrimaryKeySnapshot,
@@ -206,9 +208,25 @@ def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnap
         where_sql = (
             _expression_to_literal_sql(idx.where) if idx.where is not None else None
         )
+        # Capture per-column metadata (opclass, ASC/DESC, NULLS FIRST/LAST,
+        # collation) so it survives the snapshot round-trip. ``columns`` is
+        # kept as a flat name list for backwards compatibility with older
+        # snapshot consumers.
+        column_specs = [
+            IndexColumnSnapshot(
+                name=c.name,
+                expression=c.expression,
+                opclass=c.opclass,
+                order=c.order.value if c.order is not None else None,
+                nulls=c.nulls.value if c.nulls is not None else None,
+                collation=c.collation,
+            )
+            for c in idx.columns
+        ]
         indexes[idx_name] = IndexSnapshot(
             name=idx_name,
             columns=idx.column_names,
+            column_specs=column_specs,
             unique=idx.unique,
             where=where_sql,
             method=IndexMethod(idx.method.value),
@@ -244,29 +262,35 @@ def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnap
 def extract_enums(
     tables: list[type[Table]], schema: str = "public"
 ) -> dict[str, EnumSnapshot]:
-    """Extract enum types from table definitions."""
+    """Extract enum types from table definitions.
+
+    Walks each ``Enum[...]`` column and pulls the underlying Python enum class
+    (stored on the column type via ``__class_getitem__``) to recover both the
+    PostgreSQL type name and its values. Without this, every snapshot's
+    ``enums`` field stays empty and ``derp generate`` re-emits ``CREATE TYPE``
+    on every run, which fails against any database that already has the type.
+    """
     enums: dict[str, EnumSnapshot] = {}
 
     for table_cls in tables:
-        for _col_name, col in table_cls.get_columns().items():
-            sql_type = col.sql_type()
-
-            # Strip array brackets to check base type
-            base_type = sql_type
-            while base_type.endswith("[]"):
-                base_type = base_type[:-2]
-
-            # Check if this looks like an enum (snake_case name, not a
-            # standard SQL type keyword)
-            if base_type.upper() not in _SQL_BUILTIN_TYPES and base_type not in enums:
-                # Try to find the enum class from the column's context
-                # For now, we detect enum columns by checking if the sql_type
-                # is a snake_case name (enum types are named after the Python enum)
-                if re.match(r"^[a-z][a-z0-9_]*$", base_type):
-                    # This is likely an enum type — but we need the values.
-                    # The enum values aren't stored on the Column, so we skip
-                    # for now. Enum extraction needs the original enum class.
-                    pass
+        for col in table_cls.get_columns().values():
+            if not isinstance(col, EnumColumn):
+                continue
+            enum_cls = col._enum_cls
+            if enum_cls is None:
+                continue
+            sql_name = col.sql_type()
+            # Drop array brackets — `status: Enum[Status][]` still maps to
+            # the same underlying type.
+            while sql_name.endswith("[]"):
+                sql_name = sql_name[:-2]
+            if sql_name in enums:
+                continue
+            enums[sql_name] = EnumSnapshot(
+                name=sql_name,
+                schema=schema,
+                values=[v.value for v in enum_cls],
+            )
 
     return enums
 

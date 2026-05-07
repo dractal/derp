@@ -12,6 +12,7 @@ from collections.abc import Callable
 from derp.orm.migrations.snapshot.models import (
     ColumnSnapshot,
     EnumSnapshot,
+    IndexSnapshot,
     SchemaSnapshot,
     TableSnapshot,
 )
@@ -42,11 +43,31 @@ from derp.orm.migrations.statements.types import (
     DropUniqueConstraintStatement,
     EnableRLSStatement,
     ForeignKeyDefinition,
+    IndexColumnSpec,
     PrimaryKeyDefinition,
     RenameColumnStatement,
     Statement,
     UniqueConstraintDefinition,
 )
+
+
+def _index_column_specs(idx: IndexSnapshot) -> list[IndexColumnSpec]:
+    """Convert an ``IndexSnapshot``'s per-column metadata to statement specs.
+
+    Returns an empty list for older snapshots that only have flat ``columns``
+    — the convertor falls back to plain column names in that case.
+    """
+    return [
+        IndexColumnSpec(
+            name=spec.name,
+            expression=spec.expression,
+            opclass=spec.opclass,
+            order=spec.order,
+            nulls=spec.nulls,
+            collation=spec.collation,
+        )
+        for spec in idx.column_specs
+    ]
 
 
 @dataclasses.dataclass
@@ -397,12 +418,14 @@ class SnapshotDiffer:
                         table_name=table.name,
                         schema_name=table.schema_name,
                         columns=idx.columns,
+                        column_specs=_index_column_specs(idx),
                         unique=idx.unique,
                         where=idx.where,
                         method=idx.method.value,
                         concurrently=idx.concurrently,
                         nulls_not_distinct=idx.nulls_not_distinct,
                         include=idx.include,
+                        with_options=idx.with_options,
                     )
                 )
 
@@ -642,12 +665,14 @@ class SnapshotDiffer:
                     table_name=new_table.name,
                     schema_name=new_table.schema_name,
                     columns=idx.columns,
+                    column_specs=_index_column_specs(idx),
                     unique=idx.unique,
                     where=idx.where,
                     method=idx.method,
                     concurrently=idx.concurrently,
                     nulls_not_distinct=idx.nulls_not_distinct,
                     include=idx.include,
+                    with_options=idx.with_options,
                 )
             )
 
