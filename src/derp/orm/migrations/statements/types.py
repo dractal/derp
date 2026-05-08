@@ -6,7 +6,7 @@ Each statement type maps to one or more SQL statements via convertors.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -304,6 +304,22 @@ class DropPrimaryKeyStatement(JsonStatement):
 # =============================================================================
 
 
+class IndexColumnSpec(BaseModel):
+    """Per-column metadata for a CREATE INDEX statement.
+
+    Mirrors ``IndexColumnSnapshot`` so the differ can hand the convertor
+    everything it needs to emit a faithful ``CREATE INDEX`` (opclass, sort
+    order, NULLS FIRST/LAST, collation).
+    """
+
+    name: str | None = None
+    expression: str | None = None
+    opclass: str | None = None
+    order: Literal["ASC", "DESC"] | None = None
+    nulls: Literal["FIRST", "LAST"] | None = None
+    collation: str | None = None
+
+
 class CreateIndexStatement(JsonStatement):
     """CREATE INDEX statement."""
 
@@ -312,12 +328,18 @@ class CreateIndexStatement(JsonStatement):
     table_name: str
     schema_name: str = "public"
     columns: list[str]
+    # Optional richer per-column info. When non-empty, takes precedence over
+    # ``columns`` for SQL emission so opclass / ASC|DESC / NULLS FIRST|LAST
+    # / collation aren't lost. Older callers that only set ``columns`` keep
+    # working.
+    column_specs: list[IndexColumnSpec] = Field(default_factory=list)
     unique: bool = False
     where: str | None = None  # Partial index condition
     method: str = "btree"  # btree, hash, gin, gist, etc.
     concurrently: bool = False
     nulls_not_distinct: bool = False
     include: list[str] = Field(default_factory=list)  # INCLUDE columns
+    with_options: dict[str, str] = Field(default_factory=dict)  # WITH (k=v, ...)
 
 
 class DropIndexStatement(JsonStatement):
