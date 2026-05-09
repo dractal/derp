@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import os
+import sys
 import tempfile
 from collections.abc import Generator
 from pathlib import Path
@@ -209,6 +210,11 @@ def cli_env(
         os.chdir(old_cwd)
         os.environ.clear()
         os.environ.update(old_env)
+        # Each cli_env test writes its own schema.py at temp_dir; the loader
+        # imports it as the bare module name "schema". Without eviction the
+        # next test would inherit the previous one's parsed Table classes.
+        for name in [m for m in sys.modules if m == "schema" or m.endswith(".schema")]:
+            del sys.modules[name]
 
 
 @pytest.fixture

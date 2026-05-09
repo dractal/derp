@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 
 class SnapshotVersion(StrEnum):
@@ -73,9 +73,6 @@ class ColumnSnapshot(BaseModel):
     identity: IdentityConfig | None = None
     array_dimensions: int = 0  # For array types
 
-    class ConfigDict:
-        use_enum_values = True
-
 
 class ForeignKeySnapshot(BaseModel):
     """Serialized foreign key constraint."""
@@ -89,9 +86,6 @@ class ForeignKeySnapshot(BaseModel):
     on_update: ForeignKeyAction | None = None
     deferrable: bool = False
     initially_deferred: bool = False
-
-    class ConfigDict:
-        use_enum_values = True
 
 
 class IndexColumnSnapshot(BaseModel):
@@ -126,9 +120,6 @@ class IndexSnapshot(BaseModel):
     nulls_not_distinct: bool = False  # PostgreSQL 15+
     include: list[str] = Field(default_factory=list)  # INCLUDE columns
     with_options: dict[str, str] = Field(default_factory=dict)  # WITH (option=value)
-
-    class ConfigDict:
-        use_enum_values = True
 
 
 class UniqueConstraintSnapshot(BaseModel):
@@ -169,8 +160,7 @@ class TableSnapshot(BaseModel):
     rls_enabled: bool = False
     rls_forced: bool = False
 
-    class ConfigDict:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class EnumSnapshot(BaseModel):
@@ -180,8 +170,7 @@ class EnumSnapshot(BaseModel):
     schema_name: str = Field(default="public", alias="schema")
     values: list[str]
 
-    class ConfigDict:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class SequenceSnapshot(BaseModel):
@@ -197,8 +186,7 @@ class SequenceSnapshot(BaseModel):
     cycle: bool = False
     owned_by: str | None = None  # "table.column" or None
 
-    class ConfigDict:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class PolicyCommand(StrEnum):
@@ -223,9 +211,7 @@ class PolicySnapshot(BaseModel):
     using: str | None = None  # USING expression
     with_check: str | None = None  # WITH CHECK expression
 
-    class ConfigDict:
-        populate_by_name = True
-        use_enum_values = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class RoleSnapshot(BaseModel):
@@ -282,9 +268,6 @@ class SchemaSnapshot(BaseModel):
     _meta: dict = PrivateAttr(
         default_factory=lambda: {"schemas": {}, "tables": {}, "columns": {}}
     )
-
-    class ConfigDict:
-        use_enum_values = True
 
     def get_table_key(self, schema: str, table: str) -> str:
         """Get the dict key for a table."""

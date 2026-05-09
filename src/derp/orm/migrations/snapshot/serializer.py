@@ -288,7 +288,7 @@ def extract_enums(
                 continue
             enums[sql_name] = EnumSnapshot(
                 name=sql_name,
-                schema=schema,
+                schema_name=schema,
                 values=[v.value for v in enum_cls],
             )
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 
 import asyncpg
@@ -267,6 +268,205 @@ class TestPushCommand:
         result = runner.invoke(app, ["push", "--force", "--dry-run"])
         assert result.exit_code == 0, result.output
         assert "No changes" in result.stdout
+
+    def test_push_summary_includes_only_creates_when_no_drops(self, cli_env: dict):
+        """Initial push against an empty DB should show only [+] creates."""
+        result = runner.invoke(app, ["push", "--apply-all"])
+        assert result.exit_code == 0, result.output
+        assert "Push will apply" in result.stdout
+        assert "create" in result.stdout
+        # No alters or drops on a fresh DB
+        assert "drop(s)" not in result.stdout
+
+    def test_force_is_alias_for_apply_all(self, cli_env: dict):
+        """--force should still work as an alias for --apply-all."""
+        result = runner.invoke(app, ["push", "--force"])
+        assert result.exit_code == 0, result.output
+        assert "Schema pushed successfully" in result.stdout
+
+    def test_apply_all_and_skip_drops_are_mutually_exclusive(self, cli_env: dict):
+        """Conflicting non-interactive flags should exit non-zero with a clear error."""
+        result = runner.invoke(app, ["push", "--apply-all", "--skip-drops"])
+        assert result.exit_code == 2
+        assert "mutually exclusive" in result.output
+
+
+def _evict_schema_cache() -> None:
+    """Drop any cached ``schema`` module so the next CLI call re-imports it.
+
+    Schema files imported via discover_tables land in sys.modules as bare
+    module names like ``schema``; without eviction, modifying schema.py
+    between two same-process CLI invocations has no effect.
+    """
+    cached_modules = [m for m in sys.modules if m == "schema" or m.endswith(".schema")]
+    for cached in cached_modules:
+        del sys.modules[cached]
+
+
+class TestPushPromptRouting:
+    """Categorized prompt outcomes when drops are present."""
+
+    @staticmethod
+    def _shrink_schema(cli_env: dict) -> None:
+        """Rewrite the schema file to drop ``users.is_active`` and ``posts``.
+
+        After an initial push, this leaves the DB strictly larger than the
+        schema, so the next push detects DROP statements.
+
+        Also evicts the cached ``schema`` module so the follow-up CLI call in
+        the same process re-imports the new file. Otherwise the loader's
+        ``importlib.import_module`` hands back the original tables.
+        """
+        schema_path = Path(cli_env["cwd"]) / "schema.py"
+        schema_path.write_text(
+            '''"""Test schema for migrations."""
+
+from derp.orm import Field, Serial, Timestamp, Varchar
+from derp.orm.table import Table
+
+
+class User(Table, table="users"):
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field(unique=True)
+    created_at: Timestamp = Field(default="now()")
+'''
+        )
+        _evict_schema_cache()
+
+    def test_skip_drops_flag_keeps_columns(self, cli_env: dict):
+        """--skip-drops should leave dropped columns/tables in place."""
+        db_url = cli_env["TEST_DATABASE_URL"]
+
+        # Initial push: creates users (with is_active) + posts.
+        result = runner.invoke(app, ["push", "--apply-all"])
+        assert result.exit_code == 0, result.output
+        assert _table_exists(db_url, "posts")
+
+        self._shrink_schema(cli_env)
+
+        # --skip-drops: posts table and is_active column should survive.
+        result = runner.invoke(app, ["push", "--skip-drops"])
+        assert result.exit_code == 0, result.output
+        assert _table_exists(db_url, "posts"), "posts should not be dropped"
+        rows = _query(
+            db_url,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'users' AND column_name = 'is_active'",
+        )
+        assert len(rows) == 1, "is_active column should not be dropped"
+
+    def test_skip_drops_summary_shows_skipped_count(self, cli_env: dict):
+        """When drops are skipped alongside additions, output should report it."""
+        runner.invoke(app, ["push", "--apply-all"])
+
+        # Mixed change set: drop posts+is_active AND add users.handle.
+        schema_path = Path(cli_env["cwd"]) / "schema.py"
+        schema_path.write_text(
+            '''"""Test schema for migrations."""
+
+from derp.orm import Field, Serial, Timestamp, Varchar
+from derp.orm.table import Table
+
+
+class User(Table, table="users"):
+    id: Serial = Field(primary=True)
+    name: Varchar[255] = Field()
+    email: Varchar[255] = Field(unique=True)
+    handle: Varchar[64] = Field(default="''")
+    created_at: Timestamp = Field(default="now()")
+'''
+        )
+        _evict_schema_cache()
+
+        result = runner.invoke(app, ["push", "--skip-drops"])
+        assert result.exit_code == 0, result.output
+        # The "Schema pushed successfully (N applied, M skipped)" footer.
+        assert "skipped" in result.output
+
+    def test_apply_all_drops_everything(self, cli_env: dict):
+        """--apply-all should drop columns and tables that left the schema."""
+        db_url = cli_env["TEST_DATABASE_URL"]
+        runner.invoke(app, ["push", "--apply-all"])
+        assert _table_exists(db_url, "posts")
+
+        self._shrink_schema(cli_env)
+
+        result = runner.invoke(app, ["push", "--apply-all"])
+        assert result.exit_code == 0, result.output
+        assert not _table_exists(db_url, "posts"), "posts should have been dropped"
+
+    def test_interactive_choice_1_applies_all(self, cli_env: dict):
+        """Selecting '1' at the categorized prompt applies everything."""
+        db_url = cli_env["TEST_DATABASE_URL"]
+        runner.invoke(app, ["push", "--apply-all"])
+        self._shrink_schema(cli_env)
+
+        result = runner.invoke(app, ["push"], input="1\n")
+        assert result.exit_code == 0, result.output
+        assert not _table_exists(db_url, "posts")
+
+    def test_interactive_choice_2_skips_drops(self, cli_env: dict):
+        """Selecting '2' (default when drops exist) preserves drop targets."""
+        db_url = cli_env["TEST_DATABASE_URL"]
+        runner.invoke(app, ["push", "--apply-all"])
+        self._shrink_schema(cli_env)
+
+        # Just hit return — default is "Skip drops" because drops exist
+        result = runner.invoke(app, ["push"], input="\n")
+        assert result.exit_code == 0, result.output
+        assert _table_exists(db_url, "posts"), "default should preserve drops"
+
+    def test_interactive_choice_4_cancels(self, cli_env: dict):
+        """Selecting '4' aborts without applying anything."""
+        db_url = cli_env["TEST_DATABASE_URL"]
+        runner.invoke(app, ["push", "--apply-all"])
+        self._shrink_schema(cli_env)
+
+        result = runner.invoke(app, ["push"], input="4\n")
+        assert result.exit_code != 0
+        assert _table_exists(db_url, "posts")
+
+    def test_interactive_review_each_selective(self, cli_env: dict):
+        """Review-each mode should apply only statements answered with 'y'.
+
+        The shrunken schema produces a DROP TABLE posts and a DROP COLUMN
+        users.is_active. We answer 'y' to the first only, 'n' to the rest.
+        """
+        db_url = cli_env["TEST_DATABASE_URL"]
+        runner.invoke(app, ["push", "--apply-all"])
+        self._shrink_schema(cli_env)
+
+        # Choice 3 = review each. Then a generous stream of "y\nn\n..." pairs;
+        # extra inputs are ignored once the loop ends.
+        result = runner.invoke(app, ["push"], input="3\n" + "y\nn\n" * 10)
+        assert result.exit_code == 0, result.output
+
+        # At least one drop should have happened (we said "y" first), but
+        # not all (we said "n" to the rest).
+        posts_gone = not _table_exists(db_url, "posts")
+        is_active_rows = _query(
+            db_url,
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'users' AND column_name = 'is_active'",
+        )
+        is_active_gone = len(is_active_rows) == 0
+        assert posts_gone != is_active_gone, (
+            "Exactly one of (posts table, is_active column) should be gone "
+            f"in selective review mode (posts_gone={posts_gone}, "
+            f"is_active_gone={is_active_gone})"
+        )
+
+    def test_interactive_review_each_quit_stops(self, cli_env: dict):
+        """Answering 'q' during review-each should stop and apply nothing more."""
+        db_url = cli_env["TEST_DATABASE_URL"]
+        runner.invoke(app, ["push", "--apply-all"])
+        self._shrink_schema(cli_env)
+
+        # Choice 3 = review each, then 'q' immediately to quit before any "y".
+        result = runner.invoke(app, ["push"], input="3\nq\n")
+        assert result.exit_code == 0, result.output
+        assert _table_exists(db_url, "posts"), "no drops should have been applied"
 
 
 class TestPullCommand:

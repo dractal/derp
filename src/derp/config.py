@@ -198,27 +198,6 @@ class NativeAuthConfig(_StrictModel):
     cache_user_ttl_seconds: int = 300
 
 
-class ClerkConfig(_StrictModel):
-    """Configuration for Clerk authentication."""
-
-    secret_key: str
-    jwt_key: str | None = None
-    authorized_parties: Sequence[str] = ()
-
-
-class CognitoConfig(_StrictModel):
-    """Configuration for AWS Cognito authentication."""
-
-    user_pool_id: str
-    client_id: str
-    region: str
-    client_secret: str
-    access_key_id: str | None = None
-    secret_access_key: str | None = None
-    domain: str | None = None
-    redirect_uri: str | None = None
-
-
 class SupabaseConfig(_StrictModel):
     """Configuration for Supabase GoTrue authentication."""
 
@@ -241,20 +220,18 @@ class AuthConfig(_StrictModel):
     """Auth configuration — exactly one backend must be set."""
 
     native: NativeAuthConfig | None = None
-    clerk: ClerkConfig | None = None
-    cognito: CognitoConfig | None = None
     supabase: SupabaseConfig | None = None
     workos: WorkOSConfig | None = None
 
     @model_validator(mode="after")
     def _check_single_backend(self) -> AuthConfig:
-        backends = [self.native, self.clerk, self.cognito, self.supabase, self.workos]
+        backends = [self.native, self.supabase, self.workos]
         configured = sum(1 for b in backends if b is not None)
         if configured > 1:
             raise ValueError(
                 "Only one auth backend can be configured at a time. "
-                "Set exactly one of [auth.native], [auth.clerk], "
-                "[auth.cognito], [auth.supabase], or [auth.workos]."
+                "Set exactly one of [auth.native], [auth.supabase], "
+                "or [auth.workos]."
             )
         if configured == 0:
             raise ValueError("At least one auth backend must be configured.")
@@ -463,13 +440,16 @@ migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # [auth.native.jwt]
 # secret = "$JWT_SECRET"
 
-# [auth.clerk]
-# secret_key = "$CLERK_SECRET_KEY"
-
 # [auth.workos]
 # api_key = "$WORKOS_API_KEY"
 # client_id = "$WORKOS_CLIENT_ID"
 # redirect_uri = "https://yourapp.com/callback"
+
+# [auth.supabase]
+# url = "$SUPABASE_URL"
+# anon_key = "$SUPABASE_ANON_KEY"
+# service_role_key = "$SUPABASE_SERVICE_ROLE_KEY"
+# jwt_secret = "$SUPABASE_JWT_SECRET"
 
 # [kv.valkey]
 # addresses = [["localhost", 6379]]

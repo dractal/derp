@@ -212,25 +212,6 @@ class AuthOrgMember(Table, table="org_members"):
         ]
 
 
-class CognitoOrgMember(Table, table="org_members"):
-    """Organization membership table (Cognito — no FK to users table)."""
-
-    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
-    org_id: UUID = Field(foreign_key=AuthOrganization.id, on_delete=FK.CASCADE)
-    user_id: UUID = Field()
-    role: Varchar[L[50]] = Field(default="member")
-    created_at: TimestampTZ = Field(default=Fn.now())
-    updated_at: TimestampTZ = Field(default=Fn.now())
-
-    @classmethod
-    def indexes(cls) -> list[Index]:
-        return [
-            Index(cls.org_id, cls.user_id, unique=True),
-            Index(cls.org_id),
-            Index(cls.user_id),
-        ]
-
-
 class SupabaseOrgMember(Table, table="org_members"):
     """Organization membership table (Supabase — no FK to users table)."""
 
@@ -248,3 +229,24 @@ class SupabaseOrgMember(Table, table="org_members"):
             Index(cls.org_id),
             Index(cls.user_id),
         ]
+
+
+class WorkOSOrganization(Table, table="organizations"):
+    """WorkOS-managed organizations — slug index for the WorkOS API.
+
+    WorkOS owns name, metadata, members, and timestamps. This local table
+    exists ONLY as a slug index: ``id`` IS the WorkOS org id (the same
+    string the WorkOS API and JWT carry), and ``slug`` is a locally-
+    enforced unique handle so slug→id lookup is O(1) instead of paginating
+    the WorkOS API.
+
+    Application FKs to ``organizations.id`` therefore hold the same value
+    as ``SessionInfo.org_id``, so tenant-scoping comparisons need no
+    translation step (which is the most common source of confused-deputy
+    bugs in dual-id setups).
+
+    The unique columns get implicit unique indexes from PostgreSQL.
+    """
+
+    id: Varchar[L[255]] = Field(primary=True)
+    slug: Varchar[L[255]] = Field(unique=True)

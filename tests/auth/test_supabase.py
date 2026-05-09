@@ -13,8 +13,6 @@ import pytest
 
 from derp.config import (
     AuthConfig,
-    ClerkConfig,
-    CognitoConfig,
     JWTConfig,
     NativeAuthConfig,
     SupabaseConfig,
@@ -153,28 +151,6 @@ class TestSupabaseConfig:
             AuthConfig(
                 supabase=supabase_config,
                 native=NativeAuthConfig(jwt=JWTConfig(secret="s")),
-            )
-
-    def test_mutual_exclusion_with_clerk(self, supabase_config: SupabaseConfig) -> None:
-        with pytest.raises(ValueError, match="Only one auth backend"):
-            AuthConfig(
-                supabase=supabase_config,
-                clerk=ClerkConfig(secret_key="sk"),
-            )
-
-    def test_mutual_exclusion_with_cognito(
-        self,
-        supabase_config: SupabaseConfig,
-    ) -> None:
-        with pytest.raises(ValueError, match="Only one auth backend"):
-            AuthConfig(
-                supabase=supabase_config,
-                cognito=CognitoConfig(
-                    user_pool_id="us-east-1_x",
-                    client_id="c",
-                    client_secret="s",
-                    region="us-east-1",
-                ),
             )
 
     def test_standalone_valid(self, supabase_config: SupabaseConfig) -> None:

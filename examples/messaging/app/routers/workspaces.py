@@ -85,7 +85,7 @@ async def get_workspace(
     derp: DerpClient = Depends(get_derp),
 ) -> WorkspaceResponse:
     """Get workspace details."""
-    org = await derp.auth.get_org(workspace_id)
+    org = await derp.auth.get_org(org_id=workspace_id)
     if org is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return WorkspaceResponse(
@@ -100,7 +100,7 @@ async def list_workspace_members(
     derp: DerpClient = Depends(get_derp),
 ) -> list[WorkspaceMemberResponse]:
     """List members of a workspace."""
-    members = await derp.auth.list_org_members(workspace_id)
+    members = await derp.auth.list_org_members(org_id=workspace_id)
     result = []
     for m in members:
         u = await derp.auth.get_user(m.user_id)

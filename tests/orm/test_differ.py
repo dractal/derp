@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from derp.orm.migrations.snapshot.differ import SnapshotDiffer
 from derp.orm.migrations.snapshot.models import (
+    CheckConstraintSnapshot,
     ColumnSnapshot,
     EnumSnapshot,
     ForeignKeyAction,
     ForeignKeySnapshot,
+    IndexColumnSnapshot,
     IndexMethod,
     IndexSnapshot,
     PolicyCommand,
@@ -24,6 +26,7 @@ from derp.orm.migrations.statements.types import (
     AlterColumnNullableStatement,
     AlterColumnTypeStatement,
     AlterEnumAddValueStatement,
+    CreateCheckConstraintStatement,
     CreateEnumStatement,
     CreateForeignKeyStatement,
     CreateIndexStatement,
@@ -33,6 +36,7 @@ from derp.orm.migrations.statements.types import (
     CreateTableStatement,
     CreateUniqueConstraintStatement,
     DisableRLSStatement,
+    DropCheckConstraintStatement,
     DropColumnStatement,
     DropEnumStatement,
     DropForeignKeyStatement,
@@ -1283,3 +1287,442 @@ class TestSnapshotDifferColumnRename:
         # Verify the rename mappings
         renames = {s.from_column: s.to_column for s in rename_stmts}
         assert renames == {"col_a": "col_x", "col_b": "col_y"}
+
+
+# =============================================================================
+# Definition-change diffing
+#
+# Regression coverage for the bug Codex flagged: when an index, FK, unique
+# constraint, or check constraint exists in BOTH snapshots under the same name
+# but the definition differs (opclass, columns, sort order, ON DELETE,
+# expression, etc.), the differ historically emitted no statements at all.
+# These tests assert the same-name-changed-definition path emits DROP + CREATE.
+# =============================================================================
+
+
+def _users_table_with_email() -> dict[str, ColumnSnapshot]:
+    return {
+        "id": ColumnSnapshot(name="id", type="serial", primary_key=True),
+        "email": ColumnSnapshot(name="email", type="varchar(255)"),
+    }
+
+
+class TestSnapshotDifferIndexDefinitionChange:
+    """Same-name index whose definition changed must emit DROP + CREATE."""
+
+    def _diff_with_index(self, old_idx: IndexSnapshot, new_idx: IndexSnapshot) -> list:
+        """Build two snapshots that differ only in one index definition."""
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns=_users_table_with_email(),
+                    indexes={old_idx.name: old_idx},
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns=_users_table_with_email(),
+                    indexes={new_idx.name: new_idx},
+                ),
+            },
+        )
+        return SnapshotDiffer(old, new).diff()
+
+    def test_opclass_change_emits_drop_and_create(self):
+        """Adding an opclass on an existing index → DROP + CREATE."""
+        old_idx = IndexSnapshot(
+            name="users_email_idx",
+            columns=["email"],
+            column_specs=[IndexColumnSnapshot(name="email")],
+        )
+        new_idx = IndexSnapshot(
+            name="users_email_idx",
+            columns=["email"],
+            column_specs=[
+                IndexColumnSnapshot(name="email", opclass="text_pattern_ops")
+            ],
+        )
+
+        statements = self._diff_with_index(old_idx, new_idx)
+
+        drops = [s for s in statements if isinstance(s, DropIndexStatement)]
+        creates = [s for s in statements if isinstance(s, CreateIndexStatement)]
+        assert len(drops) == 1
+        assert drops[0].name == "users_email_idx"
+        assert len(creates) == 1
+        assert creates[0].name == "users_email_idx"
+        assert creates[0].column_specs[0].opclass == "text_pattern_ops"
+
+    def test_sort_order_change_emits_drop_and_create(self):
+        """Flipping ASC → DESC → DROP + CREATE."""
+        old_idx = IndexSnapshot(
+            name="users_email_idx",
+            columns=["email"],
+            column_specs=[IndexColumnSnapshot(name="email", order="ASC")],
+        )
+        new_idx = IndexSnapshot(
+            name="users_email_idx",
+            columns=["email"],
+            column_specs=[IndexColumnSnapshot(name="email", order="DESC")],
+        )
+
+        statements = self._diff_with_index(old_idx, new_idx)
+
+        assert any(isinstance(s, DropIndexStatement) for s in statements)
+        creates = [s for s in statements if isinstance(s, CreateIndexStatement)]
+        assert len(creates) == 1
+        assert creates[0].column_specs[0].order == "DESC"
+
+    def test_with_options_change_emits_drop_and_create(self):
+        """HNSW with_options change → DROP + CREATE (the codex example)."""
+        old_idx = IndexSnapshot(
+            name="items_embedding_idx",
+            columns=["embedding"],
+            method=IndexMethod.HNSW,
+            with_options={"m": "16", "ef_construction": "64"},
+        )
+        new_idx = IndexSnapshot(
+            name="items_embedding_idx",
+            columns=["embedding"],
+            method=IndexMethod.HNSW,
+            with_options={"m": "32", "ef_construction": "128"},
+        )
+
+        statements = self._diff_with_index(old_idx, new_idx)
+
+        assert any(isinstance(s, DropIndexStatement) for s in statements)
+        creates = [s for s in statements if isinstance(s, CreateIndexStatement)]
+        assert len(creates) == 1
+        assert creates[0].with_options == {"m": "32", "ef_construction": "128"}
+
+    def test_method_change_emits_drop_and_create(self):
+        """Switching method (BTREE → GIN) → DROP + CREATE."""
+        old_idx = IndexSnapshot(
+            name="users_email_idx", columns=["email"], method=IndexMethod.BTREE
+        )
+        new_idx = IndexSnapshot(
+            name="users_email_idx", columns=["email"], method=IndexMethod.GIN
+        )
+
+        statements = self._diff_with_index(old_idx, new_idx)
+
+        creates = [s for s in statements if isinstance(s, CreateIndexStatement)]
+        assert len(creates) == 1
+        assert creates[0].method == IndexMethod.GIN
+
+    def test_where_clause_change_emits_drop_and_create(self):
+        """Partial-index WHERE clause edit → DROP + CREATE."""
+        old_idx = IndexSnapshot(
+            name="users_email_idx",
+            columns=["email"],
+            where="email IS NOT NULL",
+        )
+        new_idx = IndexSnapshot(
+            name="users_email_idx",
+            columns=["email"],
+            where="email IS NOT NULL AND email != ''",
+        )
+
+        statements = self._diff_with_index(old_idx, new_idx)
+
+        creates = [s for s in statements if isinstance(s, CreateIndexStatement)]
+        assert len(creates) == 1
+        assert creates[0].where == "email IS NOT NULL AND email != ''"
+
+    def test_unchanged_index_emits_nothing(self):
+        """Identical same-name index → no statements at all."""
+        idx = IndexSnapshot(
+            name="users_email_idx",
+            columns=["email"],
+            column_specs=[
+                IndexColumnSnapshot(name="email", opclass="text_pattern_ops")
+            ],
+            method=IndexMethod.BTREE,
+            where="email IS NOT NULL",
+            with_options={"fillfactor": "70"},
+        )
+        statements = self._diff_with_index(idx, idx.model_copy())
+
+        assert not any(isinstance(s, DropIndexStatement) for s in statements)
+        assert not any(isinstance(s, CreateIndexStatement) for s in statements)
+
+    def test_concurrently_change_alone_emits_nothing(self):
+        """``concurrently`` is a build-time hint, not part of index identity."""
+        old_idx = IndexSnapshot(
+            name="users_email_idx", columns=["email"], concurrently=False
+        )
+        new_idx = IndexSnapshot(
+            name="users_email_idx", columns=["email"], concurrently=True
+        )
+        statements = self._diff_with_index(old_idx, new_idx)
+        assert not any(isinstance(s, DropIndexStatement) for s in statements)
+        assert not any(isinstance(s, CreateIndexStatement) for s in statements)
+
+
+class TestSnapshotDifferForeignKeyDefinitionChange:
+    """Same-name FK whose definition changed must emit DROP + CREATE."""
+
+    def _diff_with_fk(
+        self, old_fk: ForeignKeySnapshot, new_fk: ForeignKeySnapshot
+    ) -> list:
+        cols = {
+            "id": ColumnSnapshot(name="id", type="serial", primary_key=True),
+            "owner_id": ColumnSnapshot(name="owner_id", type="integer"),
+        }
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "posts": TableSnapshot(
+                    name="posts", columns=cols, foreign_keys={old_fk.name: old_fk}
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "posts": TableSnapshot(
+                    name="posts", columns=cols, foreign_keys={new_fk.name: new_fk}
+                ),
+            },
+        )
+        return SnapshotDiffer(old, new).diff()
+
+    def test_on_delete_change_emits_drop_and_create(self):
+        """Flipping ON DELETE CASCADE → SET NULL → DROP + CREATE."""
+        old_fk = ForeignKeySnapshot(
+            name="posts_owner_id_fkey",
+            columns=["owner_id"],
+            references_table="users",
+            references_columns=["id"],
+            on_delete=ForeignKeyAction.CASCADE,
+        )
+        new_fk = ForeignKeySnapshot(
+            name="posts_owner_id_fkey",
+            columns=["owner_id"],
+            references_table="users",
+            references_columns=["id"],
+            on_delete=ForeignKeyAction.SET_NULL,
+        )
+
+        statements = self._diff_with_fk(old_fk, new_fk)
+
+        drops = [s for s in statements if isinstance(s, DropForeignKeyStatement)]
+        creates = [s for s in statements if isinstance(s, CreateForeignKeyStatement)]
+        assert len(drops) == 1
+        assert len(creates) == 1
+        # Pydantic coerces StrEnum to its value when storing on the str-typed field
+        assert creates[0].on_delete == ForeignKeyAction.SET_NULL
+
+    def test_referenced_table_change_emits_drop_and_create(self):
+        """Repointing FK to a different table → DROP + CREATE."""
+        old_fk = ForeignKeySnapshot(
+            name="posts_owner_id_fkey",
+            columns=["owner_id"],
+            references_table="users",
+            references_columns=["id"],
+        )
+        new_fk = ForeignKeySnapshot(
+            name="posts_owner_id_fkey",
+            columns=["owner_id"],
+            references_table="accounts",
+            references_columns=["id"],
+        )
+
+        statements = self._diff_with_fk(old_fk, new_fk)
+
+        creates = [s for s in statements if isinstance(s, CreateForeignKeyStatement)]
+        assert len(creates) == 1
+        assert creates[0].references_table == "accounts"
+
+    def test_unchanged_fk_emits_nothing(self):
+        fk = ForeignKeySnapshot(
+            name="posts_owner_id_fkey",
+            columns=["owner_id"],
+            references_table="users",
+            references_columns=["id"],
+            on_delete=ForeignKeyAction.CASCADE,
+        )
+        statements = self._diff_with_fk(fk, fk.model_copy())
+        assert not any(isinstance(s, DropForeignKeyStatement) for s in statements)
+        assert not any(isinstance(s, CreateForeignKeyStatement) for s in statements)
+
+
+class TestSnapshotDifferUniqueConstraintDefinitionChange:
+    """Same-name UC whose columns changed must emit DROP + CREATE."""
+
+    def _diff_with_uc(
+        self, old_uc: UniqueConstraintSnapshot, new_uc: UniqueConstraintSnapshot
+    ) -> list:
+        cols = {
+            "id": ColumnSnapshot(name="id", type="serial", primary_key=True),
+            "tenant_id": ColumnSnapshot(name="tenant_id", type="integer"),
+            "email": ColumnSnapshot(name="email", type="varchar(255)"),
+        }
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns=cols,
+                    unique_constraints={old_uc.name: old_uc},
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "users": TableSnapshot(
+                    name="users",
+                    columns=cols,
+                    unique_constraints={new_uc.name: new_uc},
+                ),
+            },
+        )
+        return SnapshotDiffer(old, new).diff()
+
+    def test_columns_change_emits_drop_and_create(self):
+        """Adding a column to the UC → DROP + CREATE."""
+        old_uc = UniqueConstraintSnapshot(name="users_email_unique", columns=["email"])
+        new_uc = UniqueConstraintSnapshot(
+            name="users_email_unique", columns=["tenant_id", "email"]
+        )
+
+        statements = self._diff_with_uc(old_uc, new_uc)
+
+        drops = [s for s in statements if isinstance(s, DropUniqueConstraintStatement)]
+        creates = [
+            s for s in statements if isinstance(s, CreateUniqueConstraintStatement)
+        ]
+        assert len(drops) == 1
+        assert len(creates) == 1
+        assert creates[0].columns == ["tenant_id", "email"]
+
+    def test_nulls_not_distinct_change_emits_drop_and_create(self):
+        old_uc = UniqueConstraintSnapshot(
+            name="users_email_unique", columns=["email"], nulls_not_distinct=False
+        )
+        new_uc = UniqueConstraintSnapshot(
+            name="users_email_unique", columns=["email"], nulls_not_distinct=True
+        )
+
+        statements = self._diff_with_uc(old_uc, new_uc)
+
+        creates = [
+            s for s in statements if isinstance(s, CreateUniqueConstraintStatement)
+        ]
+        assert len(creates) == 1
+        assert creates[0].nulls_not_distinct is True
+
+    def test_unchanged_uc_emits_nothing(self):
+        uc = UniqueConstraintSnapshot(
+            name="users_email_unique", columns=["tenant_id", "email"]
+        )
+        statements = self._diff_with_uc(uc, uc.model_copy())
+        assert not any(isinstance(s, DropUniqueConstraintStatement) for s in statements)
+        assert not any(
+            isinstance(s, CreateUniqueConstraintStatement) for s in statements
+        )
+
+
+class TestSnapshotDifferCheckConstraints:
+    """Check constraints were previously not diffed at all on ALTER paths."""
+
+    def _diff_with_check(
+        self,
+        old_checks: dict[str, CheckConstraintSnapshot],
+        new_checks: dict[str, CheckConstraintSnapshot],
+    ) -> list:
+        cols = {
+            "id": ColumnSnapshot(name="id", type="serial", primary_key=True),
+            "age": ColumnSnapshot(name="age", type="integer"),
+        }
+        old = SchemaSnapshot(
+            id="0000",
+            tables={
+                "users": TableSnapshot(
+                    name="users", columns=cols, check_constraints=old_checks
+                ),
+            },
+        )
+        new = SchemaSnapshot(
+            id="0001",
+            tables={
+                "users": TableSnapshot(
+                    name="users", columns=cols, check_constraints=new_checks
+                ),
+            },
+        )
+        return SnapshotDiffer(old, new).diff()
+
+    def test_create_check_constraint(self):
+        """Adding a check constraint to an existing table → CREATE."""
+        statements = self._diff_with_check(
+            {},
+            {
+                "users_age_positive": CheckConstraintSnapshot(
+                    name="users_age_positive", expression="age > 0"
+                ),
+            },
+        )
+        creates = [
+            s for s in statements if isinstance(s, CreateCheckConstraintStatement)
+        ]
+        assert len(creates) == 1
+        assert creates[0].name == "users_age_positive"
+        assert creates[0].expression == "age > 0"
+
+    def test_drop_check_constraint(self):
+        """Removing a check constraint → DROP."""
+        statements = self._diff_with_check(
+            {
+                "users_age_positive": CheckConstraintSnapshot(
+                    name="users_age_positive", expression="age > 0"
+                ),
+            },
+            {},
+        )
+        drops = [s for s in statements if isinstance(s, DropCheckConstraintStatement)]
+        assert len(drops) == 1
+        assert drops[0].name == "users_age_positive"
+
+    def test_expression_change_emits_drop_and_create(self):
+        """Tightening the predicate → DROP + CREATE (same name, new expression)."""
+        statements = self._diff_with_check(
+            {
+                "users_age_positive": CheckConstraintSnapshot(
+                    name="users_age_positive", expression="age > 0"
+                ),
+            },
+            {
+                "users_age_positive": CheckConstraintSnapshot(
+                    name="users_age_positive", expression="age >= 18"
+                ),
+            },
+        )
+        drops = [s for s in statements if isinstance(s, DropCheckConstraintStatement)]
+        creates = [
+            s for s in statements if isinstance(s, CreateCheckConstraintStatement)
+        ]
+        assert len(drops) == 1
+        assert len(creates) == 1
+        assert creates[0].expression == "age >= 18"
+
+    def test_unchanged_check_emits_nothing(self):
+        cc = {
+            "users_age_positive": CheckConstraintSnapshot(
+                name="users_age_positive", expression="age > 0"
+            ),
+        }
+        statements = self._diff_with_check(cc, dict(cc))
+        assert not any(
+            isinstance(
+                s, (DropCheckConstraintStatement, CreateCheckConstraintStatement)
+            )
+            for s in statements
+        )

@@ -38,7 +38,7 @@ CLI uses `derp.toml` with typed config in `src/derp/config.py`.
 ## Modules
 
 - **ORM** (`src/derp/orm/`) — PostgreSQL query builder, migrations, schema diffing
-- **Auth** (`src/derp/auth/`) — Native, Clerk, Cognito, Supabase backends with orgs/RBAC
+- **Auth** (`src/derp/auth/`) — Native, Supabase, WorkOS backends with orgs/RBAC
 - **Payments** (`src/derp/payments/`) — Stripe: checkout, Connect, payouts, webhooks
 - **Storage** (`src/derp/storage/`) — S3: upload/download, signed URLs, batch delete, copy
 - **KV** (`src/derp/kv/`) — Valkey: cache, stampede protection, idempotency, rate limiting

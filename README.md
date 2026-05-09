@@ -144,7 +144,7 @@ Environment variables starting with `$` are resolved at load time.
 
 ### Auth
 
-Email/password, magic links, Google/GitHub OAuth, JWTs, organizations. Native or Clerk backend.
+Email/password, magic links, Google/GitHub OAuth, JWTs, organizations. Native, Supabase, or WorkOS backend.
 
 ```python
 user, tokens = await derp.auth.sign_up(email="alice@example.com", password="s3cure!")

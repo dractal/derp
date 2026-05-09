@@ -10,6 +10,22 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Self, overload
 
+import asyncpg
+
+from derp.kv.base import KVClient
+from derp.orm.column.base import Column
+from derp.orm.index import SortOrder
+from derp.orm.query.expressions import (
+    ColumnRef,
+    ExistsExpr,
+    Expression,
+    RawSQL,
+    SubqueryExpr,
+    _renumber_params,
+)
+from derp.orm.router import ReplicaRouter
+from derp.orm.table import Table
+
 if TYPE_CHECKING:
     from derp.orm.query.returning import (
         RMT2,
@@ -41,21 +57,6 @@ if TYPE_CHECKING:
         ROTO10,
     )
 
-import asyncpg
-
-from derp.kv.base import KVClient
-from derp.orm.column.base import Column
-from derp.orm.query.expressions import (
-    ColumnRef,
-    ExistsExpr,
-    Expression,
-    RawSQL,
-    SubqueryExpr,
-    _renumber_params,
-)
-from derp.orm.router import ReplicaRouter
-from derp.orm.table import Table
-
 
 @asynccontextmanager
 async def _acquire(
@@ -82,13 +83,6 @@ class JoinType(StrEnum):
     RIGHT = "RIGHT"
     FULL = "FULL OUTER"
     CROSS = "CROSS"
-
-
-class SortOrder(StrEnum):
-    """SQL ORDER BY directions."""
-
-    ASC = "ASC"
-    DESC = "DESC"
 
 
 @dataclass

@@ -45,3 +45,14 @@ class EmailSendError(AuthError):
 
     def __init__(self, message: str = "Failed to send email"):
         super().__init__(message, code="email_send_error")
+
+
+class OrgMismatchError(AuthError):
+    """Raised when ``assert_same_org`` finds the session belongs to a different org.
+
+    Used as the default tenant-scoping failure so handlers can map it to a
+    403 (or whatever their framework prefers) without inspecting strings.
+    """
+
+    def __init__(self, message: str = "Session does not belong to this organization"):
+        super().__init__(message, code="org_mismatch")

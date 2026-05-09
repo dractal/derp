@@ -547,7 +547,7 @@ def create_app(
         orgs = await derp.auth.list_orgs(limit=limit)
         results = []
         for org in orgs:
-            members = await derp.auth.list_org_members(org.id)
+            members = await derp.auth.list_org_members(org_id=org.id)
             results.append(
                 {
                     "id": org.id,

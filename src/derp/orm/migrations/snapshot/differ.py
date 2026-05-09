@@ -10,11 +10,14 @@ import dataclasses
 from collections.abc import Callable
 
 from derp.orm.migrations.snapshot.models import (
+    CheckConstraintSnapshot,
     ColumnSnapshot,
     EnumSnapshot,
+    ForeignKeySnapshot,
     IndexSnapshot,
     SchemaSnapshot,
     TableSnapshot,
+    UniqueConstraintSnapshot,
 )
 from derp.orm.migrations.statements.types import (
     AddColumnStatement,
@@ -23,6 +26,7 @@ from derp.orm.migrations.statements.types import (
     AlterColumnTypeStatement,
     AlterEnumAddValueStatement,
     ColumnDefinition,
+    CreateCheckConstraintStatement,
     CreateEnumStatement,
     CreateForeignKeyStatement,
     CreateIndexStatement,
@@ -32,6 +36,7 @@ from derp.orm.migrations.statements.types import (
     CreateTableStatement,
     CreateUniqueConstraintStatement,
     DisableRLSStatement,
+    DropCheckConstraintStatement,
     DropColumnStatement,
     DropEnumStatement,
     DropForeignKeyStatement,
@@ -68,6 +73,136 @@ def _index_column_specs(idx: IndexSnapshot) -> list[IndexColumnSpec]:
         )
         for spec in idx.column_specs
     ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Definition-equality helpers
+#
+# Used by the same-name-changed-definition branches of the diff methods below.
+# Two snapshots that share a name but disagree on these fields require a
+# DROP + CREATE because PostgreSQL has no in-place ALTER for opclass, columns,
+# WHERE, method, with_options, FK references, etc.
+#
+# We compare by hand instead of relying on Pydantic's ``__eq__`` so we can
+# explicitly skip operational/build-time fields like ``IndexSnapshot.concurrently``
+# that don't represent the index's identity in the database.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _index_definitions_equal(old: IndexSnapshot, new: IndexSnapshot) -> bool:
+    """Return True iff two same-named indexes describe the same database object.
+
+    Skips ``concurrently`` (a build-time hint that doesn't survive in pg_index)
+    and ``name`` (callers only invoke us when names already match).
+    """
+    return (
+        old.columns == new.columns
+        and old.column_specs == new.column_specs
+        and old.unique == new.unique
+        and old.where == new.where
+        and old.method == new.method
+        and old.nulls_not_distinct == new.nulls_not_distinct
+        and old.include == new.include
+        and old.with_options == new.with_options
+    )
+
+
+def _foreign_keys_equal(old: ForeignKeySnapshot, new: ForeignKeySnapshot) -> bool:
+    """Return True iff two same-named FKs describe the same constraint."""
+    return (
+        old.columns == new.columns
+        and old.references_schema == new.references_schema
+        and old.references_table == new.references_table
+        and old.references_columns == new.references_columns
+        and old.on_delete == new.on_delete
+        and old.on_update == new.on_update
+        and old.deferrable == new.deferrable
+        and old.initially_deferred == new.initially_deferred
+    )
+
+
+def _unique_constraints_equal(
+    old: UniqueConstraintSnapshot, new: UniqueConstraintSnapshot
+) -> bool:
+    """Return True iff two same-named unique constraints match column-for-column."""
+    return (
+        old.columns == new.columns and old.nulls_not_distinct == new.nulls_not_distinct
+    )
+
+
+def _check_constraints_equal(
+    old: CheckConstraintSnapshot, new: CheckConstraintSnapshot
+) -> bool:
+    """Return True iff two same-named check constraints share the same expression."""
+    return old.expression == new.expression
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CREATE-statement builders
+#
+# Factored out so the same-name-changed-definition branches can re-emit a
+# CREATE without duplicating the field plumbing from the new-name branches.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_create_index(
+    table: TableSnapshot, idx: IndexSnapshot
+) -> CreateIndexStatement:
+    return CreateIndexStatement(
+        name=idx.name,
+        table_name=table.name,
+        schema_name=table.schema_name,
+        columns=idx.columns,
+        column_specs=_index_column_specs(idx),
+        unique=idx.unique,
+        where=idx.where,
+        method=idx.method,
+        concurrently=idx.concurrently,
+        nulls_not_distinct=idx.nulls_not_distinct,
+        include=idx.include,
+        with_options=idx.with_options,
+    )
+
+
+def _make_create_foreign_key(
+    table: TableSnapshot, fk: ForeignKeySnapshot
+) -> CreateForeignKeyStatement:
+    return CreateForeignKeyStatement(
+        name=fk.name,
+        table_name=table.name,
+        schema_name=table.schema_name,
+        columns=fk.columns,
+        references_schema=fk.references_schema,
+        references_table=fk.references_table,
+        references_columns=fk.references_columns,
+        on_delete=fk.on_delete,
+        on_update=fk.on_update,
+        deferrable=fk.deferrable,
+        initially_deferred=fk.initially_deferred,
+    )
+
+
+def _make_create_unique_constraint(
+    table: TableSnapshot, uc: UniqueConstraintSnapshot
+) -> CreateUniqueConstraintStatement:
+    return CreateUniqueConstraintStatement(
+        name=uc.name,
+        table_name=table.name,
+        schema_name=table.schema_name,
+        columns=uc.columns,
+        nulls_not_distinct=uc.nulls_not_distinct,
+    )
+
+
+def _make_create_check_constraint(
+    table: TableSnapshot, cc: CheckConstraintSnapshot
+) -> CreateCheckConstraintStatement:
+    return CreateCheckConstraintStatement(
+        name=cc.name,
+        table_name=table.name,
+        schema_name=table.schema_name,
+        expression=cc.expression,
+    )
 
 
 @dataclasses.dataclass
@@ -457,6 +592,9 @@ class SnapshotDiffer:
         # Diff unique constraints
         self._diff_unique_constraints(old_table, new_table)
 
+        # Diff check constraints
+        self._diff_check_constraints(old_table, new_table)
+
         # Diff indexes
         self._diff_indexes(old_table, new_table)
 
@@ -587,28 +725,33 @@ class SnapshotDiffer:
     def _diff_foreign_keys(
         self, old_table: TableSnapshot, new_table: TableSnapshot
     ) -> None:
-        """Diff foreign keys."""
+        """Diff foreign keys (CREATE / DROP / replace-on-definition-change).
+
+        Same name with changed referenced columns / ON DELETE / etc. → DROP +
+        CREATE; PostgreSQL has no in-place ALTER for FK definition.
+        """
         old_fks = set(old_table.foreign_keys.keys())
         new_fks = set(new_table.foreign_keys.keys())
 
+        # Same name, changed definition → DROP + CREATE.
+        for fk_name in old_fks & new_fks:
+            old_fk = old_table.foreign_keys[fk_name]
+            new_fk = new_table.foreign_keys[fk_name]
+            if _foreign_keys_equal(old_fk, new_fk):
+                continue
+            self._statements.append(
+                DropForeignKeyStatement(
+                    name=fk_name,
+                    table_name=old_table.name,
+                    schema_name=old_table.schema_name,
+                )
+            )
+            self._statements.append(_make_create_foreign_key(new_table, new_fk))
+
         # Create new foreign keys
         for fk_name in new_fks - old_fks:
-            fk = new_table.foreign_keys[fk_name]
-            # Handle both enum and string values (use_enum_values=True serializes enums)
             self._statements.append(
-                CreateForeignKeyStatement(
-                    name=fk.name,
-                    table_name=new_table.name,
-                    schema_name=new_table.schema_name,
-                    columns=fk.columns,
-                    references_schema=fk.references_schema,
-                    references_table=fk.references_table,
-                    references_columns=fk.references_columns,
-                    on_delete=fk.on_delete,
-                    on_update=fk.on_update,
-                    deferrable=fk.deferrable,
-                    initially_deferred=fk.initially_deferred,
-                )
+                _make_create_foreign_key(new_table, new_table.foreign_keys[fk_name])
             )
 
         # Drop removed foreign keys
@@ -624,20 +767,33 @@ class SnapshotDiffer:
     def _diff_unique_constraints(
         self, old_table: TableSnapshot, new_table: TableSnapshot
     ) -> None:
-        """Diff unique constraints."""
+        """Diff unique constraints (CREATE / DROP / replace-on-definition-change).
+
+        Same name with different columns or NULLS NOT DISTINCT → DROP + CREATE.
+        """
         old_ucs = set(old_table.unique_constraints.keys())
         new_ucs = set(new_table.unique_constraints.keys())
 
+        # Same name, changed definition → DROP + CREATE.
+        for uc_name in old_ucs & new_ucs:
+            old_uc = old_table.unique_constraints[uc_name]
+            new_uc = new_table.unique_constraints[uc_name]
+            if _unique_constraints_equal(old_uc, new_uc):
+                continue
+            self._statements.append(
+                DropUniqueConstraintStatement(
+                    name=uc_name,
+                    table_name=old_table.name,
+                    schema_name=old_table.schema_name,
+                )
+            )
+            self._statements.append(_make_create_unique_constraint(new_table, new_uc))
+
         # Create new unique constraints
         for uc_name in new_ucs - old_ucs:
-            uc = new_table.unique_constraints[uc_name]
             self._statements.append(
-                CreateUniqueConstraintStatement(
-                    name=uc.name,
-                    table_name=new_table.name,
-                    schema_name=new_table.schema_name,
-                    columns=uc.columns,
-                    nulls_not_distinct=uc.nulls_not_distinct,
+                _make_create_unique_constraint(
+                    new_table, new_table.unique_constraints[uc_name]
                 )
             )
 
@@ -651,29 +807,78 @@ class SnapshotDiffer:
                 )
             )
 
+    def _diff_check_constraints(
+        self, old_table: TableSnapshot, new_table: TableSnapshot
+    ) -> None:
+        """Diff check constraints (CREATE / DROP / replace-on-expression-change).
+
+        Previously not diffed at all — adds, drops, and expression edits to
+        existing check constraints were silently ignored on ALTER paths.
+        """
+        old_ccs = set(old_table.check_constraints.keys())
+        new_ccs = set(new_table.check_constraints.keys())
+
+        # Same name, changed expression → DROP + CREATE.
+        for cc_name in old_ccs & new_ccs:
+            old_cc = old_table.check_constraints[cc_name]
+            new_cc = new_table.check_constraints[cc_name]
+            if _check_constraints_equal(old_cc, new_cc):
+                continue
+            self._statements.append(
+                DropCheckConstraintStatement(
+                    name=cc_name,
+                    table_name=old_table.name,
+                    schema_name=old_table.schema_name,
+                )
+            )
+            self._statements.append(_make_create_check_constraint(new_table, new_cc))
+
+        # Create new check constraints
+        for cc_name in new_ccs - old_ccs:
+            self._statements.append(
+                _make_create_check_constraint(
+                    new_table, new_table.check_constraints[cc_name]
+                )
+            )
+
+        # Drop removed check constraints
+        for cc_name in old_ccs - new_ccs:
+            self._statements.append(
+                DropCheckConstraintStatement(
+                    name=cc_name,
+                    table_name=old_table.name,
+                    schema_name=old_table.schema_name,
+                )
+            )
+
     def _diff_indexes(self, old_table: TableSnapshot, new_table: TableSnapshot) -> None:
-        """Diff indexes."""
+        """Diff indexes (CREATE / DROP / replace-on-definition-change).
+
+        PostgreSQL has no ALTER INDEX for opclass / columns / WHERE / method /
+        with_options, so a same-name index whose definition changed has to be
+        rebuilt as DROP + CREATE.
+        """
         old_idxs = set(old_table.indexes.keys())
         new_idxs = set(new_table.indexes.keys())
 
+        # Same name, changed definition → DROP + CREATE.
+        for idx_name in old_idxs & new_idxs:
+            old_idx = old_table.indexes[idx_name]
+            new_idx = new_table.indexes[idx_name]
+            if _index_definitions_equal(old_idx, new_idx):
+                continue
+            self._statements.append(
+                DropIndexStatement(
+                    name=idx_name,
+                    schema_name=old_table.schema_name,
+                )
+            )
+            self._statements.append(_make_create_index(new_table, new_idx))
+
         # Create new indexes
         for idx_name in new_idxs - old_idxs:
-            idx = new_table.indexes[idx_name]
             self._statements.append(
-                CreateIndexStatement(
-                    name=idx.name,
-                    table_name=new_table.name,
-                    schema_name=new_table.schema_name,
-                    columns=idx.columns,
-                    column_specs=_index_column_specs(idx),
-                    unique=idx.unique,
-                    where=idx.where,
-                    method=idx.method,
-                    concurrently=idx.concurrently,
-                    nulls_not_distinct=idx.nulls_not_distinct,
-                    include=idx.include,
-                    with_options=idx.with_options,
-                )
+                _make_create_index(new_table, new_table.indexes[idx_name])
             )
 
         # Drop removed indexes

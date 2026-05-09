@@ -27,7 +27,7 @@ class BaseAuthClient(abc.ABC):
     """Abstract base authentication client.
 
     Defines the full interface shared by all auth backends
-    (native, Clerk, etc.). Core methods are abstract; optional
+    (native, Supabase, WorkOS). Core methods are abstract; optional
     methods raise ``NotImplementedError`` by default.
     """
 
@@ -258,29 +258,49 @@ class BaseAuthClient(abc.ABC):
         """
         raise NotImplementedError
 
-    async def get_org(self, org_id: str | uuid.UUID) -> OrgInfo | None:
-        """Get an organization by ID."""
+    async def get_org(
+        self,
+        *,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
+    ) -> OrgInfo | None:
+        """Get an organization by ID or slug. Provide exactly one."""
         raise NotImplementedError
 
     async def get_org_by_slug(self, slug: str) -> OrgInfo | None:
-        """Get an organization by slug."""
+        """Get an organization by slug.
+
+        Convenience wrapper around ``get_org(slug=...)``.
+        """
         raise NotImplementedError
 
     async def update_org(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        org_slug: str | None = None,
         name: str | None = None,
         slug: str | None = None,
         **kwargs: Any,
     ) -> OrgInfo | None:
-        """Update an organization. Returns ``None`` if not found."""
+        """Update an organization. Returns ``None`` if not found.
+
+        Identify the org by ``org_id`` OR ``org_slug`` (exactly one). The
+        ``slug`` kwarg sets the org's new slug — it does NOT identify the
+        target. This is the one place ``slug=`` means a value rather than
+        a lookup, since slug is updateable.
+        """
         raise NotImplementedError
 
-    async def delete_org(self, org_id: str | uuid.UUID) -> bool:
+    async def delete_org(
+        self,
+        *,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
+    ) -> bool:
         """Delete an organization and all its memberships.
 
-        Returns ``False`` if not found.
+        Identify by ``org_id`` or ``slug``. Returns ``False`` if not found.
         """
         raise NotImplementedError
 
@@ -301,11 +321,12 @@ class BaseAuthClient(abc.ABC):
     async def add_org_member(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         user_id: str | uuid.UUID,
         role: str = "member",
     ) -> OrgMemberInfo | None:
-        """Add a user to an organization.
+        """Add a user to an organization (identify by ``org_id`` or ``slug``).
 
         Returns ``None`` if the user is already a member.
         """
@@ -314,7 +335,8 @@ class BaseAuthClient(abc.ABC):
     async def update_org_member(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         user_id: str | uuid.UUID,
         role: str,
     ) -> OrgMemberInfo | None:
@@ -324,7 +346,8 @@ class BaseAuthClient(abc.ABC):
     async def remove_org_member(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         user_id: str | uuid.UUID,
     ) -> bool:
         """Remove a user from an organization.
@@ -335,18 +358,20 @@ class BaseAuthClient(abc.ABC):
 
     async def list_org_members(
         self,
-        org_id: str | uuid.UUID,
         *,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
     ) -> list[OrgMemberInfo]:
-        """List members of an organization."""
+        """List members of an organization (identify by ``org_id`` or ``slug``)."""
         raise NotImplementedError
 
     async def get_org_member(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         user_id: str | uuid.UUID,
     ) -> OrgMemberInfo | None:
         """Get a single membership record."""
@@ -384,12 +409,16 @@ class BaseAuthClient(abc.ABC):
 
     async def list_org_members_by_cursor(
         self,
-        org_id: str | uuid.UUID,
         *,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         limit: int = 10,
         after: str | None = None,
     ) -> CursorResult[OrgMemberInfo]:
-        """List organization members with cursor-based pagination."""
+        """List organization members with cursor-based pagination.
+
+        Identify the org by ``org_id`` or ``slug``.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -411,3 +440,30 @@ class BaseAuthClient(abc.ABC):
     def is_org_authorized(self, session: SessionInfo, org_id: str, *roles: str) -> bool:
         """Check if the session has an active org with an allowed role."""
         return session.org_id == org_id and session.org_role in roles
+
+    def is_same_org(self, session: SessionInfo, org_id: str | uuid.UUID) -> bool:
+        """True iff the session's active org matches ``org_id``.
+
+        Tenant-scoping check with no role gating — use this in request
+        handlers that do their own role logic, or just need to confirm
+        the resource belongs to the caller's org.
+        """
+        return session.org_id is not None and session.org_id == str(org_id)
+
+    def assert_same_org(self, session: SessionInfo, org_id: str | uuid.UUID) -> None:
+        """Raise ``OrgMismatchError`` if the session's org does not match.
+
+        The framework-recommended one-liner for tenant scoping at the top
+        of an endpoint:
+
+            session = await derp.auth.authenticate(request)
+            derp.auth.assert_same_org(session, resource.org_id)
+
+        Both sides hold the same id type (no translation step), so the
+        comparison is correct by construction. Catch ``OrgMismatchError``
+        and map it to whatever HTTP/RPC error your framework expects.
+        """
+        if not self.is_same_org(session, org_id):
+            from derp.auth.exceptions import OrgMismatchError
+
+            raise OrgMismatchError()

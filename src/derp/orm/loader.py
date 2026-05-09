@@ -180,8 +180,9 @@ def discover_tables(
             active backend determines which auth tables are injected:
 
             - **native**: AuthUser, AuthSession, AuthOrganization, AuthOrgMember
-            - **cognito**: AuthOrganization, AuthOrgMember (users/sessions in Cognito)
-            - **clerk**: none (everything managed via Clerk API)
+            - **supabase**: AuthOrganization, SupabaseOrgMember (users in Supabase)
+            - **workos**: WorkOSOrganization (users + memberships in WorkOS;
+              local table maps WorkOS org id ↔ local UUID + slug)
 
     Returns:
         Deduplicated list of Table subclasses.
@@ -190,8 +191,8 @@ def discover_tables(
 
     if auth_config is not None:
         native = getattr(auth_config, "native", None)
-        cognito = getattr(auth_config, "cognito", None)
         supabase = getattr(auth_config, "supabase", None)
+        workos = getattr(auth_config, "workos", None)
 
         auth_tables: list[type[Table]] = []
 
@@ -210,15 +211,15 @@ def discover_tables(
                 AuthOrgMember,
             ]
 
-        elif cognito is not None:
-            from derp.auth.models import AuthOrganization, CognitoOrgMember
-
-            auth_tables = [AuthOrganization, CognitoOrgMember]
-
         elif supabase is not None:
             from derp.auth.models import AuthOrganization, SupabaseOrgMember
 
             auth_tables = [AuthOrganization, SupabaseOrgMember]
+
+        elif workos is not None:
+            from derp.auth.models import WorkOSOrganization
+
+            auth_tables = [WorkOSOrganization]
 
         for auth_table in auth_tables:
             if not any(issubclass(t, auth_table) for t in tables):

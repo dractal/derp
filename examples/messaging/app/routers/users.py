@@ -106,7 +106,7 @@ async def search_workspace_users(
     limit: int = Query(ge=1, le=50, default=20),
 ) -> list[UserPublicResponse]:
     """Search users within a workspace."""
-    members = await derp.auth.list_org_members(workspace_id)
+    members = await derp.auth.list_org_members(org_id=workspace_id)
     member_ids = [m.user_id for m in members]
 
     if not member_ids:

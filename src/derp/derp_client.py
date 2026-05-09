@@ -8,8 +8,6 @@ from typing import Self
 
 from derp.ai import AIClient
 from derp.auth.base import BaseAuthClient
-from derp.auth.clerk_client import ClerkAuthClient
-from derp.auth.cognito_client import CognitoAuthClient
 from derp.auth.email import EmailClient
 from derp.auth.native_client import NativeAuthClient
 from derp.auth.supabase_client import SupabaseAuthClient
@@ -65,10 +63,6 @@ class DerpClient:
         if self._config.auth is not None:
             if self._config.auth.native is not None:
                 self._auth = NativeAuthClient(self._config.auth.native)
-            elif self._config.auth.clerk is not None:
-                self._auth = ClerkAuthClient(self._config.auth.clerk)
-            elif self._config.auth.cognito is not None:
-                self._auth = CognitoAuthClient(self._config.auth.cognito)
             elif self._config.auth.supabase is not None:
                 self._auth = SupabaseAuthClient(self._config.auth.supabase)
             elif self._config.auth.workos is not None:

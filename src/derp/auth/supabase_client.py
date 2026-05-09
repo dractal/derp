@@ -559,36 +559,68 @@ class SupabaseAuthClient(BaseAuthClient):
         )
         return self._to_org_info(org)
 
-    async def get_org(self, org_id: str | uuid.UUID) -> OrgInfo | None:
+    async def _resolve_org_id(
+        self,
+        *,
+        org_id: str | uuid.UUID | None,
+        slug: str | None,
+    ) -> str | None:
+        """Translate (org_id, slug) → canonical id.
+
+        Exactly one must be provided. Returns the canonical id, or ``None``
+        when ``slug`` was given but no matching org exists. Raises
+        ``ValueError`` when neither or both are provided.
+        """
+        if (org_id is None) == (slug is None):
+            raise ValueError("Provide exactly one of org_id= or slug=")
+        if slug is not None:
+            org = await (
+                self._db()
+                .select(AuthOrganization)
+                .where(AuthOrganization.slug == slug)
+                .first_or_none()
+            )
+            return str(org.id) if org else None
+        return str(org_id)
+
+    async def get_org(
+        self,
+        *,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
+    ) -> OrgInfo | None:
+        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
+        if canonical is None:
+            return None
         org = await (
             self._db()
             .select(AuthOrganization)
-            .where(AuthOrganization.id == str(org_id))
+            .where(AuthOrganization.id == canonical)
             .first_or_none()
         )
         return self._to_org_info(org) if org is not None else None
 
     async def get_org_by_slug(self, slug: str) -> OrgInfo | None:
-        org = await (
-            self._db()
-            .select(AuthOrganization)
-            .where(AuthOrganization.slug == slug)
-            .first_or_none()
-        )
-        return self._to_org_info(org) if org is not None else None
+        """Convenience wrapper around ``get_org(slug=...)``."""
+        return await self.get_org(slug=slug)
 
     async def update_org(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        org_slug: str | None = None,
         name: str | None = None,
         slug: str | None = None,
         **kwargs: Any,
     ) -> OrgInfo | None:
+        """Identify by ``org_id`` or ``org_slug``; ``slug`` is the new value."""
+        canonical = await self._resolve_org_id(org_id=org_id, slug=org_slug)
+        if canonical is None:
+            return None
         existing = await (
             self._db()
             .select(AuthOrganization)
-            .where(AuthOrganization.id == str(org_id))
+            .where(AuthOrganization.id == canonical)
             .first_or_none()
         )
         if existing is None:
@@ -604,17 +636,25 @@ class SupabaseAuthClient(BaseAuthClient):
             self._db()
             .update(AuthOrganization)
             .set(**updates)
-            .where(AuthOrganization.id == str(org_id))
+            .where(AuthOrganization.id == canonical)
             .returning(AuthOrganization)
             .execute()
         )
         return self._to_org_info(result)
 
-    async def delete_org(self, org_id: str | uuid.UUID) -> bool:
+    async def delete_org(
+        self,
+        *,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
+    ) -> bool:
+        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
+        if canonical is None:
+            return False
         existing = await (
             self._db()
             .select(AuthOrganization)
-            .where(AuthOrganization.id == str(org_id))
+            .where(AuthOrganization.id == canonical)
             .first_or_none()
         )
         if existing is None:
@@ -623,7 +663,7 @@ class SupabaseAuthClient(BaseAuthClient):
         await (
             self._db()
             .delete(AuthOrganization)
-            .where(AuthOrganization.id == str(org_id))
+            .where(AuthOrganization.id == canonical)
             .execute()
         )
         return True
@@ -654,16 +694,20 @@ class SupabaseAuthClient(BaseAuthClient):
     async def add_org_member(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         user_id: str | uuid.UUID,
         role: str = "member",
     ) -> OrgMemberInfo | None:
+        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
+        if canonical is None:
+            return None
         now = datetime.now(UTC)
         member = await (
             self._db()
             .insert(SupabaseOrgMember)
             .values(
-                org_id=str(org_id),
+                org_id=canonical,
                 user_id=str(user_id),
                 role=role,
                 created_at=now,
@@ -682,14 +726,18 @@ class SupabaseAuthClient(BaseAuthClient):
     async def update_org_member(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         user_id: str | uuid.UUID,
         role: str,
     ) -> OrgMemberInfo | None:
+        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
+        if canonical is None:
+            return None
         existing = await (
             self._db()
             .select(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == str(org_id))
+            .where(SupabaseOrgMember.org_id == canonical)
             .where(SupabaseOrgMember.user_id == str(user_id))
             .first_or_none()
         )
@@ -700,7 +748,7 @@ class SupabaseAuthClient(BaseAuthClient):
             self._db()
             .update(SupabaseOrgMember)
             .set(role=role, updated_at=datetime.now(UTC))
-            .where(SupabaseOrgMember.org_id == str(org_id))
+            .where(SupabaseOrgMember.org_id == canonical)
             .where(SupabaseOrgMember.user_id == str(user_id))
             .returning(SupabaseOrgMember)
             .execute()
@@ -710,13 +758,17 @@ class SupabaseAuthClient(BaseAuthClient):
     async def remove_org_member(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         user_id: str | uuid.UUID,
     ) -> bool:
+        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
+        if canonical is None:
+            return False
         existing = await (
             self._db()
             .select(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == str(org_id))
+            .where(SupabaseOrgMember.org_id == canonical)
             .where(SupabaseOrgMember.user_id == str(user_id))
             .first_or_none()
         )
@@ -727,21 +779,21 @@ class SupabaseAuthClient(BaseAuthClient):
             owner_count = await (
                 self._db()
                 .select(SupabaseOrgMember)
-                .where(SupabaseOrgMember.org_id == str(org_id))
+                .where(SupabaseOrgMember.org_id == canonical)
                 .where(SupabaseOrgMember.role == "owner")
                 .count()
             )
             if owner_count <= 1:
                 logger.error(
                     "Remove org member failed: cannot remove last owner of org %s",
-                    org_id,
+                    canonical,
                 )
                 return False
 
         await (
             self._db()
             .delete(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == str(org_id))
+            .where(SupabaseOrgMember.org_id == canonical)
             .where(SupabaseOrgMember.user_id == str(user_id))
             .execute()
         )
@@ -749,15 +801,19 @@ class SupabaseAuthClient(BaseAuthClient):
 
     async def list_org_members(
         self,
-        org_id: str | uuid.UUID,
         *,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
     ) -> list[OrgMemberInfo]:
+        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
+        if canonical is None:
+            return []
         q = (
             self._db()
             .select(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == str(org_id))
+            .where(SupabaseOrgMember.org_id == canonical)
             .order_by(SupabaseOrgMember.created_at, asc=True)
         )
         if limit is not None:
@@ -769,13 +825,17 @@ class SupabaseAuthClient(BaseAuthClient):
     async def get_org_member(
         self,
         *,
-        org_id: str | uuid.UUID,
+        org_id: str | uuid.UUID | None = None,
+        slug: str | None = None,
         user_id: str | uuid.UUID,
     ) -> OrgMemberInfo | None:
+        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
+        if canonical is None:
+            return None
         member = await (
             self._db()
             .select(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == str(org_id))
+            .where(SupabaseOrgMember.org_id == canonical)
             .where(SupabaseOrgMember.user_id == str(user_id))
             .first_or_none()
         )

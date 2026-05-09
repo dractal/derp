@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from derp.auth.base import BaseAuthClient
-from derp.auth.clerk_client import ClerkAuthClient
-from derp.auth.cognito_client import CognitoAuthClient
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     AuthError,
     ConfirmationURLMissingError,
     EmailSendError,
+    OrgMismatchError,
     PasswordValidationError,
     SignupDisabledError,
 )
@@ -28,6 +27,7 @@ from derp.auth.models import (
     SessionInfo,
     SupabaseOrgMember,
     UserInfo,
+    WorkOSOrganization,
 )
 from derp.auth.native_client import NativeAuthClient
 from derp.auth.password import (
@@ -46,8 +46,6 @@ from derp.auth.supabase_client import SupabaseAuthClient
 from derp.auth.workos_client import WorkOSAuthClient
 from derp.config import (
     AuthConfig,
-    ClerkConfig,
-    CognitoConfig,
     EmailConfig,
     GitHubOAuthConfig,
     GoogleOAuthConfig,
@@ -61,8 +59,6 @@ from derp.config import (
 __all__ = [
     # Config
     "AuthConfig",
-    "ClerkConfig",
-    "CognitoConfig",
     "EmailConfig",
     "GitHubOAuthConfig",
     "GoogleOAuthConfig",
@@ -75,6 +71,7 @@ __all__ = [
     "AuthError",
     "ConfirmationURLMissingError",
     "EmailSendError",
+    "OrgMismatchError",
     "PasswordValidationError",
     "SignupDisabledError",
     # JWT
@@ -107,10 +104,9 @@ __all__ = [
     "EmailClient",
     # Client
     "BaseAuthClient",
-    "ClerkAuthClient",
-    "CognitoAuthClient",
     "NativeAuthClient",
     "SupabaseAuthClient",
     "SupabaseOrgMember",
     "WorkOSAuthClient",
+    "WorkOSOrganization",
 ]

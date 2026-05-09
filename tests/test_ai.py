@@ -930,8 +930,11 @@ class TestFalSubmit:
 class TestFalCall:
     @pytest.mark.asyncio
     async def test_submits_polls_and_returns_result(self, ai_client: AIClient) -> None:
-        ai_client.fal_submit = AsyncMock(return_value="req-123")
-        ai_client.fal_poll = AsyncMock(
+        # Bind mocks to locals + setattr so ty doesn't flag the method-shape
+        # mismatch on the assignment, and so assertions read off the locals
+        # rather than the bound-method-typed attributes.
+        fal_submit = AsyncMock(return_value="req-123")
+        fal_poll = AsyncMock(
             side_effect=[
                 JobStatus(state=JobState.QUEUED, position=1),
                 JobStatus(state=JobState.IN_PROGRESS),
@@ -939,7 +942,10 @@ class TestFalCall:
             ]
         )
         expected = {"images": [{"url": "http://example.com/img.jpg"}]}
-        ai_client.fal_get = AsyncMock(return_value=expected)
+        fal_get = AsyncMock(return_value=expected)
+        setattr(ai_client, "fal_submit", fal_submit)
+        setattr(ai_client, "fal_poll", fal_poll)
+        setattr(ai_client, "fal_get", fal_get)
 
         result = await ai_client.fal_call(
             "fal-ai/flux",
@@ -948,26 +954,26 @@ class TestFalCall:
         )
 
         assert result == expected
-        ai_client.fal_submit.assert_awaited_once()
-        assert ai_client.fal_poll.await_count == 3
-        ai_client.fal_get.assert_awaited_once_with("fal-ai/flux", "req-123")
+        fal_submit.assert_awaited_once()
+        assert fal_poll.await_count == 3
+        fal_get.assert_awaited_once_with("fal-ai/flux", "req-123")
 
     @pytest.mark.asyncio
     async def test_raises_on_failure(self, ai_client: AIClient) -> None:
-        ai_client.fal_submit = AsyncMock(return_value="req-123")
-        ai_client.fal_poll = AsyncMock(
-            return_value=JobStatus(state=JobState.FAILED, error="OOM")
-        )
+        fal_submit = AsyncMock(return_value="req-123")
+        fal_poll = AsyncMock(return_value=JobStatus(state=JobState.FAILED, error="OOM"))
+        setattr(ai_client, "fal_submit", fal_submit)
+        setattr(ai_client, "fal_poll", fal_poll)
 
         with pytest.raises(FalJobFailedError, match="OOM"):
             await ai_client.fal_call("fal-ai/flux", inputs={}, poll_interval=0)
 
     @pytest.mark.asyncio
     async def test_timeout(self, ai_client: AIClient) -> None:
-        ai_client.fal_submit = AsyncMock(return_value="req-123")
-        ai_client.fal_poll = AsyncMock(
-            return_value=JobStatus(state=JobState.IN_PROGRESS)
-        )
+        fal_submit = AsyncMock(return_value="req-123")
+        fal_poll = AsyncMock(return_value=JobStatus(state=JobState.IN_PROGRESS))
+        setattr(ai_client, "fal_submit", fal_submit)
+        setattr(ai_client, "fal_poll", fal_poll)
 
         with pytest.raises(TimeoutError):
             await ai_client.fal_call(
