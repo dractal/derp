@@ -7,7 +7,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from derp.auth.exceptions import SignupDisabledError
+from derp.auth.exceptions import (
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+    PasswordValidationError,
+    SignupDisabledError,
+    UserNotFoundError,
+)
 from derp.auth.jwt import decode_token
 from derp.auth.password import generate_secure_token
 from derp.derp_client import DerpClient
@@ -65,12 +72,13 @@ class TestSignUp:
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
-        result = await derp.auth.sign_up(
-            email="test@example.com",
-            password="different_password",
-            confirmation_url="http://localhost:3000/auth/confirm",
-        )
-        assert result is None
+        with pytest.raises(EmailAlreadyExistsError) as exc:
+            await derp.auth.sign_up(
+                email="test@example.com",
+                password="different_password",
+                confirmation_url="http://localhost:3000/auth/confirm",
+            )
+        assert exc.value.email == "test@example.com"
 
     async def test_sign_up_weak_password(
         self,
@@ -78,12 +86,12 @@ class TestSignUp:
         mock_smtp: AsyncMock,
     ) -> None:
         """Test signup with weak password."""
-        result = await derp.auth.sign_up(
-            email="test@example.com",
-            password="short",  # Too short
-            confirmation_url="http://localhost:3000/auth/confirm",
-        )
-        assert result is None
+        with pytest.raises(PasswordValidationError):
+            await derp.auth.sign_up(
+                email="test@example.com",
+                password="short",  # Too short
+                confirmation_url="http://localhost:3000/auth/confirm",
+            )
 
     async def test_sign_up_disabled(
         self, derp: DerpClient, mock_smtp: AsyncMock
@@ -142,19 +150,23 @@ class TestSignIn:
             confirmation_url="http://localhost:3000/auth/confirm",
         )
 
-        result = await derp.auth.sign_in_with_password(
-            email="test@example.com", password="wrongpassword"
-        )
-        assert result is None
+        with pytest.raises(InvalidCredentialsError):
+            await derp.auth.sign_in_with_password(
+                email="test@example.com", password="wrongpassword"
+            )
 
     async def test_sign_in_user_not_found(
         self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
-        """Test sign in with non-existent user."""
-        result = await derp.auth.sign_in_with_password(
-            email="nonexistent@example.com", password="password123"
-        )
-        assert result is None
+        """Test sign in with non-existent user.
+
+        Collapses to InvalidCredentialsError (same as wrong password) so
+        the API doesn't leak which emails have accounts.
+        """
+        with pytest.raises(InvalidCredentialsError):
+            await derp.auth.sign_in_with_password(
+                email="nonexistent@example.com", password="password123"
+            )
 
     async def test_sign_in_inactive_user(
         self, derp: DerpClient, mock_smtp: AsyncMock
@@ -170,10 +182,10 @@ class TestSignIn:
         # Deactivate user
         await derp.auth.update_user(user_id=result.user.id, is_active=False)
 
-        result = await derp.auth.sign_in_with_password(
-            email="test@example.com", password="password123"
-        )
-        assert result is None
+        with pytest.raises(InvalidCredentialsError):
+            await derp.auth.sign_in_with_password(
+                email="test@example.com", password="password123"
+            )
 
     async def test_sign_in_case_insensitive_email(
         self,
@@ -229,8 +241,8 @@ class TestTokenRefresh:
         self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test refresh with invalid token."""
-        result = await derp.auth.refresh_token("invalid_token")
-        assert result is None
+        with pytest.raises(InvalidTokenError):
+            await derp.auth.refresh_token("invalid_token")
 
     async def test_refresh_revoked_token(
         self, derp: DerpClient, mock_smtp: AsyncMock
@@ -246,9 +258,9 @@ class TestTokenRefresh:
         # Use the token once
         await derp.auth.refresh_token(result.tokens.refresh_token)
 
-        # Try to use it again (should be revoked due to rotation)
-        result2 = await derp.auth.refresh_token(result.tokens.refresh_token)
-        assert result2 is None
+        # Try to use it again (should be revoked due to rotation — reuse detected)
+        with pytest.raises(InvalidTokenError):
+            await derp.auth.refresh_token(result.tokens.refresh_token)
 
 
 class TestMagicLink:
@@ -316,8 +328,8 @@ class TestMagicLink:
         # Token doesn't exist in KV = expired/invalid
         token = generate_secure_token()
 
-        result = await derp.auth.verify_magic_link(token)
-        assert result is None
+        with pytest.raises(InvalidTokenError):
+            await derp.auth.verify_magic_link(token)
 
     async def test_verify_magic_link_single_use(
         self,
@@ -347,8 +359,8 @@ class TestMagicLink:
         await derp.auth.verify_magic_link(token)
 
         # Second use fails (deleted from KV)
-        result = await derp.auth.verify_magic_link(token)
-        assert result is None
+        with pytest.raises(InvalidTokenError):
+            await derp.auth.verify_magic_link(token)
 
 
 class TestPasswordRecovery:
@@ -421,8 +433,8 @@ class TestPasswordRecovery:
         self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test reset with invalid token."""
-        result = await derp.auth.reset_password("invalid_token", "newpassword123")
-        assert result is None
+        with pytest.raises(InvalidTokenError):
+            await derp.auth.reset_password("invalid_token", "newpassword123")
 
     async def test_reset_password_expired_token(
         self, derp: DerpClient, mock_smtp: AsyncMock
@@ -437,8 +449,8 @@ class TestPasswordRecovery:
         # Token doesn't exist in KV = expired/invalid
         token = generate_secure_token()
 
-        result = await derp.auth.reset_password(token, "newpassword123")
-        assert result is None
+        with pytest.raises(InvalidTokenError):
+            await derp.auth.reset_password(token, "newpassword123")
 
 
 class TestSessionManagement:
@@ -461,8 +473,8 @@ class TestSessionManagement:
         await derp.auth.sign_out(payload.session_id)
 
         # Refresh should fail
-        refreshed = await derp.auth.refresh_token(result.tokens.refresh_token)
-        assert refreshed is None
+        with pytest.raises(InvalidTokenError):
+            await derp.auth.refresh_token(result.tokens.refresh_token)
 
     async def test_sign_out_all(
         self,
@@ -495,11 +507,11 @@ class TestSessionManagement:
         await derp.auth.sign_out_all(result.user.id)
 
         # Both refresh tokens should fail
-        refreshed1 = await derp.auth.refresh_token(result.tokens.refresh_token)
-        assert refreshed1 is None
+        with pytest.raises(InvalidTokenError):
+            await derp.auth.refresh_token(result.tokens.refresh_token)
 
-        refreshed2 = await derp.auth.refresh_token(sign_in_result.tokens.refresh_token)
-        assert refreshed2 is None
+        with pytest.raises(InvalidTokenError):
+            await derp.auth.refresh_token(sign_in_result.tokens.refresh_token)
 
 
 class TestUserManagement:
@@ -534,8 +546,8 @@ class TestUserManagement:
         self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test getting non-existent user by ID."""
-        found = await derp.auth.get_user(uuid.uuid4())
-        assert found is None
+        with pytest.raises(UserNotFoundError):
+            await derp.auth.get_user(uuid.uuid4())
 
     async def test_update_user(self, derp: DerpClient, mock_smtp: AsyncMock) -> None:
         """Test updating user."""
@@ -555,8 +567,8 @@ class TestUserManagement:
         self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
         """Test updating non-existent user."""
-        result = await derp.auth.update_user(user_id=uuid.uuid4())
-        assert result is None
+        with pytest.raises(UserNotFoundError):
+            await derp.auth.update_user(user_id=uuid.uuid4())
 
 
 class TestRBAC:

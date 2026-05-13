@@ -16,6 +16,15 @@ from workos.exceptions import (
     NotFoundException,
 )
 
+from derp.auth.exceptions import (
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+    OrgMemberNotFoundError,
+    OrgNotFoundError,
+    OrgSlugConflictError,
+    UserNotFoundError,
+)
 from derp.auth.models import WorkOSOrganization
 from derp.config import (
     AuthConfig,
@@ -192,14 +201,22 @@ def _make_workos_org(
     *,
     org_id: str = "org_01ABC",
     name: str = "Acme Corp",
+    slug: str | None = None,
 ) -> MagicMock:
+    """Build a mock WorkOS Organization.
+
+    ``slug`` is written to ``metadata["slug"]`` to match real WorkOS behaviour
+    after ``create_org`` / ``update_org`` (we always store the slug there).
+    Pass ``slug=None`` to simulate an org with no slug in metadata (e.g.,
+    one created outside this client).
+    """
     now = datetime.now(UTC).isoformat()
     org = MagicMock()
     org.id = org_id
     org.name = name
     org.created_at = now
     org.updated_at = now
-    org.metadata = {}
+    org.metadata = {"slug": slug} if slug is not None else {}
     org.domains = []
     return org
 
@@ -428,8 +445,8 @@ class TestGetUser:
         connected_client._workos.user_management.get_user = AsyncMock(
             side_effect=_workos_exc(NotFoundException)
         )
-        result = await connected_client.get_user("nonexistent")
-        assert result is None
+        with pytest.raises(UserNotFoundError):
+            await connected_client.get_user("nonexistent")
 
 
 class TestListUsers:
@@ -455,10 +472,10 @@ class TestUpdateUser:
         connected_client._workos.user_management.update_user = AsyncMock(
             side_effect=_workos_exc(NotFoundException)
         )
-        result = await connected_client.update_user(
-            user_id="nonexistent", email="x@test.com"
-        )
-        assert result is None
+        with pytest.raises(UserNotFoundError):
+            await connected_client.update_user(
+                user_id="nonexistent", email="x@test.com"
+            )
 
 
 class TestDeleteUser:
@@ -508,10 +525,9 @@ class TestSignUp:
         connected_client._workos.user_management.create_user = AsyncMock(
             side_effect=_workos_exc(ConflictException, "User already exists")
         )
-        result = await connected_client.sign_up(
-            email=TEST_EMAIL, password=TEST_PASSWORD
-        )
-        assert result is None
+        with pytest.raises(EmailAlreadyExistsError) as exc:
+            await connected_client.sign_up(email=TEST_EMAIL, password=TEST_PASSWORD)
+        assert exc.value.email == TEST_EMAIL
 
 
 # ── Sign In With Password ────────────────────────────────────────
@@ -533,10 +549,8 @@ class TestSignInWithPassword:
         connected_client._workos.user_management.authenticate_with_password = AsyncMock(
             side_effect=_workos_exc(AuthenticationException, "Invalid credentials")
         )
-        result = await connected_client.sign_in_with_password(
-            TEST_EMAIL, "wrong-password"
-        )
-        assert result is None
+        with pytest.raises(InvalidCredentialsError):
+            await connected_client.sign_in_with_password(TEST_EMAIL, "wrong-password")
 
 
 # ── Magic Auth ───────────────────────────────────────────────────
@@ -648,8 +662,8 @@ class TestRefreshToken:
                 )
             )
         )
-        result = await connected_client.refresh_token("bad-token")
-        assert result is None
+        with pytest.raises(InvalidTokenError):
+            await connected_client.refresh_token("bad-token")
 
     async def test_expired_refresh_token(self, connected_client) -> None:
         connected_client._workos.user_management.authenticate_with_refresh_token = (
@@ -657,8 +671,8 @@ class TestRefreshToken:
                 side_effect=_workos_exc(BadRequestException, "Refresh token expired")
             )
         )
-        result = await connected_client.refresh_token("expired-token")
-        assert result is None
+        with pytest.raises(InvalidTokenError):
+            await connected_client.refresh_token("expired-token")
 
 
 # ── Sessions / Sign Out ──────────────────────────────────────────
@@ -706,7 +720,8 @@ class TestOrganizations:
     async def test_create_inserts_local_mapping(self, connected_client_with_db) -> None:
         """Happy path: WorkOS create succeeds, local row is inserted."""
         client = connected_client_with_db
-        org = _make_workos_org()
+        # Real WorkOS echoes back the ``metadata`` we passed during create.
+        org = _make_workos_org(slug="acme-corp")
         client._workos.organizations.create_organization = AsyncMock(return_value=org)
         client._workos.user_management.create_organization_membership = AsyncMock(
             return_value=_make_workos_membership()
@@ -732,25 +747,24 @@ class TestOrganizations:
         assert rows[0].id == "org_01ABC"
         assert rows[0].slug == "acme-corp"
 
-    async def test_create_workos_conflict_returns_none(
+    async def test_create_workos_conflict_raises(
         self, connected_client_with_db
     ) -> None:
-        """WorkOS-side conflict (duplicate org) → None, no local row."""
+        """WorkOS-side conflict (duplicate org) → OrgSlugConflictError, no local row."""
         client = connected_client_with_db
         client._workos.organizations.create_organization = AsyncMock(
             side_effect=_workos_exc(ConflictException, "Conflict")
         )
-        result = await client.create_org(
-            name="Acme", slug="acme", creator_id="user_01XYZ"
-        )
-        assert result is None
+        with pytest.raises(OrgSlugConflictError) as exc:
+            await client.create_org(name="Acme", slug="acme", creator_id="user_01XYZ")
+        assert exc.value.slug == "acme"
         rows = await client._db().select(WorkOSOrganization).execute()
         assert rows == []
 
     async def test_create_local_slug_conflict_rolls_back_workos(
         self, connected_client_with_db
     ) -> None:
-        """Slug already taken locally → roll back WorkOS create."""
+        """Slug already taken locally → roll back WorkOS create + raise."""
         client = connected_client_with_db
         await _seed_workos_org(client, workos_org_id="org_existing", slug="taken-slug")
         client._workos.organizations.create_organization = AsyncMock(
@@ -758,11 +772,11 @@ class TestOrganizations:
         )
         client._workos.organizations.delete_organization = AsyncMock(return_value=None)
 
-        result = await client.create_org(
-            name="Other", slug="taken-slug", creator_id="user_01XYZ"
-        )
-
-        assert result is None
+        with pytest.raises(OrgSlugConflictError) as exc:
+            await client.create_org(
+                name="Other", slug="taken-slug", creator_id="user_01XYZ"
+            )
+        assert exc.value.slug == "taken-slug"
         # WorkOS create was attempted, then rolled back.
         client._workos.organizations.delete_organization.assert_awaited_once_with(
             organization_id="org_new"
@@ -773,8 +787,7 @@ class TestOrganizations:
     ) -> None:
         """``get_org(org_id=...)`` is passthrough — no DB hit, calls WorkOS directly.
 
-        Even with no local row, the WorkOS lookup proceeds; the slug just
-        comes back empty.
+        With no slug in WorkOS metadata, the slug comes back empty.
         """
         client = connected_client_with_db
         client._workos.organizations.get_organization = AsyncMock(
@@ -785,46 +798,45 @@ class TestOrganizations:
 
         assert result is not None
         assert result.id == "org_01ABC"
-        assert result.slug == ""  # no local row → empty slug
+        assert result.slug == ""  # no metadata slug → empty
         client._workos.organizations.get_organization.assert_awaited_once_with(
             organization_id="org_01ABC"
         )
 
-    async def test_get_by_org_id_includes_local_slug_when_seeded(
+    async def test_get_by_org_id_returns_metadata_slug(
         self, connected_client_with_db
     ) -> None:
-        """When a local row exists, the slug from it enriches the OrgInfo."""
+        """Slug is read from WorkOS metadata, not the local table."""
         client = connected_client_with_db
-        workos_id = await _seed_workos_org(client, slug="acme-corp")
         client._workos.organizations.get_organization = AsyncMock(
-            return_value=_make_workos_org()
+            return_value=_make_workos_org(slug="acme-corp")
         )
 
-        result = await client.get_org(org_id=workos_id)
+        result = await client.get_org(org_id="org_01ABC")
 
         assert result is not None
         assert result.id == "org_01ABC"
         assert result.slug == "acme-corp"
 
     async def test_get_workos_404(self, connected_client_with_db) -> None:
-        """WorkOS NotFound → return None."""
+        """WorkOS NotFound → OrgNotFoundError."""
         client = connected_client_with_db
         client._workos.organizations.get_organization = AsyncMock(
             side_effect=_workos_exc(NotFoundException)
         )
-        result = await client.get_org(org_id="org_does_not_exist")
-        assert result is None
+        with pytest.raises(OrgNotFoundError):
+            await client.get_org(org_id="org_does_not_exist")
 
     async def test_get_by_slug_uses_local_index(self, connected_client_with_db) -> None:
         """Slug lookup hits the local table — never paginates WorkOS."""
         client = connected_client_with_db
         workos_id = await _seed_workos_org(client, slug="my-slug")
         client._workos.organizations.get_organization = AsyncMock(
-            return_value=_make_workos_org()
+            return_value=_make_workos_org(slug="my-slug")
         )
         client._workos.organizations.list_organizations = AsyncMock()
 
-        result = await client.get_org_by_slug("my-slug")
+        result = await client.get_org(slug="my-slug")
 
         assert result is not None
         assert result.id == workos_id
@@ -832,13 +844,13 @@ class TestOrganizations:
         # The old implementation paginated list_organizations — assert we don't.
         client._workos.organizations.list_organizations.assert_not_called()
 
-    async def test_get_by_slug_unknown_slug_returns_none(
+    async def test_get_by_slug_unknown_slug_raises(
         self, connected_client_with_db
     ) -> None:
         client = connected_client_with_db
         client._workos.organizations.get_organization = AsyncMock()
-        result = await client.get_org_by_slug("never-existed")
-        assert result is None
+        with pytest.raises(OrgNotFoundError):
+            await client.get_org(slug="never-existed")
         client._workos.organizations.get_organization.assert_not_called()
 
     async def test_update_name_only(self, connected_client_with_db) -> None:
@@ -859,8 +871,9 @@ class TestOrganizations:
     ) -> None:
         client = connected_client_with_db
         workos_id = await _seed_workos_org(client, slug="old-slug")
+        # WorkOS echoes back the new metadata after update_organization.
         client._workos.organizations.update_organization = AsyncMock(
-            return_value=_make_workos_org()
+            return_value=_make_workos_org(slug="new-slug")
         )
 
         result = await client.update_org(org_id=workos_id, slug="new-slug")
@@ -876,25 +889,25 @@ class TestOrganizations:
         )
         assert rows[0].slug == "new-slug"
 
-    async def test_update_workos_404_returns_none(
+    async def test_update_workos_404_raises(
         self, connected_client_with_db
     ) -> None:
-        """``org_id=`` is passthrough; WorkOS NotFound surfaces as None."""
+        """``org_id=`` is passthrough; WorkOS NotFound surfaces as OrgNotFoundError."""
         client = connected_client_with_db
         client._workos.organizations.update_organization = AsyncMock(
             side_effect=_workos_exc(NotFoundException)
         )
-        result = await client.update_org(org_id="org_does_not_exist", name="X")
-        assert result is None
+        with pytest.raises(OrgNotFoundError):
+            await client.update_org(org_id="org_does_not_exist", name="X")
 
-    async def test_update_unknown_slug_returns_none(
+    async def test_update_unknown_slug_raises(
         self, connected_client_with_db
     ) -> None:
         """Unknown slug short-circuits — never hits WorkOS."""
         client = connected_client_with_db
         client._workos.organizations.update_organization = AsyncMock()
-        result = await client.update_org(org_slug="nope", name="X")
-        assert result is None
+        with pytest.raises(OrgNotFoundError):
+            await client.update_org(org_slug="nope", name="X")
         client._workos.organizations.update_organization.assert_not_called()
 
     async def test_delete_removes_local_row(self, connected_client_with_db) -> None:
@@ -939,26 +952,18 @@ class TestOrganizations:
         rows = await client._db().select(WorkOSOrganization).execute()
         assert rows == []
 
-    async def test_list_surfaces_all_orgs_with_slugs_for_known(
+    async def test_list_surfaces_all_orgs_with_slugs_from_metadata(
         self, connected_client_with_db
     ) -> None:
-        """All WorkOS orgs surface; orgs without a local row get empty slug."""
+        """All WorkOS orgs surface; slug comes from each org's metadata."""
         client = connected_client_with_db
-        await _seed_workos_org(client, workos_org_id="o1", slug="a")
-        # o2 has no local row → still surfaces, but with empty slug.
+        # o2 has no slug in metadata → still surfaces, but with empty slug.
         list_orgs = [
-            _make_workos_org(org_id="o1", name="Org A"),
+            _make_workos_org(org_id="o1", name="Org A", slug="a"),
             _make_workos_org(org_id="o2", name="Org B"),
         ]
         client._workos.organizations.list_organizations = AsyncMock(
             return_value=_make_list_resource(list_orgs)
-        )
-        # list_orgs re-fetches each via get_organization for fresh metadata.
-        client._workos.organizations.get_organization = AsyncMock(
-            side_effect=lambda organization_id: _make_workos_org(
-                org_id=organization_id,
-                name="Org A" if organization_id == "o1" else "Org B",
-            )
         )
 
         result = await client.list_orgs()
@@ -967,7 +972,7 @@ class TestOrganizations:
         by_id = {o.id: o for o in result}
         assert by_id["o1"].slug == "a"
         assert by_id["o1"].name == "Org A"
-        assert by_id["o2"].slug == ""  # no local row → empty slug
+        assert by_id["o2"].slug == ""  # no metadata slug → empty
         assert by_id["o2"].name == "Org B"
 
 
@@ -1006,10 +1011,10 @@ class TestOrgMemberships:
         """Unknown slug short-circuits without touching WorkOS."""
         client = connected_client_with_db
         client._workos.user_management.create_organization_membership = AsyncMock()
-        result = await client.add_org_member(
-            slug="never-existed", user_id="user_01XYZ", role="member"
-        )
-        assert result is None
+        with pytest.raises(OrgNotFoundError):
+            await client.add_org_member(
+                slug="never-existed", user_id="user_01XYZ", role="member"
+            )
         client._workos.user_management.create_organization_membership.assert_not_called()
 
     async def test_update_member(self, connected_client_with_db) -> None:
@@ -1088,8 +1093,8 @@ class TestOrgMemberships:
             return_value=_make_list_resource([])
         )
 
-        result = await client.get_org_member(org_id=workos_id, user_id="nonexistent")
-        assert result is None
+        with pytest.raises(OrgMemberNotFoundError):
+            await client.get_org_member(org_id=workos_id, user_id="nonexistent")
 
 
 # ── Cursor-based pagination ──────────────────────────────────────
@@ -1171,24 +1176,24 @@ class TestListOrgMembersByCursor:
         assert result.has_more is False
         assert result.next_cursor is None
 
-    async def test_unknown_slug_returns_empty_cursor(
+    async def test_unknown_slug_raises(
         self, connected_client_with_db
     ) -> None:
         """Unknown slug short-circuits without touching WorkOS."""
         client = connected_client_with_db
         client._workos.user_management.list_organization_memberships = AsyncMock()
-        result = await client.list_org_members_by_cursor(slug="never-existed")
-        assert result.data == []
-        assert result.has_more is False
+        with pytest.raises(OrgNotFoundError):
+            await client.list_org_members_by_cursor(slug="never-existed")
         client._workos.user_management.list_organization_memberships.assert_not_called()
 
 
 class TestListOrgsByCursor:
     async def test_returns_cursor_result(self, connected_client_with_db) -> None:
         client = connected_client_with_db
-        await _seed_workos_org(client, workos_org_id="o1", slug="a")
-        await _seed_workos_org(client, workos_org_id="o2", slug="b")
-        orgs = [_make_workos_org(org_id="o1"), _make_workos_org(org_id="o2")]
+        orgs = [
+            _make_workos_org(org_id="o1", slug="a"),
+            _make_workos_org(org_id="o2", slug="b"),
+        ]
         client._workos.organizations.list_organizations = AsyncMock(
             return_value=_make_list_resource_with_cursor(orgs, after="cur_next")
         )
@@ -1199,19 +1204,21 @@ class TestListOrgsByCursor:
         assert result.has_more is True
         assert result.next_cursor == "cur_next"
         assert {o.id for o in result.data} == {"o1", "o2"}
-        # Slugs sourced from local table.
+        # Slugs sourced from each org's WorkOS metadata.
         by_id = {o.id: o for o in result.data}
         assert by_id["o1"].slug == "a"
         assert by_id["o2"].slug == "b"
 
-    async def test_orgs_without_local_row_get_empty_slug(
+    async def test_orgs_without_metadata_slug_surface_empty(
         self, connected_client_with_db
     ) -> None:
-        """Orgs missing from the local slug index surface with empty slug."""
+        """Orgs whose WorkOS metadata lacks a slug surface with empty slug."""
         client = connected_client_with_db
-        await _seed_workos_org(client, workos_org_id="o1", slug="a")
-        # o2 has no local row → still surfaces, with empty slug.
-        orgs = [_make_workos_org(org_id="o1"), _make_workos_org(org_id="o2")]
+        # o2 has no slug in metadata → still surfaces, with empty slug.
+        orgs = [
+            _make_workos_org(org_id="o1", slug="a"),
+            _make_workos_org(org_id="o2"),
+        ]
         client._workos.organizations.list_organizations = AsyncMock(
             return_value=_make_list_resource_with_cursor(orgs, after=None)
         )
@@ -1272,7 +1279,7 @@ class TestOrgMethodsBySlug:
         client = connected_client_with_db
         workos_id = await _seed_workos_org(client, slug="acme")
         client._workos.organizations.update_organization = AsyncMock(
-            return_value=_make_workos_org(name="New")
+            return_value=_make_workos_org(name="New", slug="acme-renamed")
         )
 
         result = await client.update_org(
@@ -1350,23 +1357,30 @@ class TestOrgMethodsBySlug:
         assert len(cursor_result.data) == 1
         assert cursor_result.data[0].org_id == workos_id
 
-    async def test_unknown_slug_returns_falsy(self, connected_client_with_db) -> None:
+    async def test_unknown_slug_short_circuits(self, connected_client_with_db) -> None:
+        """Slug→id resolution miss raises before any WorkOS calls.
+
+        ``remove_org_member`` is the one bool-returning method; everything
+        else raises ``OrgNotFoundError``.
+        """
         client = connected_client_with_db
         client._workos.user_management.create_organization_membership = AsyncMock()
         client._workos.user_management.list_organization_memberships = AsyncMock()
 
-        assert (await client.add_org_member(slug="nope", user_id="user_01XYZ")) is None
-        assert (await client.get_org_member(slug="nope", user_id="user_01XYZ")) is None
-        assert (
+        with pytest.raises(OrgNotFoundError):
+            await client.add_org_member(slug="nope", user_id="user_01XYZ")
+        with pytest.raises(OrgNotFoundError):
+            await client.get_org_member(slug="nope", user_id="user_01XYZ")
+        with pytest.raises(OrgNotFoundError):
             await client.update_org_member(
                 slug="nope", user_id="user_01XYZ", role="admin"
             )
-        ) is None
+        with pytest.raises(OrgNotFoundError):
+            await client.list_org_members_by_cursor(slug="nope")
+        # remove_* is the bool-returning sibling — quietly returns False.
         assert (
             await client.remove_org_member(slug="nope", user_id="user_01XYZ")
         ) is False
-        cursor = await client.list_org_members_by_cursor(slug="nope")
-        assert cursor.data == []
         # None of these should have hit the WorkOS API.
         client._workos.user_management.create_organization_membership.assert_not_called()
         client._workos.user_management.list_organization_memberships.assert_not_called()

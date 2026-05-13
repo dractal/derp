@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -13,7 +14,19 @@ import httpx
 import jwt as pyjwt
 
 from derp.auth.base import BaseAuthClient
-from derp.auth.exceptions import AuthNotConnectedError
+from derp.auth.exceptions import (
+    AuthBackendError,
+    AuthNotConnectedError,
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+    LastOwnerError,
+    MemberAlreadyExistsError,
+    OrgMemberNotFoundError,
+    OrgNotFoundError,
+    OrgSlugConflictError,
+    UserNotFoundError,
+)
 from derp.auth.jwt import TokenPair
 from derp.auth.models import (
     AuthOrganization,
@@ -84,6 +97,28 @@ class SupabaseAuthClient(BaseAuthClient):
 
     def _admin_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._config.service_role_key}"}
+
+    def _gotrue_error_code(self, resp: httpx.Response) -> str | None:
+        """Best-effort extraction of GoTrue's `error_code` JSON field."""
+        try:
+            body = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            return None
+        if isinstance(body, dict):
+            code = body.get("error_code") or body.get("code")
+            return str(code) if code is not None else None
+        return None
+
+    def _backend_error(self, op: str, resp: httpx.Response) -> AuthBackendError:
+        """Wrap a non-success GoTrue response in AuthBackendError.
+
+        Includes the status code and the raw body (truncated) so ops can
+        diagnose without re-running the request.
+        """
+        body = resp.text[:500]
+        return AuthBackendError(
+            f"Supabase {op} failed: HTTP {resp.status_code} {body}"
+        )
 
     # -- Response mapping --------------------------------------------------------
 
@@ -226,11 +261,18 @@ class SupabaseAuthClient(BaseAuthClient):
 
     # -- User management (admin API) ---------------------------------------------
 
-    async def get_user(self, user_id: str | uuid.UUID) -> UserInfo | None:
+    async def get_user(self, user_id: str | uuid.UUID) -> UserInfo:
         http = self._ensure_http()
-        resp = await http.get(f"admin/users/{user_id}", headers=self._admin_headers())
+        try:
+            resp = await http.get(
+                f"admin/users/{user_id}", headers=self._admin_headers()
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase get_user network error: {e}") from e
+        if resp.status_code == 404:
+            raise UserNotFoundError(f"User {user_id!r} not found")
         if not resp.is_success:
-            return None
+            raise self._backend_error("get_user", resp)
         return self._to_user_info(resp.json())
 
     async def list_users(
@@ -245,11 +287,14 @@ class SupabaseAuthClient(BaseAuthClient):
         elif offset is not None:
             params["page"] = offset + 1
 
-        resp = await http.get(
-            "admin/users", headers=self._admin_headers(), params=params
-        )
+        try:
+            resp = await http.get(
+                "admin/users", headers=self._admin_headers(), params=params
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase list_users network error: {e}") from e
         if not resp.is_success:
-            return []
+            raise self._backend_error("list_users", resp)
         data = resp.json()
         users = data.get("users", []) if isinstance(data, dict) else data
         return [self._to_user_info(u) for u in users]
@@ -260,7 +305,7 @@ class SupabaseAuthClient(BaseAuthClient):
         user_id: str | uuid.UUID,
         email: str | None = None,
         **kwargs: Any,
-    ) -> UserInfo | None:
+    ) -> UserInfo:
         http = self._ensure_http()
         body: dict[str, Any] = {}
         if email is not None:
@@ -278,31 +323,46 @@ class SupabaseAuthClient(BaseAuthClient):
         if user_metadata:
             body["user_metadata"] = user_metadata
 
-        resp = await http.put(
-            f"admin/users/{user_id}",
-            headers=self._admin_headers(),
-            json=body,
-        )
+        try:
+            resp = await http.put(
+                f"admin/users/{user_id}",
+                headers=self._admin_headers(),
+                json=body,
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase update_user network error: {e}") from e
+        if resp.status_code == 404:
+            raise UserNotFoundError(f"User {user_id!r} not found")
         if not resp.is_success:
-            return None
+            raise self._backend_error("update_user", resp)
         return self._to_user_info(resp.json())
 
     async def delete_user(self, user_id: str | uuid.UUID) -> bool:
         http = self._ensure_http()
-        resp = await http.delete(
-            f"admin/users/{user_id}", headers=self._admin_headers()
-        )
-        return resp.is_success
+        try:
+            resp = await http.delete(
+                f"admin/users/{user_id}", headers=self._admin_headers()
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase delete_user network error: {e}") from e
+        if resp.status_code == 404:
+            return False
+        if not resp.is_success:
+            raise self._backend_error("delete_user", resp)
+        return True
 
     async def count_users(self) -> int:
         http = self._ensure_http()
-        resp = await http.get(
-            "admin/users",
-            headers=self._admin_headers(),
-            params={"per_page": 1},
-        )
+        try:
+            resp = await http.get(
+                "admin/users",
+                headers=self._admin_headers(),
+                params={"per_page": 1},
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase count_users network error: {e}") from e
         if not resp.is_success:
-            return 0
+            raise self._backend_error("count_users", resp)
 
         total = resp.headers.get("x-total-count")
         if total is not None:
@@ -324,21 +384,40 @@ class SupabaseAuthClient(BaseAuthClient):
         user_agent: str | None = None,
         ip_address: str | None = None,
         **kwargs: Any,
-    ) -> AuthResult | None:
+    ) -> AuthResult:
         http = self._ensure_http()
         body: dict[str, Any] = {"email": email, "password": password}
         if kwargs.get("data"):
             body["data"] = kwargs["data"]
 
-        resp = await http.post("signup", json=body)
+        try:
+            resp = await http.post("signup", json=body)
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase sign_up network error: {e}") from e
+
+        if resp.status_code == 422 and self._gotrue_error_code(resp) in {
+            "user_already_exists",
+            "email_exists",
+        }:
+            raise EmailAlreadyExistsError(email)
         if not resp.is_success:
             logger.error("Supabase sign-up failed: %s", resp.text)
-            return None
+            raise self._backend_error("sign_up", resp)
 
         data = resp.json()
         if "access_token" not in data:
             # Supabase returns user without tokens when confirmation is required.
-            return None
+            # The signup itself succeeded, so return tokenless AuthResult.
+            return AuthResult(
+                user=self._to_user_info(data.get("user", data)),
+                tokens=TokenPair(
+                    access_token="",
+                    refresh_token="",
+                    token_type="bearer",
+                    expires_in=0,
+                    expires_at=datetime.now(UTC),
+                ),
+            )
         return self._to_auth_result(data)
 
     async def sign_in_with_password(
@@ -351,20 +430,35 @@ class SupabaseAuthClient(BaseAuthClient):
         last_name: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> AuthResult | None:
+    ) -> AuthResult:
         http = self._ensure_http()
-        resp = await http.post(
-            "token",
-            params={"grant_type": "password"},
-            json={"email": email, "password": password},
-        )
+        try:
+            resp = await http.post(
+                "token",
+                params={"grant_type": "password"},
+                json={"email": email, "password": password},
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(
+                f"Supabase sign_in_with_password network error: {e}"
+            ) from e
+        # GoTrue returns 400 for bad credentials, 401 for unconfirmed email.
+        if resp.status_code in (400, 401):
+            raise InvalidCredentialsError()
         if not resp.is_success:
-            return None
+            raise self._backend_error("sign_in_with_password", resp)
         return self._to_auth_result(resp.json())
 
     async def sign_in_with_magic_link(self, *, email: str, magic_link_url: str) -> None:
         http = self._ensure_http()
-        await http.post("otp", json={"email": email})
+        try:
+            resp = await http.post("otp", json={"email": email})
+        except httpx.HTTPError as e:
+            raise AuthBackendError(
+                f"Supabase sign_in_with_magic_link network error: {e}"
+            ) from e
+        if not resp.is_success:
+            raise self._backend_error("sign_in_with_magic_link", resp)
 
     async def verify_magic_link(
         self,
@@ -372,27 +466,39 @@ class SupabaseAuthClient(BaseAuthClient):
         *,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> AuthResult | None:
+    ) -> AuthResult:
         http = self._ensure_http()
-        resp = await http.post(
-            "verify",
-            json={"type": "magiclink", "token": token},
-        )
+        try:
+            resp = await http.post(
+                "verify",
+                json={"type": "magiclink", "token": token},
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(
+                f"Supabase verify_magic_link network error: {e}"
+            ) from e
+        if resp.status_code in (400, 401, 403, 404):
+            raise InvalidTokenError("Magic link is invalid or expired")
         if not resp.is_success:
-            return None
+            raise self._backend_error("verify_magic_link", resp)
         return self._to_auth_result(resp.json())
 
     # -- Token refresh -----------------------------------------------------------
 
-    async def refresh_token(self, refresh_token: str) -> TokenPair | None:
+    async def refresh_token(self, refresh_token: str) -> TokenPair:
         http = self._ensure_http()
-        resp = await http.post(
-            "token",
-            params={"grant_type": "refresh_token"},
-            json={"refresh_token": refresh_token},
-        )
+        try:
+            resp = await http.post(
+                "token",
+                params={"grant_type": "refresh_token"},
+                json={"refresh_token": refresh_token},
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase refresh_token network error: {e}") from e
+        if resp.status_code in (400, 401):
+            raise InvalidTokenError("Refresh token is invalid or expired")
         if not resp.is_success:
-            return None
+            raise self._backend_error("refresh_token", resp)
         return self._to_token_pair(resp.json())
 
     # -- Password recovery -------------------------------------------------------
@@ -406,29 +512,46 @@ class SupabaseAuthClient(BaseAuthClient):
         **kwargs: Any,
     ) -> None:
         http = self._ensure_http()
-        await http.post("recover", json={"email": email})
-
-    async def reset_password(self, token: str, new_password: str) -> UserInfo | None:
-        http = self._ensure_http()
-        resp = await http.put(
-            "user",
-            headers={"Authorization": f"Bearer {token}"},
-            json={"password": new_password},
-        )
+        try:
+            resp = await http.post("recover", json={"email": email})
+        except httpx.HTTPError as e:
+            raise AuthBackendError(
+                f"Supabase request_password_recovery network error: {e}"
+            ) from e
         if not resp.is_success:
-            return None
+            raise self._backend_error("request_password_recovery", resp)
+
+    async def reset_password(self, token: str, new_password: str) -> UserInfo:
+        http = self._ensure_http()
+        try:
+            resp = await http.put(
+                "user",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"password": new_password},
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase reset_password network error: {e}") from e
+        if resp.status_code in (400, 401, 403, 404):
+            raise InvalidTokenError("Recovery token is invalid or expired")
+        if not resp.is_success:
+            raise self._backend_error("reset_password", resp)
         return self._to_user_info(resp.json())
 
     # -- Email confirmation ------------------------------------------------------
 
-    async def confirm_email(self, token: str) -> UserInfo | None:
+    async def confirm_email(self, token: str) -> UserInfo:
         http = self._ensure_http()
-        resp = await http.post(
-            "verify",
-            json={"type": "signup", "token": token},
-        )
+        try:
+            resp = await http.post(
+                "verify",
+                json={"type": "signup", "token": token},
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase confirm_email network error: {e}") from e
+        if resp.status_code in (400, 401, 403, 404):
+            raise InvalidTokenError("Confirmation token is invalid or expired")
         if not resp.is_success:
-            return None
+            raise self._backend_error("confirm_email", resp)
         data = resp.json()
         user_data = data.get("user", data)
         return self._to_user_info(user_data)
@@ -446,18 +569,29 @@ class SupabaseAuthClient(BaseAuthClient):
 
     async def sign_out(self, session_id: str | uuid.UUID) -> None:
         http = self._ensure_http()
-        await http.post(
-            "logout",
-            headers={"Authorization": f"Bearer {session_id}"},
-        )
+        try:
+            resp = await http.post(
+                "logout",
+                headers={"Authorization": f"Bearer {session_id}"},
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase sign_out network error: {e}") from e
+        if not resp.is_success and resp.status_code != 401:
+            # 401 means the token's already invalid — treat as success.
+            raise self._backend_error("sign_out", resp)
 
     async def sign_out_all(self, user_id: str | uuid.UUID) -> None:
         http = self._ensure_http()
-        await http.post(
-            "logout",
-            headers={"Authorization": f"Bearer {user_id}"},
-            params={"scope": "global"},
-        )
+        try:
+            resp = await http.post(
+                "logout",
+                headers={"Authorization": f"Bearer {user_id}"},
+                params={"scope": "global"},
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(f"Supabase sign_out_all network error: {e}") from e
+        if not resp.is_success and resp.status_code != 401:
+            raise self._backend_error("sign_out_all", resp)
 
     # -- OAuth -------------------------------------------------------------------
 
@@ -487,21 +621,28 @@ class SupabaseAuthClient(BaseAuthClient):
         redirect_uri: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> AuthResult | None:
+    ) -> AuthResult:
         http = self._ensure_http()
         uri = redirect_uri or self._config.redirect_uri
         body: dict[str, Any] = {"auth_code": code}
         if uri:
             body["redirect_to"] = uri
 
-        resp = await http.post(
-            "token",
-            params={"grant_type": "pkce"},
-            json=body,
-        )
+        try:
+            resp = await http.post(
+                "token",
+                params={"grant_type": "pkce"},
+                json=body,
+            )
+        except httpx.HTTPError as e:
+            raise AuthBackendError(
+                f"Supabase sign_in_with_oauth network error: {e}"
+            ) from e
+        if resp.status_code in (400, 401, 403):
+            raise InvalidCredentialsError("OAuth code rejected by Supabase")
         if not resp.is_success:
             logger.error("Supabase OAuth token exchange failed: %s", resp.text)
-            return None
+            raise self._backend_error("sign_in_with_oauth", resp)
         return self._to_auth_result(resp.json())
 
     # -- Organizations (database-backed) -----------------------------------------
@@ -532,7 +673,10 @@ class SupabaseAuthClient(BaseAuthClient):
         slug: str,
         creator_id: str | uuid.UUID,
         **kwargs: Any,
-    ) -> OrgInfo | None:
+    ) -> OrgInfo:
+        """Raises:
+            OrgSlugConflictError: Slug is already taken.
+        """
         now = datetime.now(UTC)
         org = await (
             self._db()
@@ -543,7 +687,7 @@ class SupabaseAuthClient(BaseAuthClient):
             .execute()
         )
         if org is None:
-            return None
+            raise OrgSlugConflictError(slug)
 
         await (
             self._db()
@@ -588,21 +732,22 @@ class SupabaseAuthClient(BaseAuthClient):
         *,
         org_id: str | uuid.UUID | None = None,
         slug: str | None = None,
-    ) -> OrgInfo | None:
+    ) -> OrgInfo:
+        """Raises:
+            OrgNotFoundError: No org matches the given id or slug.
+        """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
-            return None
+            raise OrgNotFoundError(f"No org with slug {slug!r}")
         org = await (
             self._db()
             .select(AuthOrganization)
             .where(AuthOrganization.id == canonical)
             .first_or_none()
         )
-        return self._to_org_info(org) if org is not None else None
-
-    async def get_org_by_slug(self, slug: str) -> OrgInfo | None:
-        """Convenience wrapper around ``get_org(slug=...)``."""
-        return await self.get_org(slug=slug)
+        if org is None:
+            raise OrgNotFoundError(f"No org with id {canonical!r}")
+        return self._to_org_info(org)
 
     async def update_org(
         self,
@@ -612,11 +757,16 @@ class SupabaseAuthClient(BaseAuthClient):
         name: str | None = None,
         slug: str | None = None,
         **kwargs: Any,
-    ) -> OrgInfo | None:
-        """Identify by ``org_id`` or ``org_slug``; ``slug`` is the new value."""
+    ) -> OrgInfo:
+        """Identify by ``org_id`` or ``org_slug``; ``slug`` is the new value.
+
+        Raises:
+            OrgNotFoundError: Org identifier did not resolve.
+            OrgSlugConflictError: New slug collides with another org.
+        """
         canonical = await self._resolve_org_id(org_id=org_id, slug=org_slug)
         if canonical is None:
-            return None
+            raise OrgNotFoundError(f"No org with slug {org_slug!r}")
         existing = await (
             self._db()
             .select(AuthOrganization)
@@ -624,7 +774,7 @@ class SupabaseAuthClient(BaseAuthClient):
             .first_or_none()
         )
         if existing is None:
-            return None
+            raise OrgNotFoundError(f"No org with id {canonical!r}")
 
         updates: dict[str, Any] = {"updated_at": datetime.now(UTC)}
         if name is not None:
@@ -632,14 +782,19 @@ class SupabaseAuthClient(BaseAuthClient):
         if slug is not None:
             updates["slug"] = slug
 
-        [result] = await (
-            self._db()
-            .update(AuthOrganization)
-            .set(**updates)
-            .where(AuthOrganization.id == canonical)
-            .returning(AuthOrganization)
-            .execute()
-        )
+        try:
+            [result] = await (
+                self._db()
+                .update(AuthOrganization)
+                .set(**updates)
+                .where(AuthOrganization.id == canonical)
+                .returning(AuthOrganization)
+                .execute()
+            )
+        except Exception as e:
+            if slug is not None:
+                raise OrgSlugConflictError(slug) from e
+            raise
         return self._to_org_info(result)
 
     async def delete_org(
@@ -698,10 +853,14 @@ class SupabaseAuthClient(BaseAuthClient):
         slug: str | None = None,
         user_id: str | uuid.UUID,
         role: str = "member",
-    ) -> OrgMemberInfo | None:
+    ) -> OrgMemberInfo:
+        """Raises:
+            OrgNotFoundError: Org identifier did not resolve.
+            MemberAlreadyExistsError: User is already a member.
+        """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
-            return None
+            raise OrgNotFoundError(f"No org with slug {slug!r}")
         now = datetime.now(UTC)
         member = await (
             self._db()
@@ -720,7 +879,7 @@ class SupabaseAuthClient(BaseAuthClient):
             .execute()
         )
         if member is None:
-            return None
+            raise MemberAlreadyExistsError()
         return self._to_org_member_info(member)
 
     async def update_org_member(
@@ -730,10 +889,14 @@ class SupabaseAuthClient(BaseAuthClient):
         slug: str | None = None,
         user_id: str | uuid.UUID,
         role: str,
-    ) -> OrgMemberInfo | None:
+    ) -> OrgMemberInfo:
+        """Raises:
+            OrgNotFoundError: Org identifier did not resolve.
+            OrgMemberNotFoundError: User is not a member of the org.
+        """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
-            return None
+            raise OrgNotFoundError(f"No org with slug {slug!r}")
         existing = await (
             self._db()
             .select(SupabaseOrgMember)
@@ -742,7 +905,9 @@ class SupabaseAuthClient(BaseAuthClient):
             .first_or_none()
         )
         if existing is None:
-            return None
+            raise OrgMemberNotFoundError(
+                f"User {user_id!r} is not a member of org {canonical!r}"
+            )
 
         [result] = await (
             self._db()
@@ -762,6 +927,11 @@ class SupabaseAuthClient(BaseAuthClient):
         slug: str | None = None,
         user_id: str | uuid.UUID,
     ) -> bool:
+        """Returns ``False`` if the org or membership does not exist.
+
+        Raises:
+            LastOwnerError: Removing this member would leave the org without an owner.
+        """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
             return False
@@ -788,7 +958,9 @@ class SupabaseAuthClient(BaseAuthClient):
                     "Remove org member failed: cannot remove last owner of org %s",
                     canonical,
                 )
-                return False
+                raise LastOwnerError(
+                    f"Cannot remove the last owner of org {canonical!r}"
+                )
 
         await (
             self._db()
@@ -807,9 +979,12 @@ class SupabaseAuthClient(BaseAuthClient):
         limit: int | None = None,
         offset: int | None = None,
     ) -> list[OrgMemberInfo]:
+        """Raises:
+            OrgNotFoundError: Org identifier did not resolve.
+        """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
-            return []
+            raise OrgNotFoundError(f"No org with slug {slug!r}")
         q = (
             self._db()
             .select(SupabaseOrgMember)
@@ -828,10 +1003,14 @@ class SupabaseAuthClient(BaseAuthClient):
         org_id: str | uuid.UUID | None = None,
         slug: str | None = None,
         user_id: str | uuid.UUID,
-    ) -> OrgMemberInfo | None:
+    ) -> OrgMemberInfo:
+        """Raises:
+            OrgNotFoundError: Org identifier did not resolve.
+            OrgMemberNotFoundError: User is not a member of the org.
+        """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
-            return None
+            raise OrgNotFoundError(f"No org with slug {slug!r}")
         member = await (
             self._db()
             .select(SupabaseOrgMember)
@@ -839,7 +1018,11 @@ class SupabaseAuthClient(BaseAuthClient):
             .where(SupabaseOrgMember.user_id == str(user_id))
             .first_or_none()
         )
-        return self._to_org_member_info(member) if member is not None else None
+        if member is None:
+            raise OrgMemberNotFoundError(
+                f"User {user_id!r} is not a member of org {canonical!r}"
+            )
+        return self._to_org_member_info(member)
 
     # -- Organization session context --------------------------------------------
 
@@ -848,7 +1031,10 @@ class SupabaseAuthClient(BaseAuthClient):
         *,
         session_id: str | uuid.UUID,
         org_id: str | uuid.UUID | None,
-    ) -> TokenPair | None:
+    ) -> TokenPair:
+        """Raises:
+            OrgMemberNotFoundError: User is not a member of the target org.
+        """
         if org_id is None:
             return TokenPair(
                 access_token="",
@@ -867,7 +1053,9 @@ class SupabaseAuthClient(BaseAuthClient):
             .first_or_none()
         )
         if role is None:
-            return None
+            raise OrgMemberNotFoundError(
+                f"User {user_id!r} is not a member of org {org_id!r}"
+            )
 
         signed = self._sign_org_context(user_id, str(org_id), role)
         return TokenPair(

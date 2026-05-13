@@ -6,6 +6,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from derp.auth.exceptions import (
+    LastOwnerError,
+    MemberAlreadyExistsError,
+    OrgMemberNotFoundError,
+    OrgNotFoundError,
+    OrgSlugConflictError,
+)
 from derp.auth.jwt import decode_token
 from derp.derp_client import DerpClient
 from tests.conftest import bearer_request
@@ -68,12 +75,13 @@ class TestCreateOrg:
             creator_id=user_id,
         )
 
-        result = await derp.auth.create_org(
-            name="Different Name",
-            slug="acme",
-            creator_id=user_id,
-        )
-        assert result is None
+        with pytest.raises(OrgSlugConflictError) as exc:
+            await derp.auth.create_org(
+                name="Different Name",
+                slug="acme",
+                creator_id=user_id,
+            )
+        assert exc.value.slug == "acme"
 
 
 class TestGetOrg:
@@ -93,25 +101,8 @@ class TestGetOrg:
         assert fetched.slug == "acme"
 
     async def test_get_org_not_found(self, derp: DerpClient) -> None:
-        result = await derp.auth.get_org(org_id="00000000-0000-0000-0000-000000000000")
-        assert result is None
-
-    async def test_get_org_by_slug(
-        self, derp: DerpClient, mock_smtp: AsyncMock
-    ) -> None:
-        user_id = await _create_user(derp, "creator@example.com", mock_smtp)
-        org = await derp.auth.create_org(
-            name="Acme Corp", slug="acme", creator_id=user_id
-        )
-        assert org is not None
-
-        fetched = await derp.auth.get_org_by_slug("acme")
-        assert fetched is not None
-        assert fetched.id == org.id
-
-    async def test_get_org_by_slug_not_found(self, derp: DerpClient) -> None:
-        result = await derp.auth.get_org_by_slug("nonexistent")
-        assert result is None
+        with pytest.raises(OrgNotFoundError):
+            await derp.auth.get_org(org_id="00000000-0000-0000-0000-000000000000")
 
 
 class TestUpdateOrg:
@@ -146,11 +137,11 @@ class TestUpdateOrg:
         assert updated.name == "Acme Corp"
 
     async def test_update_org_not_found(self, derp: DerpClient) -> None:
-        result = await derp.auth.update_org(
-            org_id="00000000-0000-0000-0000-000000000000",
-            name="New Name",
-        )
-        assert result is None
+        with pytest.raises(OrgNotFoundError):
+            await derp.auth.update_org(
+                org_id="00000000-0000-0000-0000-000000000000",
+                name="New Name",
+            )
 
 
 class TestDeleteOrg:
@@ -165,8 +156,8 @@ class TestDeleteOrg:
 
         await derp.auth.delete_org(org_id=org.id)
 
-        result = await derp.auth.get_org(org_id=org.id)
-        assert result is None
+        with pytest.raises(OrgNotFoundError):
+            await derp.auth.get_org(org_id=org.id)
 
     async def test_delete_org_cascades_members(
         self, derp: DerpClient, mock_smtp: AsyncMock
@@ -179,6 +170,8 @@ class TestDeleteOrg:
 
         await derp.auth.delete_org(org_id=org.id)
 
+        # ``org_id=`` is passthrough — we don't re-fetch the org just to
+        # check it exists. Membership rows are gone via FK cascade.
         members = await derp.auth.list_org_members(org_id=org.id)
         assert members == []
 
@@ -262,8 +255,8 @@ class TestOrgMembers:
         assert org is not None
 
         await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
-        result = await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
-        assert result is None
+        with pytest.raises(MemberAlreadyExistsError):
+            await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
 
     async def test_update_member_role(
         self, derp: DerpClient, mock_smtp: AsyncMock
@@ -287,12 +280,12 @@ class TestOrgMembers:
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
         assert org is not None
 
-        result = await derp.auth.update_org_member(
-            org_id=org.id,
-            user_id="00000000-0000-0000-0000-000000000000",
-            role="admin",
-        )
-        assert result is None
+        with pytest.raises(OrgMemberNotFoundError):
+            await derp.auth.update_org_member(
+                org_id=org.id,
+                user_id="00000000-0000-0000-0000-000000000000",
+                role="admin",
+            )
 
     async def test_remove_member(self, derp: DerpClient, mock_smtp: AsyncMock) -> None:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
@@ -303,8 +296,8 @@ class TestOrgMembers:
         await derp.auth.add_org_member(org_id=org.id, user_id=user_id)
         await derp.auth.remove_org_member(org_id=org.id, user_id=user_id)
 
-        member = await derp.auth.get_org_member(org_id=org.id, user_id=user_id)
-        assert member is None
+        with pytest.raises(OrgMemberNotFoundError):
+            await derp.auth.get_org_member(org_id=org.id, user_id=user_id)
 
     async def test_remove_last_owner(
         self, derp: DerpClient, mock_smtp: AsyncMock
@@ -313,8 +306,8 @@ class TestOrgMembers:
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
         assert org is not None
 
-        result = await derp.auth.remove_org_member(org_id=org.id, user_id=owner_id)
-        assert result is False
+        with pytest.raises(LastOwnerError):
+            await derp.auth.remove_org_member(org_id=org.id, user_id=owner_id)
 
     async def test_list_members(self, derp: DerpClient, mock_smtp: AsyncMock) -> None:
         owner_id = await _create_user(derp, "owner@example.com", mock_smtp)
@@ -343,11 +336,11 @@ class TestOrgMembers:
         org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=owner_id)
         assert org is not None
 
-        member = await derp.auth.get_org_member(
-            org_id=org.id,
-            user_id="00000000-0000-0000-0000-000000000000",
-        )
-        assert member is None
+        with pytest.raises(OrgMemberNotFoundError):
+            await derp.auth.get_org_member(
+                org_id=org.id,
+                user_id="00000000-0000-0000-0000-000000000000",
+            )
 
 
 class TestOrgSessionContext:
@@ -406,10 +399,10 @@ class TestOrgSessionContext:
         )
         assert session is not None
 
-        set_org_result = await derp.auth.set_active_org(
-            session_id=session.session_id, org_id=org.id
-        )
-        assert set_org_result is None
+        with pytest.raises(OrgMemberNotFoundError):
+            await derp.auth.set_active_org(
+                session_id=session.session_id, org_id=org.id
+            )
 
     async def test_clear_active_org(
         self, derp: DerpClient, mock_smtp: AsyncMock
@@ -685,7 +678,8 @@ class TestOrgMethodsBySlug:
         assert result.id == org.id
 
     async def test_get_org_by_slug_unknown(self, derp: DerpClient) -> None:
-        assert await derp.auth.get_org(slug="never-existed") is None
+        with pytest.raises(OrgNotFoundError):
+            await derp.auth.get_org(slug="never-existed")
 
     async def test_get_org_requires_exactly_one(self, derp: DerpClient) -> None:
         with pytest.raises(ValueError, match="exactly one"):
@@ -716,7 +710,8 @@ class TestOrgMethodsBySlug:
         assert org is not None
 
         assert await derp.auth.delete_org(slug="acme") is True
-        assert await derp.auth.get_org(org_id=org.id) is None
+        with pytest.raises(OrgNotFoundError):
+            await derp.auth.get_org(org_id=org.id)
 
     async def test_delete_org_by_unknown_slug(self, derp: DerpClient) -> None:
         assert await derp.auth.delete_org(slug="nope") is False
@@ -752,17 +747,20 @@ class TestOrgMethodsBySlug:
     async def test_member_methods_unknown_slug(
         self, derp: DerpClient, mock_smtp: AsyncMock
     ) -> None:
-        """Unknown slug → no-op falsy results, no errors."""
+        """Unknown slug → OrgNotFoundError for everything except remove (False)."""
         user_id = await _create_user(derp, "user@example.com", mock_smtp)
 
-        assert (await derp.auth.add_org_member(slug="nope", user_id=user_id)) is None
-        assert (await derp.auth.get_org_member(slug="nope", user_id=user_id)) is None
-        assert await derp.auth.list_org_members(slug="nope") == []
-        assert (
+        with pytest.raises(OrgNotFoundError):
+            await derp.auth.add_org_member(slug="nope", user_id=user_id)
+        with pytest.raises(OrgNotFoundError):
+            await derp.auth.get_org_member(slug="nope", user_id=user_id)
+        with pytest.raises(OrgNotFoundError):
+            await derp.auth.list_org_members(slug="nope")
+        with pytest.raises(OrgNotFoundError):
             await derp.auth.update_org_member(
                 slug="nope", user_id=user_id, role="admin"
             )
-        ) is None
+        # remove_org_member is the bool-returning sibling — quietly False.
         assert (
             await derp.auth.remove_org_member(slug="nope", user_id=user_id)
         ) is False

@@ -18,6 +18,12 @@ from app.schemas import (
     WorkspaceResponse,
 )
 from derp import DerpClient
+from derp.auth.exceptions import (
+    MemberAlreadyExistsError,
+    OrgNotFoundError,
+    OrgSlugConflictError,
+    UserNotFoundError,
+)
 from derp.auth.models import OrgMemberInfo, UserInfo
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
@@ -30,8 +36,11 @@ async def create_workspace(
     derp: DerpClient = Depends(get_derp),
 ) -> WorkspaceResponse:
     """Create a new workspace. The creator becomes the owner."""
-    org = await derp.auth.create_org(name=data.name, slug=data.slug, creator_id=user.id)
-    if org is None:
+    try:
+        org = await derp.auth.create_org(
+            name=data.name, slug=data.slug, creator_id=user.id
+        )
+    except OrgSlugConflictError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A workspace with this slug already exists",
@@ -85,8 +94,9 @@ async def get_workspace(
     derp: DerpClient = Depends(get_derp),
 ) -> WorkspaceResponse:
     """Get workspace details."""
-    org = await derp.auth.get_org(org_id=workspace_id)
-    if org is None:
+    try:
+        org = await derp.auth.get_org(org_id=workspace_id)
+    except OrgNotFoundError:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return WorkspaceResponse(
         id=org.id, name=org.name, slug=org.slug, created_at=org.created_at
@@ -103,12 +113,17 @@ async def list_workspace_members(
     members = await derp.auth.list_org_members(org_id=workspace_id)
     result = []
     for m in members:
-        u = await derp.auth.get_user(m.user_id)
+        try:
+            u = await derp.auth.get_user(m.user_id)
+            user_payload = UserPublicResponse.model_validate(u)
+        except UserNotFoundError:
+            # Membership row outlived the user record — surface but with no user info.
+            user_payload = None
         result.append(
             WorkspaceMemberResponse(
                 user_id=m.user_id,
                 role=m.role,
-                user=UserPublicResponse.model_validate(u) if u else None,
+                user=user_payload,
             )
         )
     return result
@@ -129,14 +144,16 @@ async def invite_member(
     if member.role not in ("owner", "admin"):
         raise HTTPException(status_code=403, detail="Only owners and admins can invite")
 
-    target = await derp.auth.get_user(data.user_id)
-    if not target:
+    try:
+        target = await derp.auth.get_user(data.user_id)
+    except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
 
-    new_member = await derp.auth.add_org_member(
-        org_id=workspace_id, user_id=data.user_id, role=data.role
-    )
-    if new_member is None:
+    try:
+        new_member = await derp.auth.add_org_member(
+            org_id=workspace_id, user_id=data.user_id, role=data.role
+        )
+    except MemberAlreadyExistsError:
         raise HTTPException(status_code=409, detail="User is already a member")
 
     # Auto-join them to #general

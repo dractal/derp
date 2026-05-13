@@ -7,6 +7,7 @@ import uuid
 from fastapi import Depends, HTTPException, Request, status
 
 from derp import DerpClient
+from derp.auth.exceptions import OrgMemberNotFoundError, UserNotFoundError
 from derp.auth.models import OrgMemberInfo, UserInfo
 
 
@@ -27,15 +28,14 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = await derp.auth.get_user(session.user_id)
-    if not user:
+    try:
+        return await derp.auth.get_user(session.user_id)
+    except UserNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
-    return user
 
 
 async def get_workspace_member(
@@ -44,10 +44,10 @@ async def get_workspace_member(
     derp: DerpClient = Depends(get_derp),
 ) -> OrgMemberInfo:
     """Verify the current user is a member of the workspace."""
-    member = await derp.auth.get_org_member(org_id=workspace_id, user_id=user.id)
-    if member is None:
+    try:
+        return await derp.auth.get_org_member(org_id=workspace_id, user_id=user.id)
+    except OrgMemberNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not a member of this workspace",
         )
-    return member

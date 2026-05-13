@@ -55,8 +55,12 @@ class BaseAuthClient(abc.ABC):
     # ------------------------------------------------------------------
 
     @abc.abstractmethod
-    async def get_user(self, user_id: str | uuid.UUID) -> UserInfo | None:
-        """Get a user by their ID."""
+    async def get_user(self, user_id: str | uuid.UUID) -> UserInfo:
+        """Get a user by their ID.
+
+        Raises:
+            UserNotFoundError: No user with that id.
+        """
 
     @abc.abstractmethod
     async def list_users(
@@ -71,8 +75,12 @@ class BaseAuthClient(abc.ABC):
         user_id: str | uuid.UUID,
         email: str | None = None,
         **kwargs: Any,
-    ) -> UserInfo | None:
-        """Update user data. Returns ``None`` if the user is not found."""
+    ) -> UserInfo:
+        """Update user data.
+
+        Raises:
+            UserNotFoundError: No user with that id.
+        """
 
     @abc.abstractmethod
     async def delete_user(self, user_id: str | uuid.UUID) -> bool:
@@ -97,7 +105,7 @@ class BaseAuthClient(abc.ABC):
         user_id: str | uuid.UUID | None = None,
         limit: int | None = None,
         offset: int | None = None,
-    ) -> list[Any]:
+    ) -> list[SessionInfo]:
         """List active sessions, optionally filtered by user."""
 
     @abc.abstractmethod
@@ -131,13 +139,16 @@ class BaseAuthClient(abc.ABC):
         user_agent: str | None = None,
         ip_address: str | None = None,
         **kwargs: Any,
-    ) -> AuthResult | None:
+    ) -> AuthResult:
         """Register a new user with email and password.
 
         If *request* is provided, ``user_agent`` and ``ip_address`` are
         extracted automatically when not explicitly given.
 
-        Returns ``None`` if password validation fails or the email is taken.
+        Raises:
+            EmailAlreadyExistsError: An account with this email exists.
+            PasswordValidationError: Password did not meet requirements.
+            SignupDisabledError: Signup is turned off via config.
         """
         raise NotImplementedError
 
@@ -151,8 +162,12 @@ class BaseAuthClient(abc.ABC):
         last_name: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> AuthResult | None:
-        """Sign in with email and password."""
+    ) -> AuthResult:
+        """Sign in with email and password.
+
+        Raises:
+            InvalidCredentialsError: Email or password did not match.
+        """
         raise NotImplementedError
 
     async def sign_in_with_magic_link(self, *, email: str, magic_link_url: str) -> None:
@@ -165,8 +180,12 @@ class BaseAuthClient(abc.ABC):
         *,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> AuthResult | None:
-        """Verify a magic link and sign in."""
+    ) -> AuthResult:
+        """Verify a magic link and sign in.
+
+        Raises:
+            InvalidTokenError: Token is unknown, expired, or already used.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -195,16 +214,24 @@ class BaseAuthClient(abc.ABC):
         redirect_uri: str | None = None,
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> AuthResult | None:
-        """Complete OAuth sign in with authorization code."""
+    ) -> AuthResult:
+        """Complete OAuth sign in with authorization code.
+
+        Raises:
+            InvalidCredentialsError: Provider rejected the code or user lookup failed.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
     # Tokens (optional)
     # ------------------------------------------------------------------
 
-    async def refresh_token(self, refresh_token: str) -> TokenPair | None:
-        """Refresh an access token using a refresh token."""
+    async def refresh_token(self, refresh_token: str) -> TokenPair:
+        """Refresh an access token using a refresh token.
+
+        Raises:
+            InvalidTokenError: Refresh token is unknown, expired, or revoked.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -222,16 +249,25 @@ class BaseAuthClient(abc.ABC):
         """Send a password recovery email."""
         raise NotImplementedError
 
-    async def reset_password(self, token: str, new_password: str) -> UserInfo | None:
-        """Reset password using recovery token. Returns ``None`` for invalid tokens."""
+    async def reset_password(self, token: str, new_password: str) -> UserInfo:
+        """Reset password using recovery token.
+
+        Raises:
+            InvalidTokenError: Recovery token is unknown, expired, or used.
+            PasswordValidationError: New password did not meet requirements.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
     # Email confirmation (optional)
     # ------------------------------------------------------------------
 
-    async def confirm_email(self, token: str) -> UserInfo | None:
-        """Confirm email address with token. Returns ``None`` for invalid tokens."""
+    async def confirm_email(self, token: str) -> UserInfo:
+        """Confirm email address with token.
+
+        Raises:
+            InvalidTokenError: Confirmation token is unknown, expired, or used.
+        """
         raise NotImplementedError
 
     async def resend_confirmation_email(
@@ -251,10 +287,11 @@ class BaseAuthClient(abc.ABC):
 
     async def create_org(
         self, *, name: str, slug: str, creator_id: str | uuid.UUID, **kwargs: Any
-    ) -> OrgInfo | None:
+    ) -> OrgInfo:
         """Create an organization. The creator is added as owner.
 
-        Returns ``None`` if the slug is already taken.
+        Raises:
+            OrgSlugConflictError: Slug is already taken.
         """
         raise NotImplementedError
 
@@ -263,14 +300,11 @@ class BaseAuthClient(abc.ABC):
         *,
         org_id: str | uuid.UUID | None = None,
         slug: str | None = None,
-    ) -> OrgInfo | None:
-        """Get an organization by ID or slug. Provide exactly one."""
-        raise NotImplementedError
+    ) -> OrgInfo:
+        """Get an organization by ID or slug. Provide exactly one.
 
-    async def get_org_by_slug(self, slug: str) -> OrgInfo | None:
-        """Get an organization by slug.
-
-        Convenience wrapper around ``get_org(slug=...)``.
+        Raises:
+            OrgNotFoundError: No org matches the given id or slug.
         """
         raise NotImplementedError
 
@@ -282,13 +316,17 @@ class BaseAuthClient(abc.ABC):
         name: str | None = None,
         slug: str | None = None,
         **kwargs: Any,
-    ) -> OrgInfo | None:
-        """Update an organization. Returns ``None`` if not found.
+    ) -> OrgInfo:
+        """Update an organization.
 
         Identify the org by ``org_id`` OR ``org_slug`` (exactly one). The
         ``slug`` kwarg sets the org's new slug — it does NOT identify the
         target. This is the one place ``slug=`` means a value rather than
         a lookup, since slug is updateable.
+
+        Raises:
+            OrgNotFoundError: No org matches the identifier.
+            OrgSlugConflictError: New slug is already taken.
         """
         raise NotImplementedError
 
@@ -325,10 +363,12 @@ class BaseAuthClient(abc.ABC):
         slug: str | None = None,
         user_id: str | uuid.UUID,
         role: str = "member",
-    ) -> OrgMemberInfo | None:
+    ) -> OrgMemberInfo:
         """Add a user to an organization (identify by ``org_id`` or ``slug``).
 
-        Returns ``None`` if the user is already a member.
+        Raises:
+            OrgNotFoundError: Org identifier did not resolve.
+            MemberAlreadyExistsError: User is already a member.
         """
         raise NotImplementedError
 
@@ -339,8 +379,13 @@ class BaseAuthClient(abc.ABC):
         slug: str | None = None,
         user_id: str | uuid.UUID,
         role: str,
-    ) -> OrgMemberInfo | None:
-        """Update a member's role. Returns ``None`` if not found."""
+    ) -> OrgMemberInfo:
+        """Update a member's role.
+
+        Raises:
+            OrgNotFoundError: Org identifier did not resolve.
+            OrgMemberNotFoundError: User is not a member of the org.
+        """
         raise NotImplementedError
 
     async def remove_org_member(
@@ -352,7 +397,11 @@ class BaseAuthClient(abc.ABC):
     ) -> bool:
         """Remove a user from an organization.
 
-        Returns ``False`` if not found or if the user is the last owner.
+        Returns ``False`` if the org or membership does not exist.
+
+        Raises:
+            LastOwnerError: Removing this member would leave the org without
+                an owner.
         """
         raise NotImplementedError
 
@@ -364,7 +413,11 @@ class BaseAuthClient(abc.ABC):
         limit: int | None = None,
         offset: int | None = None,
     ) -> list[OrgMemberInfo]:
-        """List members of an organization (identify by ``org_id`` or ``slug``)."""
+        """List members of an organization (identify by ``org_id`` or ``slug``).
+
+        Raises:
+            OrgNotFoundError: Org identifier did not resolve.
+        """
         raise NotImplementedError
 
     async def get_org_member(
@@ -373,8 +426,13 @@ class BaseAuthClient(abc.ABC):
         org_id: str | uuid.UUID | None = None,
         slug: str | None = None,
         user_id: str | uuid.UUID,
-    ) -> OrgMemberInfo | None:
-        """Get a single membership record."""
+    ) -> OrgMemberInfo:
+        """Get a single membership record.
+
+        Raises:
+            OrgNotFoundError: Org identifier did not resolve.
+            OrgMemberNotFoundError: User is not a member of the org.
+        """
         raise NotImplementedError
 
     # ------------------------------------------------------------------
@@ -430,10 +488,13 @@ class BaseAuthClient(abc.ABC):
         *,
         session_id: str | uuid.UUID,
         org_id: str | uuid.UUID | None,
-    ) -> TokenPair | None:
+    ) -> TokenPair:
         """Switch the active organization for a session.
 
-        Returns new tokens, or ``None`` if the user is not a member.
+        Pass ``org_id=None`` to clear the active org (sign out of org context).
+
+        Raises:
+            OrgMemberNotFoundError: User is not a member of the target org.
         """
         raise NotImplementedError
 

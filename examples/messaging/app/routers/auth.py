@@ -15,6 +15,12 @@ from app.schemas import (
     UserPublicResponse,
 )
 from derp import DerpClient
+from derp.auth.exceptions import (
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+    PasswordValidationError,
+)
 from derp.auth.models import UserInfo
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -27,15 +33,21 @@ async def signup(
     request: Request, data: SignUpRequest, derp: DerpClient = Depends(get_derp)
 ) -> AuthResponse:
     """Register a new user with email and password."""
-    result = await derp.auth.sign_up(
-        email=data.email,
-        password=data.password,
-        request=request,
-    )
-    if result is None:
+    try:
+        result = await derp.auth.sign_up(
+            email=data.email,
+            password=data.password,
+            request=request,
+        )
+    except EmailAlreadyExistsError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists",
+        )
+    except PasswordValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Signup failed",
+            detail=e.message,
         )
 
     return AuthResponse(
@@ -53,12 +65,13 @@ async def signin(
     request: Request, data: SignInRequest, derp: DerpClient = Depends(get_derp)
 ) -> AuthResponse:
     """Sign in with email and password."""
-    result = await derp.auth.sign_in_with_password(
-        email=data.email,
-        password=data.password,
-        request=request,
-    )
-    if result is None:
+    try:
+        result = await derp.auth.sign_in_with_password(
+            email=data.email,
+            password=data.password,
+            request=request,
+        )
+    except InvalidCredentialsError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
@@ -92,8 +105,9 @@ async def refresh(
     data: RefreshTokenRequest, derp: DerpClient = Depends(get_derp)
 ) -> TokenResponse:
     """Refresh access token using refresh token."""
-    tokens = await derp.auth.refresh_token(data.refresh_token)
-    if tokens is None:
+    try:
+        tokens = await derp.auth.refresh_token(data.refresh_token)
+    except InvalidTokenError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",

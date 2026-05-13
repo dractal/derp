@@ -21,6 +21,7 @@ from app.schemas import (
     UpdateChannelRequest,
 )
 from derp import DerpClient
+from derp.auth.exceptions import OrgMemberNotFoundError, UserNotFoundError
 from derp.auth.models import OrgMemberInfo, UserInfo
 
 router = APIRouter(tags=["channels"])
@@ -105,14 +106,14 @@ async def start_dm(
         raise HTTPException(status_code=400, detail="Cannot DM yourself")
 
     # Verify target is a workspace member
-    target_member = await derp.auth.get_org_member(
-        org_id=workspace_id, user_id=data.user_id
-    )
-    if not target_member:
+    try:
+        await derp.auth.get_org_member(org_id=workspace_id, user_id=data.user_id)
+    except OrgMemberNotFoundError:
         raise HTTPException(status_code=404, detail="User is not in this workspace")
 
-    target = await derp.auth.get_user(data.user_id)
-    if not target:
+    try:
+        target = await derp.auth.get_user(data.user_id)
+    except UserNotFoundError:
         raise HTTPException(status_code=404, detail="User not found")
 
     # Check if DM already exists between these two users in this workspace
@@ -292,10 +293,11 @@ async def delete_channel(
         raise HTTPException(status_code=400, detail="Cannot delete #general")
 
     # Check if user is channel creator or workspace owner
-    ws_member = await derp.auth.get_org_member(
-        org_id=channel.workspace_id, user_id=user.id
-    )
-    if not ws_member:
+    try:
+        ws_member = await derp.auth.get_org_member(
+            org_id=channel.workspace_id, user_id=user.id
+        )
+    except OrgMemberNotFoundError:
         raise HTTPException(status_code=403, detail="Not a workspace member")
 
     if channel.created_by != user.id and ws_member.role != "owner":
@@ -328,10 +330,9 @@ async def join_channel(
         raise HTTPException(status_code=403, detail="Cannot join a private channel")
 
     # Verify workspace membership
-    ws_member = await derp.auth.get_org_member(
-        org_id=channel.workspace_id, user_id=user.id
-    )
-    if not ws_member:
+    try:
+        await derp.auth.get_org_member(org_id=channel.workspace_id, user_id=user.id)
+    except OrgMemberNotFoundError:
         raise HTTPException(status_code=403, detail="Not a workspace member")
 
     existing = await (

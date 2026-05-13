@@ -11,6 +11,12 @@ from unittest.mock import AsyncMock, MagicMock
 import jwt as pyjwt
 import pytest
 
+from derp.auth.exceptions import (
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+    UserNotFoundError,
+)
 from derp.config import (
     AuthConfig,
     JWTConfig,
@@ -257,17 +263,20 @@ class TestSignUp:
         assert "signup" in call_args[0][0]
 
     async def test_email_taken(self, connected_client) -> None:
+        # GoTrue's actual duplicate-email response: 422 + ``error_code``.
         connected_client._http.post = AsyncMock(
             return_value=_mock_response(
-                status_code=400,
-                json_data={"error": "User already registered"},
+                status_code=422,
+                json_data={
+                    "error_code": "user_already_exists",
+                    "msg": "User already registered",
+                },
             )
         )
 
-        result = await connected_client.sign_up(
-            email=TEST_EMAIL, password=TEST_PASSWORD
-        )
-        assert result is None
+        with pytest.raises(EmailAlreadyExistsError) as exc:
+            await connected_client.sign_up(email=TEST_EMAIL, password=TEST_PASSWORD)
+        assert exc.value.email == TEST_EMAIL
 
 
 # ── Sign In With Password ─────────────────────────────────────────
@@ -297,10 +306,8 @@ class TestSignInWithPassword:
             )
         )
 
-        result = await connected_client.sign_in_with_password(
-            TEST_EMAIL, "wrong-password"
-        )
-        assert result is None
+        with pytest.raises(InvalidCredentialsError):
+            await connected_client.sign_in_with_password(TEST_EMAIL, "wrong-password")
 
 
 # ── Refresh Token ─────────────────────────────────────────────────
@@ -327,8 +334,8 @@ class TestRefreshToken:
             )
         )
 
-        result = await connected_client.refresh_token("bad-token")
-        assert result is None
+        with pytest.raises(InvalidTokenError):
+            await connected_client.refresh_token("bad-token")
 
 
 # ── Sign Out ──────────────────────────────────────────────────────
@@ -379,8 +386,8 @@ class TestGetUser:
             )
         )
 
-        user = await connected_client.get_user("nonexistent")
-        assert user is None
+        with pytest.raises(UserNotFoundError):
+            await connected_client.get_user("nonexistent")
 
 
 class TestListUsers:
@@ -434,10 +441,10 @@ class TestUpdateUser:
             )
         )
 
-        user = await connected_client.update_user(
-            user_id="nonexistent", email="x@test.com"
-        )
-        assert user is None
+        with pytest.raises(UserNotFoundError):
+            await connected_client.update_user(
+                user_id="nonexistent", email="x@test.com"
+            )
 
 
 class TestDeleteUser:
