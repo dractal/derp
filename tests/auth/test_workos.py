@@ -889,9 +889,7 @@ class TestOrganizations:
         )
         assert rows[0].slug == "new-slug"
 
-    async def test_update_workos_404_raises(
-        self, connected_client_with_db
-    ) -> None:
+    async def test_update_workos_404_raises(self, connected_client_with_db) -> None:
         """``org_id=`` is passthrough; WorkOS NotFound surfaces as OrgNotFoundError."""
         client = connected_client_with_db
         client._workos.organizations.update_organization = AsyncMock(
@@ -900,9 +898,7 @@ class TestOrganizations:
         with pytest.raises(OrgNotFoundError):
             await client.update_org(org_id="org_does_not_exist", name="X")
 
-    async def test_update_unknown_slug_raises(
-        self, connected_client_with_db
-    ) -> None:
+    async def test_update_unknown_slug_raises(self, connected_client_with_db) -> None:
         """Unknown slug short-circuits — never hits WorkOS."""
         client = connected_client_with_db
         client._workos.organizations.update_organization = AsyncMock()
@@ -1176,9 +1172,7 @@ class TestListOrgMembersByCursor:
         assert result.has_more is False
         assert result.next_cursor is None
 
-    async def test_unknown_slug_raises(
-        self, connected_client_with_db
-    ) -> None:
+    async def test_unknown_slug_raises(self, connected_client_with_db) -> None:
         """Unknown slug short-circuits without touching WorkOS."""
         client = connected_client_with_db
         client._workos.user_management.list_organization_memberships = AsyncMock()

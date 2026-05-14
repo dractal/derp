@@ -116,9 +116,7 @@ class SupabaseAuthClient(BaseAuthClient):
         diagnose without re-running the request.
         """
         body = resp.text[:500]
-        return AuthBackendError(
-            f"Supabase {op} failed: HTTP {resp.status_code} {body}"
-        )
+        return AuthBackendError(f"Supabase {op} failed: HTTP {resp.status_code} {body}")
 
     # -- Response mapping --------------------------------------------------------
 
@@ -675,7 +673,7 @@ class SupabaseAuthClient(BaseAuthClient):
         **kwargs: Any,
     ) -> OrgInfo:
         """Raises:
-            OrgSlugConflictError: Slug is already taken.
+        OrgSlugConflictError: Slug is already taken.
         """
         now = datetime.now(UTC)
         org = await (
@@ -734,7 +732,7 @@ class SupabaseAuthClient(BaseAuthClient):
         slug: str | None = None,
     ) -> OrgInfo:
         """Raises:
-            OrgNotFoundError: No org matches the given id or slug.
+        OrgNotFoundError: No org matches the given id or slug.
         """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
@@ -855,8 +853,8 @@ class SupabaseAuthClient(BaseAuthClient):
         role: str = "member",
     ) -> OrgMemberInfo:
         """Raises:
-            OrgNotFoundError: Org identifier did not resolve.
-            MemberAlreadyExistsError: User is already a member.
+        OrgNotFoundError: Org identifier did not resolve.
+        MemberAlreadyExistsError: User is already a member.
         """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
@@ -891,8 +889,8 @@ class SupabaseAuthClient(BaseAuthClient):
         role: str,
     ) -> OrgMemberInfo:
         """Raises:
-            OrgNotFoundError: Org identifier did not resolve.
-            OrgMemberNotFoundError: User is not a member of the org.
+        OrgNotFoundError: Org identifier did not resolve.
+        OrgMemberNotFoundError: User is not a member of the org.
         """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
@@ -980,7 +978,7 @@ class SupabaseAuthClient(BaseAuthClient):
         offset: int | None = None,
     ) -> list[OrgMemberInfo]:
         """Raises:
-            OrgNotFoundError: Org identifier did not resolve.
+        OrgNotFoundError: Org identifier did not resolve.
         """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
@@ -1005,8 +1003,8 @@ class SupabaseAuthClient(BaseAuthClient):
         user_id: str | uuid.UUID,
     ) -> OrgMemberInfo:
         """Raises:
-            OrgNotFoundError: Org identifier did not resolve.
-            OrgMemberNotFoundError: User is not a member of the org.
+        OrgNotFoundError: Org identifier did not resolve.
+        OrgMemberNotFoundError: User is not a member of the org.
         """
         canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
         if canonical is None:
@@ -1033,7 +1031,7 @@ class SupabaseAuthClient(BaseAuthClient):
         org_id: str | uuid.UUID | None,
     ) -> TokenPair:
         """Raises:
-            OrgMemberNotFoundError: User is not a member of the target org.
+        OrgMemberNotFoundError: User is not a member of the target org.
         """
         if org_id is None:
             return TokenPair(

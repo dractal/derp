@@ -20,5 +20,24 @@ Example usage:
 from derp.config import StorageConfig
 
 from .client import StorageClient
+from .exceptions import (
+    StorageAccessDeniedError,
+    StorageBackendError,
+    StorageBucketNotFoundError,
+    StorageError,
+    StorageNotConnectedError,
+    StorageObjectNotFoundError,
+    StoragePartialDeleteError,
+)
 
-__all__ = ["StorageClient", "StorageConfig"]
+__all__ = [
+    "StorageAccessDeniedError",
+    "StorageBackendError",
+    "StorageBucketNotFoundError",
+    "StorageClient",
+    "StorageConfig",
+    "StorageError",
+    "StorageNotConnectedError",
+    "StorageObjectNotFoundError",
+    "StoragePartialDeleteError",
+]

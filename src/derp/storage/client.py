@@ -10,11 +10,27 @@ from botocore.exceptions import ClientError
 from etils import epy
 
 from derp.config import StorageConfig
-from derp.storage.exceptions import StorageNotConnectedError
+from derp.storage.exceptions import (
+    StorageAccessDeniedError,
+    StorageBackendError,
+    StorageBucketNotFoundError,
+    StorageNotConnectedError,
+    StorageObjectNotFoundError,
+    StoragePartialDeleteError,
+)
 
 with epy.lazy_imports():
     import aiobotocore.client as aio_client
     import aiobotocore.session as aio_session
+
+
+_NOT_FOUND_CODES = frozenset({"404", "NoSuchKey", "NotFound"})
+_NO_SUCH_BUCKET_CODES = frozenset({"NoSuchBucket"})
+_ACCESS_DENIED_CODES = frozenset({"403", "AccessDenied", "Forbidden"})
+
+
+def _error_code(exc: ClientError) -> str:
+    return exc.response.get("Error", {}).get("Code", "") or ""
 
 
 class StorageClient:
@@ -86,6 +102,40 @@ class StorageClient:
     ) -> None:
         await self.disconnect()
 
+    async def _call(
+        self,
+        op_name: str,
+        *,
+        bucket: str | None = None,
+        key: str | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Invoke an aiobotocore operation with normalised error handling.
+
+        ``bucket`` / ``key`` are used to build informative
+        ``StorageObjectNotFoundError`` / ``StorageBucketNotFoundError``
+        exceptions; they do not get passed through to the operation.
+        Pass S3 arguments (``Bucket=...``, ``Key=...``) explicitly.
+        """
+        if self._client is None:
+            raise StorageNotConnectedError()
+
+        op = getattr(self._client, op_name)
+        try:
+            return await op(**kwargs)
+        except ClientError as exc:
+            code = _error_code(exc)
+            if code in _NO_SUCH_BUCKET_CODES and bucket is not None:
+                raise StorageBucketNotFoundError(bucket) from exc
+            if code in _NOT_FOUND_CODES:
+                if key is not None and bucket is not None:
+                    raise StorageObjectNotFoundError(bucket, key) from exc
+                if bucket is not None:
+                    raise StorageBucketNotFoundError(bucket) from exc
+            if code in _ACCESS_DENIED_CODES:
+                raise StorageAccessDeniedError() from exc
+            raise StorageBackendError(str(exc), code=code or None) from exc
+
     def get_url(self, *, bucket: str, key: str) -> str:
         """Get the URL for a file in S3.
 
@@ -136,9 +186,6 @@ class StorageClient:
                 metadata={"author": "user123"},
             )
         """
-        if self._client is None:
-            raise StorageNotConnectedError()
-
         put_kwargs: dict[str, Any] = {
             "Bucket": bucket,
             "Key": key,
@@ -154,7 +201,7 @@ class StorageClient:
         if extra_args:
             put_kwargs.update(extra_args)
 
-        await self._client.put_object(**put_kwargs)
+        await self._call("put_object", bucket=bucket, key=key, **put_kwargs)
 
     async def fetch_file(self, *, bucket: str, key: str) -> bytes:
         """Fetch a file from S3.
@@ -164,21 +211,19 @@ class StorageClient:
             key: S3 object key (path in bucket).
 
         Returns:
-            File content as bytes
+            File content as bytes.
+
+        Raises:
+            StorageObjectNotFoundError: If ``key`` does not exist.
+            StorageBucketNotFoundError: If ``bucket`` does not exist.
+            StorageAccessDeniedError: If the backend denies the request.
+            StorageBackendError: For any other backend failure.
 
         Example:
-            # Get content as bytes
-            content = await storage.fetch_file("remote/file.txt")
-
-            # Save to local file
-            await storage.fetch_file("remote/file.txt")
+            content = await storage.fetch_file(bucket="my-bucket", key="remote/file.txt")
         """
-        if self._client is None:
-            raise StorageNotConnectedError()
-
-        response = await self._client.get_object(
-            Bucket=bucket,
-            Key=key,
+        response = await self._call(
+            "get_object", bucket=bucket, key=key, Bucket=bucket, Key=key
         )
 
         async with response["Body"] as stream:
@@ -189,16 +234,16 @@ class StorageClient:
     async def delete_file(self, *, bucket: str, key: str) -> None:
         """Delete a file from S3.
 
+        S3 deletes are idempotent: calling this for a missing key
+        succeeds silently rather than raising.
+
         Args:
-            key: S3 object key (path in bucket)
-
-        Example:
-            await storage.delete_file("remote/file.txt")
+            bucket: Name of the S3 bucket.
+            key: S3 object key (path in bucket).
         """
-        if self._client is None:
-            raise StorageNotConnectedError()
-
-        await self._client.delete_object(Bucket=bucket, Key=key)
+        await self._call(
+            "delete_object", bucket=bucket, key=key, Bucket=bucket, Key=key
+        )
 
     async def delete_files(self, *, bucket: str, keys: list[str]) -> list[str]:
         """Delete multiple files from S3 in a single request.
@@ -209,19 +254,36 @@ class StorageClient:
 
         Returns:
             List of keys that were successfully deleted.
+
+        Raises:
+            StoragePartialDeleteError: If S3 reports per-key failures. The
+                exception carries both the failed entries and the keys
+                that succeeded in the same batch.
         """
         if not keys:
             return []
 
-        if self._client is None:
-            raise StorageNotConnectedError()
-
-        response = await self._client.delete_objects(
+        response = await self._call(
+            "delete_objects",
+            bucket=bucket,
             Bucket=bucket,
             Delete={"Objects": [{"Key": k} for k in keys]},
         )
 
-        return [obj["Key"] for obj in response.get("Deleted", [])]
+        deleted = [obj["Key"] for obj in response.get("Deleted", [])]
+        errors_raw = response.get("Errors") or []
+        if errors_raw:
+            errors = [
+                {
+                    "key": str(e.get("Key", "")),
+                    "code": str(e.get("Code", "")),
+                    "message": str(e.get("Message", "")),
+                }
+                for e in errors_raw
+            ]
+            raise StoragePartialDeleteError(errors=errors, deleted=deleted)
+
+        return deleted
 
     async def copy_file(
         self,
@@ -238,11 +300,15 @@ class StorageClient:
             src_key: Source object key.
             dst_bucket: Destination bucket name. Defaults to src_bucket.
             dst_key: Destination object key.
-        """
-        if self._client is None:
-            raise StorageNotConnectedError()
 
-        await self._client.copy_object(
+        Raises:
+            StorageObjectNotFoundError: If the source object does not exist.
+            StorageBucketNotFoundError: If either bucket does not exist.
+        """
+        await self._call(
+            "copy_object",
+            bucket=src_bucket,
+            key=src_key,
             Bucket=dst_bucket or src_bucket,
             Key=dst_key,
             CopySource={"Bucket": src_bucket, "Key": src_key},
@@ -251,27 +317,23 @@ class StorageClient:
     async def file_exists(self, *, bucket: str, key: str) -> bool:
         """Check if a file exists in S3.
 
+        Returns ``False`` for a missing key; only true backend errors
+        (denied, network, 5xx) raise.
+
         Args:
-            key: S3 object key (path in bucket)
+            bucket: Name of the S3 bucket.
+            key: S3 object key (path in bucket).
 
         Returns:
-            True if file exists, False otherwise
-
-        Example:
-            exists = await storage.file_exists("remote/file.txt")
+            True if file exists, False otherwise.
         """
-        if self._client is None:
-            raise StorageNotConnectedError()
-
         try:
-            await self._client.head_object(Bucket=bucket, Key=key)
+            await self._call(
+                "head_object", bucket=bucket, key=key, Bucket=bucket, Key=key
+            )
             return True
-        except ClientError as e:
-            error_code = e.response.get("Error", {}).get("Code", "")
-            if error_code in ("404", "NoSuchKey"):
-                return False
-            # Re-raise other client errors
-            raise
+        except StorageObjectNotFoundError:
+            return False
 
     async def head_object(self, *, bucket: str, key: str) -> dict[str, Any]:
         """Get object metadata without downloading the content.
@@ -283,11 +345,13 @@ class StorageClient:
         Returns:
             Dict with 'content_type', 'content_length', 'last_modified',
             'etag', and 'metadata' keys.
-        """
-        if self._client is None:
-            raise StorageNotConnectedError()
 
-        response = await self._client.head_object(Bucket=bucket, Key=key)
+        Raises:
+            StorageObjectNotFoundError: If ``key`` does not exist.
+        """
+        response = await self._call(
+            "head_object", bucket=bucket, key=key, Bucket=bucket, Key=key
+        )
         return {
             "content_type": response.get("ContentType", "application/octet-stream"),
             "content_length": response.get("ContentLength", 0),
@@ -312,9 +376,6 @@ class StorageClient:
         Example:
             files = await storage.list_files(bucket="my-bucket", prefix="folder/")
         """
-        if self._client is None:
-            raise StorageNotConnectedError()
-
         list_kwargs: dict[str, Any] = {
             "Bucket": bucket,
         }
@@ -325,7 +386,7 @@ class StorageClient:
         if max_keys:
             list_kwargs["MaxKeys"] = max_keys
 
-        response = await self._client.list_objects_v2(**list_kwargs)
+        response = await self._call("list_objects_v2", bucket=bucket, **list_kwargs)
 
         if "Contents" not in response:
             return []
@@ -349,11 +410,11 @@ class StorageClient:
         Returns:
             Presigned URL string.
         """
-        if self._client is None:
-            raise StorageNotConnectedError()
-
-        return await self._client.generate_presigned_url(
-            "get_object",
+        return await self._call(
+            "generate_presigned_url",
+            bucket=bucket,
+            key=key,
+            ClientMethod="get_object",
             Params={"Bucket": bucket, "Key": key},
             ExpiresIn=expires_in,
         )
@@ -377,15 +438,15 @@ class StorageClient:
         Returns:
             Presigned URL string.
         """
-        if self._client is None:
-            raise StorageNotConnectedError()
-
         params: dict[str, str] = {"Bucket": bucket, "Key": key}
         if content_type:
             params["ContentType"] = content_type
 
-        return await self._client.generate_presigned_url(
-            "put_object",
+        return await self._call(
+            "generate_presigned_url",
+            bucket=bucket,
+            key=key,
+            ClientMethod="put_object",
             Params=params,
             ExpiresIn=expires_in,
         )
@@ -396,10 +457,7 @@ class StorageClient:
         Returns:
             List of dicts with 'name' and 'creation_date' keys.
         """
-        if self._client is None:
-            raise StorageNotConnectedError()
-
-        response = await self._client.list_buckets()
+        response = await self._call("list_buckets")
         return [
             {
                 "name": b["Name"],
@@ -428,9 +486,6 @@ class StorageClient:
             Dict with 'objects' (list of object metadata dicts) and
             'prefixes' (list of prefix strings representing folders).
         """
-        if self._client is None:
-            raise StorageNotConnectedError()
-
         list_kwargs: dict[str, Any] = {
             "Bucket": bucket,
             "Prefix": prefix,
@@ -438,7 +493,7 @@ class StorageClient:
             "MaxKeys": max_keys,
         }
 
-        response = await self._client.list_objects_v2(**list_kwargs)
+        response = await self._call("list_objects_v2", bucket=bucket, **list_kwargs)
 
         objects = [
             {

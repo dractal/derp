@@ -400,9 +400,7 @@ class TestOrgSessionContext:
         assert session is not None
 
         with pytest.raises(OrgMemberNotFoundError):
-            await derp.auth.set_active_org(
-                session_id=session.session_id, org_id=org.id
-            )
+            await derp.auth.set_active_org(session_id=session.session_id, org_id=org.id)
 
     async def test_clear_active_org(
         self, derp: DerpClient, mock_smtp: AsyncMock

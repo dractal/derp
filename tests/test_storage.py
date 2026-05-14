@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import pytest
-from botocore.exceptions import ClientError
 from moto.moto_server.threaded_moto_server import ThreadedMotoServer
 
 from derp.config import StorageConfig
 from derp.storage.client import StorageClient
-from derp.storage.exceptions import StorageNotConnectedError
+from derp.storage.exceptions import (
+    StorageBucketNotFoundError,
+    StorageNotConnectedError,
+    StorageObjectNotFoundError,
+)
 
 REGION = "us-east-1"
 BUCKET = "test-bucket"
@@ -158,8 +161,18 @@ class TestUploadAndFetchFile:
 
     @pytest.mark.asyncio
     async def test_fetch_nonexistent_key_raises(self, storage: StorageClient) -> None:
-        with pytest.raises(ClientError):
+        with pytest.raises(StorageObjectNotFoundError) as excinfo:
             await storage.fetch_file(bucket=BUCKET, key="no-such-key")
+        assert excinfo.value.bucket == BUCKET
+        assert excinfo.value.key == "no-such-key"
+
+    @pytest.mark.asyncio
+    async def test_fetch_nonexistent_bucket_raises(
+        self, storage: StorageClient
+    ) -> None:
+        with pytest.raises(StorageBucketNotFoundError) as excinfo:
+            await storage.fetch_file(bucket="no-such-bucket", key="anything")
+        assert excinfo.value.bucket == "no-such-bucket"
 
 
 # ── delete_file ──────────────────────────────────────────────────
@@ -173,6 +186,13 @@ class TestDeleteFile:
 
         await storage.delete_file(bucket=BUCKET, key="tmp.txt")
         assert await storage.file_exists(bucket=BUCKET, key="tmp.txt") is False
+
+    @pytest.mark.asyncio
+    async def test_delete_missing_key_is_idempotent(
+        self, storage: StorageClient
+    ) -> None:
+        # S3 deletes are idempotent — missing keys do not raise.
+        await storage.delete_file(bucket=BUCKET, key="never-existed.txt")
 
     @pytest.mark.asyncio
     async def test_delete_raises_when_not_connected(
@@ -244,6 +264,17 @@ class TestCopyFile:
         assert await storage.fetch_file(bucket=other_bucket, key="dst.txt") == b"cross"
 
     @pytest.mark.asyncio
+    async def test_copy_missing_source_raises_not_found(
+        self, storage: StorageClient
+    ) -> None:
+        with pytest.raises(StorageObjectNotFoundError) as excinfo:
+            await storage.copy_file(
+                src_bucket=BUCKET, src_key="missing.txt", dst_key="dst.txt"
+            )
+        assert excinfo.value.bucket == BUCKET
+        assert excinfo.value.key == "missing.txt"
+
+    @pytest.mark.asyncio
     async def test_raises_when_not_connected(
         self, storage_config: StorageConfig
     ) -> None:
@@ -299,6 +330,13 @@ class TestHeadObject:
         assert isinstance(meta["last_modified"], str)
         assert isinstance(meta["etag"], str)
         assert meta["metadata"]["tag"] == "test"
+
+    @pytest.mark.asyncio
+    async def test_missing_key_raises_not_found(self, storage: StorageClient) -> None:
+        with pytest.raises(StorageObjectNotFoundError) as excinfo:
+            await storage.head_object(bucket=BUCKET, key="nope.txt")
+        assert excinfo.value.bucket == BUCKET
+        assert excinfo.value.key == "nope.txt"
 
     @pytest.mark.asyncio
     async def test_raises_when_not_connected(
