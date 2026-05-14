@@ -1,0 +1,37 @@
+# variables.tf — inputs for {{ layout.env }}. Values live in terraform.tfvars
+# (gitignored) or are passed via TF_VAR_* env vars in CI.
+
+# === Vendor provisioning credentials ===
+{% for cred in layout.vendor_credentials() %}
+
+variable "{{ cred.name }}" {
+  description = "{{ cred.description }}"
+  type        = string
+{% if cred.sensitive %}
+  sensitive   = true
+{% endif %}
+}
+{% endfor %}
+{% if layout.import_variables() %}
+
+# === Import-mode resource IDs ===
+{% for spec, var_name, example in layout.import_variables() %}
+
+variable "{{ var_name }}" {
+  description = "Existing resource ID for {{ spec.label }} (Import mode)"
+  type        = string
+}
+{% endfor %}
+{% endif %}
+{% if layout.byo_variables() %}
+
+# === BYO credentials (relayed into env_vars output) ===
+{% for spec, var_name, env_var, example in layout.byo_variables() %}
+
+variable "{{ var_name }}" {
+  description = "BYO {{ spec.label }}: existing {{ env_var }} value"
+  type        = string
+  sensitive   = true
+}
+{% endfor %}
+{% endif %}

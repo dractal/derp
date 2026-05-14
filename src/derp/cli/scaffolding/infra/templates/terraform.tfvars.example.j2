@@ -1,0 +1,30 @@
+# terraform.tfvars.example — copy to terraform.tfvars and fill in.
+# terraform.tfvars is gitignored; never commit secrets.
+#
+# Tip: prefer `TF_VAR_<name>` env vars or `1password run -- terraform apply`
+# over a checked-in tfvars file.
+
+# === Vendor provisioning credentials ===
+{% for cred in layout.vendor_credentials() %}
+# {{ cred.description }}
+{{ cred.name }} = "{{ cred.example }}"
+
+{% endfor %}
+{% if layout.import_variables() %}
+
+# === Import-mode resource IDs ===
+{% for spec, var_name, example in layout.import_variables() %}
+# Existing resource for {{ spec.label }}
+{{ var_name }} = "{{ example }}"
+
+{% endfor %}
+{% endif %}
+{% if layout.byo_variables() %}
+
+# === BYO credentials ===
+{% for spec, var_name, env_var, example in layout.byo_variables() %}
+# {{ spec.label }} — relayed into {{ env_var }} for derp.toml
+{{ var_name }} = "{{ example }}"
+
+{% endfor %}
+{% endif %}

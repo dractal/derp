@@ -1,0 +1,42 @@
+# terraform.tfvars.example — copy to terraform.tfvars and fill in.
+# terraform.tfvars is gitignored; never commit secrets.
+#
+# Tip: prefer `TF_VAR_<name>` env vars or `1password run -- terraform apply`
+# over a checked-in tfvars file.
+
+# === Vendor provisioning credentials ===
+# Cloudflare API token with R2:Edit + Zone:Edit (DNS) — create at https://dash.cloudflare.com/profile/api-tokens
+cloudflare_api_token = "cloudflare_xxx"
+
+# Cloudflare account ID (right sidebar of any domain)
+cloudflare_account_id = "0123456789abcdef"
+
+# PlanetScale service token ID (from Account → Service tokens)
+planetscale_service_token_id = "abc123"
+
+# PlanetScale service token secret
+planetscale_service_token = "pscale_tkn_xxx"
+
+# PlanetScale organization slug
+planetscale_organization = "my-org"
+
+# Stripe secret API key (use test mode for dev, live for prod) — from https://dashboard.stripe.com/apikeys
+stripe_api_key = "sk_test_xxx"
+
+# Vercel API token from https://vercel.com/account/tokens — needs project + integration scopes
+vercel_api_token = "vercel_xxx"
+
+# Vercel team ID (find under Team Settings → General)
+vercel_team_id = "team_xxx"
+
+# WorkOS API key from https://dashboard.workos.com — used by Terraform to create/manage the WorkOS application
+workos_management_token = "sk_test_xxx"
+
+
+# === BYO credentials ===
+# Email (Resend, DNS via Cloudflare) — relayed into RESEND_API_KEY for derp.toml
+byo_resend_api_key = "re_xxx"
+
+# Email (Resend, DNS via Cloudflare) — relayed into RESEND_FROM_EMAIL for derp.toml
+byo_resend_from_email = "noreply@yourdomain.com"
+

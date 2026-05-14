@@ -1,0 +1,9 @@
+# Added by `derp init --infra`
+infra/**/terraform.tfvars
+infra/**/.terraform/
+infra/**/.terraform.lock.hcl
+infra/**/*.tfstate
+infra/**/*.tfstate.*
+.env
+.env.dev
+.env.prod
