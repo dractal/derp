@@ -121,6 +121,37 @@ timeout_seconds = 45.5
     assert config.payments.timeout_seconds == 45.5
 
 
+def test_storage_public_urls_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "derp.toml"
+    monkeypatch.setenv("TEST_DATABASE_URL", "postgresql://example")
+    monkeypatch.setenv("ASSETS_PUBLIC_URL", "https://assets.example.com")
+
+    _write_config(
+        config_path,
+        """
+[database]
+db_url = "$TEST_DATABASE_URL"
+schema_path = "src/schema.py"
+
+[storage]
+endpoint_url = "https://s3.amazonaws.com"
+
+[storage.public_urls]
+assets = "$ASSETS_PUBLIC_URL"
+avatars = "https://avatars.example.com"
+""",
+    )
+
+    config = DerpConfig.load(config_path)
+    assert config.storage is not None
+    assert config.storage.public_urls == {
+        "assets": "https://assets.example.com",
+        "avatars": "https://avatars.example.com",
+    }
+
+
 def test_empty_env_var_resolves_to_empty_string(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

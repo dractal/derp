@@ -24,6 +24,7 @@ Full Example
 
    [storage]
    endpoint_url = "https://s3.amazonaws.com"
+   public_urls = { assets = "https://assets.example.com" }
    access_key_id = "$AWS_ACCESS_KEY_ID"
    secret_access_key = "$AWS_SECRET_ACCESS_KEY"
    region = "us-east-1"
@@ -140,7 +141,10 @@ Section Reference
 
    * - ``endpoint_url``
      - ``str | None``
-     - S3-compatible endpoint
+     - S3-compatible API endpoint
+   * - ``public_urls``
+     - ``dict[str, str]``
+     - Public URL base per bucket, used by ``StorageClient.get_url``
    * - ``access_key_id``
      - ``str | None``
      - AWS access key

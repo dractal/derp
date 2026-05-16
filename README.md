@@ -121,6 +121,7 @@ secret = "$JWT_SECRET"
 
 [storage]
 endpoint_url = "$S3_ENDPOINT"
+public_urls = { assets = "https://assets.example.com" }
 access_key_id = "$S3_KEY"
 secret_access_key = "$S3_SECRET"
 

@@ -11,6 +11,7 @@ Config
    # derp.toml
    [storage]
    endpoint_url = "https://s3.amazonaws.com"
+   public_urls = { assets = "https://assets.example.com" }
    access_key_id = "$AWS_ACCESS_KEY_ID"
    secret_access_key = "$AWS_SECRET_ACCESS_KEY"
    region = "us-east-1"
@@ -103,12 +104,15 @@ Fetch metadata without downloading the file body:
 Get URL
 -------
 
-Build a URL from the configured endpoint:
+Build a URL from the configured public bucket endpoint:
 
 .. code-block:: python
 
    url = derp.storage.get_url(bucket="assets", key="avatars/user.jpg")
-   # "https://s3.amazonaws.com/assets/avatars/user.jpg"
+   # "https://assets.example.com/avatars/user.jpg"
+
+If a bucket is not present in ``public_urls``, Derp falls back to
+``endpoint_url`` and includes the bucket in the generated URL.
 
 Signed URLs
 -----------

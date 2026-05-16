@@ -105,13 +105,27 @@ class TestGetUrl:
         url = client.get_url(bucket="my-bucket", key="path/to/file.txt")
         assert url == f"{storage_config.endpoint_url}/my-bucket/path/to/file.txt"
 
+    def test_uses_public_bucket_url(self, storage_config: StorageConfig) -> None:
+        storage_config.public_urls = {"my-bucket": "https://cdn.example.com/assets/"}
+        client = StorageClient(storage_config)
+        url = client.get_url(bucket="my-bucket", key="/path/to/file.txt")
+        assert url == "https://cdn.example.com/assets/path/to/file.txt"
+
+    def test_falls_back_to_endpoint_url_for_unmapped_bucket(
+        self, storage_config: StorageConfig
+    ) -> None:
+        storage_config.public_urls = {"assets": "https://assets.example.com"}
+        client = StorageClient(storage_config)
+        url = client.get_url(bucket="uploads", key="path/to/file.txt")
+        assert url == f"{storage_config.endpoint_url}/uploads/path/to/file.txt"
+
     def test_raises_without_endpoint_url(self) -> None:
         config = StorageConfig(
             access_key_id="key",
             secret_access_key="secret",
         )
         client = StorageClient(config)
-        with pytest.raises(ValueError, match="endpoint_url"):
+        with pytest.raises(ValueError, match="public_urls"):
             client.get_url(bucket="b", key="k")
 
 

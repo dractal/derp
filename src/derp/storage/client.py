@@ -29,6 +29,10 @@ _NO_SUCH_BUCKET_CODES = frozenset({"NoSuchBucket"})
 _ACCESS_DENIED_CODES = frozenset({"403", "AccessDenied", "Forbidden"})
 
 
+def _join_url(base_url: str, *parts: str) -> str:
+    return "/".join([base_url.rstrip("/"), *(part.strip("/") for part in parts)])
+
+
 def _error_code(exc: ClientError) -> str:
     return exc.response.get("Error", {}).get("Code", "") or ""
 
@@ -137,7 +141,7 @@ class StorageClient:
             raise StorageBackendError(str(exc), code=code or None) from exc
 
     def get_url(self, *, bucket: str, key: str) -> str:
-        """Get the URL for a file in S3.
+        """Gets the URL for a file in S3 (public or private).
 
         Args:
             bucket: Name of the S3 bucket.
@@ -147,14 +151,20 @@ class StorageClient:
             URL for the file.
 
         Raises:
-            ValueError: If endpoint_url is not configured.
+            ValueError: If no public endpoint URL is configured for this bucket
+                and endpoint_url is not configured.
         """
+        public_url = self._config.public_urls.get(bucket)
+        if public_url is not None:
+            return _join_url(public_url, key)
+
         if self._config.endpoint_url is None:
             raise ValueError(
-                "Cannot construct URL: `endpoint_url` is not "
+                "Cannot construct URL: no public URL is configured for bucket "
+                f"{bucket!r} in `public_urls`, and `endpoint_url` is not "
                 "configured in StorageConfig."
             )
-        return f"{self._config.endpoint_url}/{bucket}/{key}"
+        return _join_url(self._config.endpoint_url, bucket, key)
 
     async def upload_file(
         self,
@@ -220,7 +230,9 @@ class StorageClient:
             StorageBackendError: For any other backend failure.
 
         Example:
-            content = await storage.fetch_file(bucket="my-bucket", key="remote/file.txt")
+            content = await storage.fetch_file(
+                bucket="my-bucket", key="remote/file.txt"
+            )
         """
         response = await self._call(
             "get_object", bucket=bucket, key=key, Bucket=bucket, Key=key

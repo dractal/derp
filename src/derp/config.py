@@ -242,6 +242,7 @@ class StorageConfig(_StrictModel):
     """Storage configuration."""
 
     endpoint_url: str | None = None
+    public_urls: dict[str, str] = Field(default_factory=dict)
     service_name: str = "s3"
     access_key_id: str | None = None
     secret_access_key: str | None = None
@@ -433,6 +434,7 @@ migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 
 # [storage]
 # endpoint_url = "https://s3.amazonaws.com"
+# public_urls = {{ assets = "https://assets.example.com" }}
 # access_key_id = "$AWS_ACCESS_KEY_ID"
 # secret_access_key = "$AWS_SECRET_ACCESS_KEY"
 # region = "us-east-1"
