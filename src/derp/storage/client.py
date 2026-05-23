@@ -411,6 +411,8 @@ class StorageClient:
         bucket: str,
         key: str,
         expires_in: int = 3600,
+        response_content_disposition: str | None = None,
+        response_content_type: str | None = None,
     ) -> str:
         """Generate a presigned URL for downloading (GET) an object.
 
@@ -418,16 +420,28 @@ class StorageClient:
             bucket: Name of the S3 bucket.
             key: S3 object key (path in bucket).
             expires_in: URL expiry in seconds (default 3600).
+            response_content_disposition: Value for the ``Content-Disposition``
+                response header the storage backend returns for this URL, e.g.
+                ``'attachment; filename="report.pdf"'`` to force a download. The
+                value is signed into the URL, so it can't be tampered with.
+            response_content_type: Value for the ``Content-Type`` response header
+                the storage backend returns for this URL.
 
         Returns:
             Presigned URL string.
         """
+        params: dict[str, str] = {"Bucket": bucket, "Key": key}
+        if response_content_disposition is not None:
+            params["ResponseContentDisposition"] = response_content_disposition
+        if response_content_type is not None:
+            params["ResponseContentType"] = response_content_type
+
         return await self._call(
             "generate_presigned_url",
             bucket=bucket,
             key=key,
             ClientMethod="get_object",
-            Params={"Bucket": bucket, "Key": key},
+            Params=params,
             ExpiresIn=expires_in,
         )
 
