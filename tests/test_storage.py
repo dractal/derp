@@ -499,6 +499,47 @@ class TestSignedDownloadUrl:
         assert "X-Amz-Expires=600" in url
 
     @pytest.mark.asyncio
+    async def test_response_content_disposition_is_signed_in(
+        self, storage: StorageClient
+    ) -> None:
+        await storage.upload_file(bucket=BUCKET, key="file.txt", data=b"hello")
+
+        url = await storage.signed_download_url(
+            bucket=BUCKET,
+            key="file.txt",
+            response_content_disposition='attachment; filename="report.pdf"',
+        )
+
+        # The override is signed into the query string (URL-encoded).
+        assert "response-content-disposition=" in url
+        assert "report.pdf" in url
+
+    @pytest.mark.asyncio
+    async def test_response_content_type_is_signed_in(
+        self, storage: StorageClient
+    ) -> None:
+        await storage.upload_file(bucket=BUCKET, key="file.txt", data=b"hello")
+
+        url = await storage.signed_download_url(
+            bucket=BUCKET,
+            key="file.txt",
+            response_content_type="application/pdf",
+        )
+
+        assert "response-content-type=" in url
+
+    @pytest.mark.asyncio
+    async def test_omits_response_overrides_by_default(
+        self, storage: StorageClient
+    ) -> None:
+        await storage.upload_file(bucket=BUCKET, key="file.txt", data=b"hello")
+
+        url = await storage.signed_download_url(bucket=BUCKET, key="file.txt")
+
+        assert "response-content-disposition=" not in url
+        assert "response-content-type=" not in url
+
+    @pytest.mark.asyncio
     async def test_raises_when_not_connected(
         self, storage_config: StorageConfig
     ) -> None:
