@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 CONFIG_FILE = "derp.toml"
 MIGRATIONS_TABLE = "derp_migrations"
 DEFAULT_MIGRATIONS_DIR = "./migrations"
+DEFAULT_CH_MIGRATIONS_DIR = "./ch_migrations"
 
 
 class ConfigError(Exception):
@@ -117,6 +118,23 @@ class DatabaseConfig(_StrictModel):
     replica_lag_check_interval_seconds: float = 5.0
 
 
+class ClickHouseConfig(_StrictModel):
+    """ClickHouse configuration."""
+
+    url: str | None = None
+    host: str | None = None
+    port: int | None = None
+    username: str = "default"
+    password: str = ""
+    database: str = "default"
+    secure: bool = False
+
+    # Migration tooling (used by the `derp ch ...` CLI commands)
+    schema_path: str | None = None
+    migrations_dir: str = DEFAULT_CH_MIGRATIONS_DIR
+    introspect_database: str = "default"
+
+
 class EmailConfig(_StrictModel):
     """Configuration for email sending via SMTP."""
 
@@ -216,22 +234,46 @@ class WorkOSConfig(_StrictModel):
     redirect_uri: str | None = None
 
 
+class GCIPConfig(_StrictModel):
+    """Configuration for Google Cloud Identity Platform."""
+
+    project_id: str
+    public_api_key: str
+    service_account_json: str  # JSON string or $ENV reference
+    # HMAC key for the derp-signed active-org pointer. Critical secret — store
+    # in env / secret manager, never source-control. Rotating it invalidates
+    # every active-org pointer (clients must call set_active_org again).
+    org_context_secret: str = Field(min_length=32)
+    redirect_uri: str | None = None
+    invitation_ttl_hours: int = 7 * 24  # 7 days
+    # Active-org role → permission grants. Populated into ``Session.permissions``
+    # on every request so ``has`` / ``require_permission`` answer zero-IO; empty
+    # by default, configure per app to enable RBAC.
+    role_permissions: dict[str, list[str]] = Field(default_factory=dict)
+    # TTL for the in-KV ``(user_id, slug) → role`` cache that fronts the
+    # per-request membership lookup in ``authenticate``. Doubles as the
+    # revocation-latency cap (a removed/demoted member loses their old role
+    # within this many seconds). Zero disables the cache and goes straight to PG.
+    role_cache_ttl_seconds: int = 30
+
+
 class AuthConfig(_StrictModel):
     """Auth configuration — exactly one backend must be set."""
 
     native: NativeAuthConfig | None = None
     supabase: SupabaseConfig | None = None
     workos: WorkOSConfig | None = None
+    gcip: GCIPConfig | None = None
 
     @model_validator(mode="after")
     def _check_single_backend(self) -> AuthConfig:
-        backends = [self.native, self.supabase, self.workos]
+        backends = [self.native, self.supabase, self.workos, self.gcip]
         configured = sum(1 for b in backends if b is not None)
         if configured > 1:
             raise ValueError(
                 "Only one auth backend can be configured at a time. "
                 "Set exactly one of [auth.native], [auth.supabase], "
-                "or [auth.workos]."
+                "[auth.workos], or [auth.gcip]."
             )
         if configured == 0:
             raise ValueError("At least one auth backend must be configured.")
@@ -366,6 +408,7 @@ class DerpConfig(_StrictModel):
     """Derp configuration."""
 
     database: DatabaseConfig
+    clickhouse: ClickHouseConfig | None = None
     email: EmailConfig | None = None
     storage: StorageConfig | None = None
     auth: AuthConfig | None = None
@@ -416,12 +459,21 @@ def create_default_config() -> str:
     return f"""\\
 [database]
 db_url = "$DATABASE_URL"  # Environment variable containing the database URL
-schema_path = "src/schema.py"  # Path to your schema module
+schema_path = "src/schema.py"  # Path to your schema module(s)
 # replica_url = "$REPLICA_DATABASE_URL"  # Optional replica database URL
 migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # introspect_schemas = ["public"]   # Schemas to introspect
 # introspect_exclude_tables = ["{MIGRATIONS_TABLE}"]  # Tables to exclude
 # ignore_rls = false  # Ignore RLS and policy changes in migrations
+
+# [clickhouse]
+# host = "localhost"
+# port = 8123
+# username = "default"
+# password = "$CLICKHOUSE_PASSWORD"
+# database = "default"
+# schema_path = "src/ch_schema.py"  # Path to your schema module(s)
+# migrations_dir = "{DEFAULT_CH_MIGRATIONS_DIR}"  # Directory for migration files
 
 # [email]
 # site_name = "My App"  # Site name for email templates
@@ -452,6 +504,12 @@ migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # anon_key = "$SUPABASE_ANON_KEY"
 # service_role_key = "$SUPABASE_SERVICE_ROLE_KEY"
 # jwt_secret = "$SUPABASE_JWT_SECRET"
+
+# [auth.gcip]
+# project_id = "$GCIP_PROJECT_ID"
+# api_key = "$GCIP_API_KEY"  # GCIP Web API key (unauthenticated endpoints)
+# service_account_json = "$GCIP_SERVICE_ACCOUNT_JSON"  # full SA key JSON
+# redirect_uri = "https://yourapp.com/callback"
 
 # [kv.valkey]
 # addresses = [["localhost", 6379]]

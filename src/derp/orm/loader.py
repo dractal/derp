@@ -2,54 +2,8 @@
 
 from __future__ import annotations
 
-import importlib
-import sys
-from pathlib import Path
-
+from derp._loader import deduplicate_tables, load_table_subclasses
 from derp.orm.table import Table
-
-
-def _load_tables_from_file(path: Path) -> list[type[Table]]:
-    """Load Table subclasses from a single Python file."""
-
-    try:
-        # Convert file path to dotted module name relative to CWD
-        resolved = path.resolve()
-        cwd = Path.cwd()
-        try:
-            relative = resolved.relative_to(cwd)
-        except ValueError:
-            # Absolute path outside CWD — use just the stem and add parent to sys.path
-            relative = Path(resolved.stem + ".py")
-            parent = str(resolved.parent)
-            if parent not in sys.path:
-                sys.path.insert(0, parent)
-
-        module_name = ".".join(relative.with_suffix("").parts)
-
-        # Ensure CWD is on sys.path so relative module names resolve
-        cwd_str = str(cwd)
-        if cwd_str not in sys.path:
-            sys.path.insert(0, cwd_str)
-
-        module = importlib.import_module(module_name)
-    except ImportError as e:
-        raise ImportError(f"Failed to import module at {path.name}.") from e
-
-    # Find all Table subclasses
-    tables: list[type[Table]] = []
-    for name in dir(module):
-        obj = getattr(module, name)
-        if (
-            isinstance(obj, type)
-            and issubclass(obj, Table)
-            and obj is not Table
-            and hasattr(obj, "__columns__")
-            and getattr(obj, "__explicit_table__", False)
-        ):
-            tables.append(obj)
-
-    return tables
 
 
 def load_tables(module_path: str) -> list[type[Table]]:
@@ -64,107 +18,12 @@ def load_tables(module_path: str) -> list[type[Table]]:
     Returns:
         List of Table subclasses found in matching modules
     """
-    path = Path(module_path)
-    tables: list[type[Table]] = []
-    seen_tables: set[int] = set()  # Track by id to avoid duplicates
-
-    # Check if it's a glob pattern
-    if "*" in module_path or "?" in module_path or "[" in module_path:
-        # Find the base directory (everything before the first glob character)
-        parts = Path(module_path).parts
-        base_parts: list[str] = []
-        pattern_parts: list[str] = []
-        found_glob = False
-
-        for part in parts:
-            if found_glob or "*" in part or "?" in part or "[" in part:
-                found_glob = True
-                pattern_parts.append(part)
-            else:
-                base_parts.append(part)
-
-        base_dir = Path(*base_parts) if base_parts else Path(".")
-        pattern = str(Path(*pattern_parts)) if pattern_parts else "**/*.py"
-
-        if not base_dir.exists():
-            raise FileNotFoundError(f"Base directory not found: {base_dir}")
-
-        files = sorted(base_dir.glob(pattern))
-
-    elif path.is_dir():
-        # Directory: load all .py files recursively
-        files = sorted(path.rglob("*.py"))
-
-    elif path.is_file():
-        # Single file
-        files = [path]
-
-    else:
-        raise FileNotFoundError(f"Path not found: {module_path}")
-
-    # Load tables from each file
-    for file_path in files:
-        if file_path.name.startswith("_"):
-            continue  # Skip __init__.py, __pycache__, etc.
-
-        try:
-            for table in _load_tables_from_file(file_path):
-                # Use qualified name to deduplicate
-                key: int = id(table)
-                if key not in seen_tables:
-                    seen_tables.add(key)
-                    tables.append(table)
-        except Exception:
-            # Skip files that fail to import (might not be valid modules)
-            continue
-
-    return tables
+    return load_table_subclasses(module_path, Table)
 
 
 def _deduplicate_tables(tables: list[type[Table]]) -> list[type[Table]]:
-    """Keep only the youngest table in each inheritance chain.
-
-    If a table has a descendant in the list, drop it (the descendant
-    inherits all its columns). If two tables share a common explicit-table
-    ancestor but neither descends from the other, raise ValueError.
-    """
-    # Find tables that are ancestors of another table in the list
-    to_remove: set[type[Table]] = set()
-    for t in tables:
-        for other in tables:
-            if other is t:
-                continue
-            # If t is a proper ancestor of other, t is redundant
-            if issubclass(other, t) and t is not Table:
-                to_remove.add(t)
-
-    result = [t for t in tables if t not in to_remove]
-
-    # Check for branches: two result tables sharing a common explicit-table
-    # ancestor (whether or not that ancestor was in the input list)
-    for i, a in enumerate(result):
-        for b in result[i + 1 :]:
-            # Walk a's MRO looking for a shared explicit-table ancestor
-            for base in type.mro(a):
-                if (
-                    base is a
-                    or base is b
-                    or base is Table
-                    or not isinstance(base, type)
-                ):
-                    continue
-                if (
-                    getattr(base, "__explicit_table__", False)
-                    and issubclass(a, base)
-                    and issubclass(b, base)
-                ):
-                    raise ValueError(
-                        f"Ambiguous table inheritance: {a.__name__} and "
-                        f"{b.__name__} both extend {base.__name__}. "
-                        f"Only one subclass per table hierarchy is allowed."
-                    )
-
-    return result
+    """Keep only the youngest table in each inheritance chain."""
+    return deduplicate_tables(tables, Table)
 
 
 def discover_tables(
@@ -183,6 +42,8 @@ def discover_tables(
             - **supabase**: AuthOrganization, SupabaseOrgMember (users in Supabase)
             - **workos**: WorkOSOrganization (users + memberships in WorkOS;
               local table maps WorkOS org id ↔ local UUID + slug)
+            - **gcip**: AuthOrganization, GCIPOrgMember, AuthInvitation (users in
+              GCIP; derp owns the org graph and projects it into token claims)
 
     Returns:
         Deduplicated list of Table subclasses.
@@ -193,6 +54,7 @@ def discover_tables(
         native = getattr(auth_config, "native", None)
         supabase = getattr(auth_config, "supabase", None)
         workos = getattr(auth_config, "workos", None)
+        gcip = getattr(auth_config, "gcip", None)
 
         auth_tables: list[type[Table]] = []
 
@@ -220,6 +82,11 @@ def discover_tables(
             from derp.auth.models import WorkOSOrganization
 
             auth_tables = [WorkOSOrganization]
+
+        elif gcip is not None:
+            from derp.auth.models import AuthInvitation, AuthOrganization, GCIPOrgMember
+
+            auth_tables = [AuthOrganization, GCIPOrgMember, AuthInvitation]
 
         for auth_table in auth_tables:
             if not any(issubclass(t, auth_table) for t in tables):

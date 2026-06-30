@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,9 +19,13 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from derp.chorm.migrations.introspect import introspect as ch_introspect
 from derp.config import DerpConfig
 from derp.derp_client import DerpClient
 from derp.orm.migrations.introspect.postgres import PostgresIntrospector
+
+# ClickHouse identifiers we will interpolate into SQL must be simple names.
+_CH_IDENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 ARTIFICIAL_LATENCY = 0.2
 _INT_TYPES = frozenset({"integer", "bigint", "smallint", "int2", "int4", "int8"})
@@ -65,6 +70,49 @@ def _coerce_value(value: object, col_type: str) -> object:
     if col_lower in _UUID_TYPES:
         return UUID(value)
     return value
+
+
+def _serialize_ch_table(table: Any, row_count: int) -> dict:
+    """Map a chorm ``TableSnapshot`` to the Studio ClickHouse payload."""
+    engine = None
+    if table.engine is not None:
+        engine = {
+            "name": table.engine.name,
+            "order_by": table.engine.order_by,
+            "partition_by": table.engine.partition_by,
+            "primary_key": table.engine.primary_key,
+            "sample_by": table.engine.sample_by,
+            "ttl": table.engine.ttl,
+            "settings": dict(table.engine.settings),
+        }
+    return {
+        "name": table.name,
+        "database": table.database,
+        "engine": engine,
+        "row_count": row_count,
+        "columns": [
+            {
+                "name": c.name,
+                "type": c.type,
+                "default": c.default,
+                "materialized": c.materialized,
+                "codec": c.codec,
+                "ttl": c.ttl,
+                "comment": c.comment,
+                "nullable": c.type.startswith("Nullable("),
+            }
+            for c in table.columns
+        ],
+        "indexes": [
+            {
+                "name": i.name,
+                "expression": i.expression,
+                "type": i.type,
+                "granularity": i.granularity,
+            }
+            for i in table.indexes
+        ],
+    }
 
 
 def get_derp(request: Request) -> DerpClient:
@@ -456,6 +504,48 @@ def create_app(
 
         return {"updated": updated}
 
+    # --- ClickHouse (read-only) ---
+
+    @app.get("/api/clickhouse/tables")
+    async def list_ch_tables(derp: DerpClient = Depends(get_derp)) -> dict:
+        """List ClickHouse tables with columns, engine info, and row counts."""
+        if derp.config.clickhouse is None:
+            raise HTTPException(status_code=400, detail="ClickHouse is not configured.")
+        database = derp.config.clickhouse.introspect_database
+        snapshot = await ch_introspect(derp.ch, database=database)
+        count_rows = await derp.ch.fetch(
+            "SELECT name, total_rows FROM system.tables WHERE database = {db:String}",
+            parameters={"db": database},
+        )
+        counts = {r["name"]: (r.get("total_rows") or 0) for r in count_rows}
+        tables = [
+            _serialize_ch_table(t, counts.get(t.name, 0)) for t in snapshot.tables
+        ]
+        return {"tables": tables}
+
+    @app.get("/api/clickhouse/tables/{table}/rows")
+    async def list_ch_table_rows(
+        table: str,
+        limit: int = 50,
+        offset: int = 0,
+        derp: DerpClient = Depends(get_derp),
+    ) -> dict:
+        """Fetch rows from a ClickHouse table with pagination (read-only)."""
+        if derp.config.clickhouse is None:
+            raise HTTPException(status_code=400, detail="ClickHouse is not configured.")
+        if not _CH_IDENT_RE.match(table):
+            raise HTTPException(status_code=400, detail="Invalid table name.")
+        limit = min(max(limit, 1), 500)
+        offset = max(offset, 0)
+        database = derp.config.clickhouse.introspect_database
+        qualified = f"`{database}`.`{table}`"
+        count_res = await derp.ch.fetch(f"SELECT count() AS n FROM {qualified}")
+        total = count_res[0]["n"] if count_res else 0
+        rows = await derp.ch.fetch(
+            f"SELECT * FROM {qualified} LIMIT {limit} OFFSET {offset}"
+        )
+        return {"rows": rows, "total": total, "limit": limit, "offset": offset}
+
     # --- KV ---
 
     @app.get("/api/kv/keys")
@@ -521,7 +611,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="Auth is not configured.")
         limit = min(max(limit, 1), 500)
         users = await derp.auth.list_users(limit=limit)
-        return {"users": users}
+        return {"users": list(users.items)}
 
     @app.get("/api/auth/sessions")
     async def list_auth_sessions(
@@ -533,7 +623,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="Auth is not configured.")
         limit = min(max(limit, 1), 500)
         sessions = await derp.auth.list_sessions(limit=limit)
-        return {"sessions": sessions}
+        return {"sessions": list(sessions.items)}
 
     @app.get("/api/auth/organizations")
     async def list_auth_organizations(
@@ -546,14 +636,14 @@ def create_app(
         limit = min(max(limit, 1), 500)
         orgs = await derp.auth.list_orgs(limit=limit)
         results = []
-        for org in orgs:
-            members = await derp.auth.list_org_members(org_id=org.id)
+        for org in orgs.items:
+            members = await derp.auth.list_members(org_id=org.id)
             results.append(
                 {
                     "id": org.id,
                     "name": org.name,
                     "slug": org.slug,
-                    "member_count": len(members),
+                    "member_count": len(members.items),
                     "created_at": org.created_at.isoformat()
                     if org.created_at
                     else None,
