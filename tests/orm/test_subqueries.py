@@ -339,3 +339,24 @@ class TestInsertSelect:
         assert "SELECT" in s
         assert "RETURNING *" in s
         assert params == ["inactive"]
+
+    def test_insert_from_select_with_ignore_conflicts(self):
+        """INSERT ... SELECT must honor ON CONFLICT (the from_select path emits it)."""
+        sub = (
+            SelectQuery[Any](None, (User.name, User.email))
+            .from_(User)
+            .where(User.role == "inactive")
+        )
+        query = (
+            InsertQuery[ArchivedUser](None, ArchivedUser)
+            .columns("name", "email")
+            .from_select(sub)
+            .ignore_conflicts(target=ArchivedUser.email)
+            .returning(ArchivedUser)
+        )
+        s, params = query.build()
+        assert "INSERT INTO archived_users (name, email)" in s
+        assert "SELECT users.name, users.email FROM users" in s
+        assert "ON CONFLICT (email) DO NOTHING" in s
+        assert "RETURNING *" in s
+        assert params == ["inactive"]

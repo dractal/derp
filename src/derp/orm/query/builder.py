@@ -805,25 +805,14 @@ class _InsertQueryBase[T: Table]:
         table_name = self._table.get_table_name()
         params: list[Any] = []
 
-        # INSERT ... SELECT
+        # INSERT ... SELECT — fall through to the shared ON CONFLICT / RETURNING
+        # handling below so `from_select().ignore_conflicts()` works too.
         if self._from_select is not None:
             cols = ", ".join(self._insert_columns or [])
             sub_sql, sub_params = self._from_select.build()
             params.extend(sub_params)
             sql = f"INSERT INTO {table_name} ({cols}) {sub_sql}"
-
-            if self._returning:
-                return_parts = []
-                for col in self._returning:
-                    if isinstance(col, type) and issubclass(col, Table):
-                        return_parts.append("*")
-                    elif isinstance(col, Column) and col._field_name:
-                        return_parts.append(col._field_name)
-                sql += f" RETURNING {', '.join(return_parts)}"
-
-            return sql, params
-
-        if self._values_list is not None:
+        elif self._values_list is not None:
             # Multi-row insert
             if not self._values_list:
                 raise ValueError("values_list() requires at least one row.")
