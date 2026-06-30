@@ -174,15 +174,15 @@ async def test_backend_handler_auth_storage_db_chain(
             email="backend@example.com",
             password="password123",
         )
-        assert signup_result is not None
+        assert signup_result.identity is not None
 
         signin_result = await derp.auth.sign_in_with_password(
-            email="backend@example.com",
+            identifier="backend@example.com",
             password="password123",
         )
-        assert signin_result is not None
+        assert signin_result.tokens is not None
 
-        key = f"users/{signup_result.user.id}/profile.txt"
+        key = f"users/{signup_result.identity.id}/profile.txt"
 
         await derp.storage._client.create_bucket(Bucket=bucket)  # ty:ignore[possibly-missing-attribute]
         await derp.storage.upload_file(
@@ -199,7 +199,7 @@ async def test_backend_handler_auth_storage_db_chain(
             key=key,
         )
 
-        assert result["user_id"] == str(signup_result.user.id)
+        assert result["user_id"] == str(signup_result.identity.id)
         assert result["object_key"] == key
         assert result["object_size"] == len(content)
         assert result["preview"] == content.decode("utf-8")
@@ -220,7 +220,7 @@ async def test_backend_handler_auth_storage_db_chain(
         assert len(logs) == 1
         [log] = logs
 
-        assert log["user_id"] == str(signup_result.user.id)
+        assert log["user_id"] == str(signup_result.identity.id)
         assert log["session_id"] == result["session_id"]
         assert log["object_key"] == key
         assert log["object_size"] == len(content)

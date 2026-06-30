@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
+import uuid
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,14 +17,21 @@ from derp.auth.exceptions import (
     EmailAlreadyExistsError,
     InvalidCredentialsError,
     InvalidTokenError,
+    LastOwnerError,
+    MemberAlreadyExistsError,
+    OrgMemberNotFoundError,
+    OrgNotFoundError,
+    OrgSlugConflictError,
     UserNotFoundError,
 )
+from derp.auth.models import AuthStatus
 from derp.config import (
     AuthConfig,
     JWTConfig,
     NativeAuthConfig,
     SupabaseConfig,
 )
+from derp.orm import DatabaseEngine
 
 # ── Constants ─────────────────────────────────────────────────────
 
@@ -164,10 +173,47 @@ class TestSupabaseConfig:
         assert config.supabase is not None
 
 
-# ── Authenticate ──────────────────────────────────────────────────
+# ── Capabilities ──────────────────────────────────────────────────
+
+
+class TestCapabilities:
+    def test_supported_flags(self, supabase_client) -> None:
+        assert supabase_client.supports_password is True
+        assert supabase_client.supports_oauth is True
+        assert supabase_client.supports_magic_link is True
+        assert supabase_client.supports_orgs is True
+        assert supabase_client.supports_user_admin is True
+
+    def test_unsupported_flags(self, supabase_client) -> None:
+        assert supabase_client.supports_mfa is False
+        assert supabase_client.supports_passkeys is False
+        assert supabase_client.supports_otp is False
+        assert supabase_client.supports_anonymous is False
+        assert supabase_client.supports_invitations is False
+        assert supabase_client.supports_sso is False
+        assert supabase_client.supports_multi_tenant is False
+        assert supabase_client.supports_sessions is False
+
+
+# ── verify_token / authenticate ───────────────────────────────────
 
 
 class TestAuthenticate:
+    async def test_verify_token_returns_session(self, supabase_client) -> None:
+        token = _make_jwt()
+        session = await supabase_client.verify_token(token)
+
+        assert session is not None
+        assert session.user_id == "user-123"
+        assert session.session_id == "session-456"
+        assert session.roles == ("authenticated",)
+        assert session.tenant_id is None
+        assert session.org_id is None
+        assert session.is_anonymous is False
+        assert session.mfa.enrolled is False
+        assert session.mfa.satisfied is False
+        assert session.claims["sub"] == "user-123"
+
     async def test_valid_token(self, supabase_client) -> None:
         token = _make_jwt()
         request = MagicMock()
@@ -178,7 +224,7 @@ class TestAuthenticate:
         assert session is not None
         assert session.user_id == "user-123"
         assert session.session_id == "session-456"
-        assert session.role == "authenticated"
+        assert session.roles == ("authenticated",)
 
     async def test_missing_auth_header(self, supabase_client) -> None:
         request = MagicMock()
@@ -249,18 +295,36 @@ class TestSignUp:
             return_value=_mock_response(json_data=response_data)
         )
 
-        result = await connected_client.sign_up(
+        outcome = await connected_client.sign_up(
             email=TEST_EMAIL, password=TEST_PASSWORD
         )
 
-        assert result is not None
-        assert result.user.email == TEST_EMAIL
-        assert result.tokens.access_token
-        assert result.tokens.refresh_token == "refresh-token-abc"
+        assert outcome.status is AuthStatus.COMPLETE
+        assert outcome.identity is not None
+        assert outcome.identity.email == TEST_EMAIL
+        assert outcome.tokens is not None
+        assert outcome.tokens.access_token
+        assert outcome.tokens.refresh_token == "refresh-token-abc"
 
         connected_client._http.post.assert_called_once()
         call_args = connected_client._http.post.call_args
         assert "signup" in call_args[0][0]
+
+    async def test_confirmation_required(self, connected_client) -> None:
+        # Tokenless response: GoTrue returns just the user pending confirmation.
+        user = _make_gotrue_user(confirmed=False)
+        connected_client._http.post = AsyncMock(
+            return_value=_mock_response(json_data={"user": user})
+        )
+
+        outcome = await connected_client.sign_up(
+            email=TEST_EMAIL, password=TEST_PASSWORD
+        )
+
+        assert outcome.status is AuthStatus.VERIFICATION_REQUIRED
+        assert outcome.identity is not None
+        assert outcome.identity.email == TEST_EMAIL
+        assert outcome.tokens is None
 
     async def test_email_taken(self, connected_client) -> None:
         # GoTrue's actual duplicate-email response: 422 + ``error_code``.
@@ -274,9 +338,12 @@ class TestSignUp:
             )
         )
 
-        with pytest.raises(EmailAlreadyExistsError) as exc:
-            await connected_client.sign_up(email=TEST_EMAIL, password=TEST_PASSWORD)
-        assert exc.value.email == TEST_EMAIL
+        outcome = await connected_client.sign_up(
+            email=TEST_EMAIL, password=TEST_PASSWORD
+        )
+        assert outcome.status is AuthStatus.EMAIL_EXISTS
+        assert isinstance(outcome.error, EmailAlreadyExistsError)
+        assert outcome.error.email == TEST_EMAIL
 
 
 # ── Sign In With Password ─────────────────────────────────────────
@@ -289,11 +356,15 @@ class TestSignInWithPassword:
             return_value=_mock_response(json_data=response_data)
         )
 
-        result = await connected_client.sign_in_with_password(TEST_EMAIL, TEST_PASSWORD)
+        outcome = await connected_client.sign_in_with_password(
+            identifier=TEST_EMAIL, password=TEST_PASSWORD
+        )
 
-        assert result is not None
-        assert result.user.email == TEST_EMAIL
-        assert result.tokens.refresh_token == "refresh-token-abc"
+        assert outcome.status is AuthStatus.COMPLETE
+        assert outcome.identity is not None
+        assert outcome.identity.email == TEST_EMAIL
+        assert outcome.tokens is not None
+        assert outcome.tokens.refresh_token == "refresh-token-abc"
 
         call_args = connected_client._http.post.call_args
         assert "token" in call_args[0][0]
@@ -306,25 +377,31 @@ class TestSignInWithPassword:
             )
         )
 
-        with pytest.raises(InvalidCredentialsError):
-            await connected_client.sign_in_with_password(TEST_EMAIL, "wrong-password")
+        outcome = await connected_client.sign_in_with_password(
+            identifier=TEST_EMAIL, password="wrong-password"
+        )
+        assert outcome.status is AuthStatus.INVALID_CREDENTIALS
+        assert isinstance(outcome.error, InvalidCredentialsError)
 
 
-# ── Refresh Token ─────────────────────────────────────────────────
+# ── Refresh ───────────────────────────────────────────────────────
 
 
-class TestRefreshToken:
+class TestRefresh:
     async def test_success(self, connected_client) -> None:
         response_data = _make_auth_response()
         connected_client._http.post = AsyncMock(
             return_value=_mock_response(json_data=response_data)
         )
 
-        result = await connected_client.refresh_token("old-refresh-token")
+        tokens = (
+            await connected_client.refresh("old-refresh-token")
+        ).raise_for_status()
 
-        assert result is not None
-        assert result.access_token
-        assert result.refresh_token == "refresh-token-abc"
+        assert tokens is not None
+        assert tokens.access_token
+        assert tokens.refresh_token == "refresh-token-abc"
+        assert tokens.id_token == tokens.access_token
 
     async def test_invalid_refresh_token(self, connected_client) -> None:
         connected_client._http.post = AsyncMock(
@@ -334,28 +411,28 @@ class TestRefreshToken:
             )
         )
 
-        with pytest.raises(InvalidTokenError):
-            await connected_client.refresh_token("bad-token")
+        result = await connected_client.refresh("bad-token")
+        assert isinstance(result.error, InvalidTokenError)
 
 
-# ── Sign Out ──────────────────────────────────────────────────────
+# ── Sessions: revoke ──────────────────────────────────────────────
 
 
-class TestSignOut:
-    async def test_sign_out(self, connected_client) -> None:
+class TestRevokeSessions:
+    async def test_revoke_session(self, connected_client) -> None:
         connected_client._http.post = AsyncMock(
             return_value=_mock_response(status_code=204)
         )
 
-        await connected_client.sign_out("session-456")
+        await connected_client.revoke_session("session-456")
         connected_client._http.post.assert_called_once()
 
-    async def test_sign_out_all(self, connected_client) -> None:
+    async def test_revoke_all_sessions(self, connected_client) -> None:
         connected_client._http.post = AsyncMock(
             return_value=_mock_response(status_code=204)
         )
 
-        await connected_client.sign_out_all("user-123")
+        await connected_client.revoke_all_sessions("user-123")
         connected_client._http.post.assert_called_once()
 
 
@@ -369,15 +446,16 @@ class TestGetUser:
             return_value=_mock_response(json_data=user_data)
         )
 
-        user = await connected_client.get_user("user-123")
+        identity = await connected_client.get_user("user-123")
 
-        assert user is not None
-        assert user.id == "user-123"
-        assert user.email == TEST_EMAIL
-        assert user.first_name == "Alice"
-        assert user.last_name == "Smith"
-        assert user.image_url == "https://example.com/avatar.jpg"
-        assert user.role == "admin"
+        assert identity is not None
+        assert identity.id == "user-123"
+        assert identity.email == TEST_EMAIL
+        assert identity.email_verified is True
+        assert identity.roles == ("admin",)
+        assert identity.tenant_id is None
+        assert identity.disabled is False
+        assert identity.metadata == {}
 
     async def test_not_found(self, connected_client) -> None:
         connected_client._http.get = AsyncMock(
@@ -400,24 +478,31 @@ class TestListUsers:
             return_value=_mock_response(json_data={"users": users})
         )
 
-        result = await connected_client.list_users(limit=10)
+        page = await connected_client.list_users(limit=10)
 
-        assert len(result) == 2
-        emails = {u.email for u in result}
+        assert len(page.items) == 2
+        emails = {u.email for u in page.items}
         assert "a@test.com" in emails
         assert "b@test.com" in emails
+        # Fewer items than limit → no more pages.
+        assert page.has_more is False
+        assert page.next_cursor is None
 
-    async def test_with_pagination(self, connected_client) -> None:
+    async def test_pagination_cursor(self, connected_client) -> None:
+        # A full page signals more results; cursor advances the page number.
+        users = [_make_gotrue_user(user_id=f"u{i}") for i in range(5)]
         connected_client._http.get = AsyncMock(
-            return_value=_mock_response(json_data={"users": []})
+            return_value=_mock_response(json_data={"users": users})
         )
 
-        await connected_client.list_users(limit=5, offset=10)
+        page = await connected_client.list_users(limit=5, cursor="2")
 
         call_args = connected_client._http.get.call_args
         params = call_args[1].get("params", {})
         assert params.get("per_page") == 5
-        assert params.get("page") == 3  # offset=10, limit=5 → page 3
+        assert params.get("page") == 2
+        assert page.has_more is True
+        assert page.next_cursor == "3"
 
 
 class TestUpdateUser:
@@ -427,12 +512,12 @@ class TestUpdateUser:
             return_value=_mock_response(json_data=updated)
         )
 
-        user = await connected_client.update_user(
-            user_id="user-123", email="new@test.com"
-        )
+        identity = (
+            await connected_client.update_user(user_id="user-123", email="new@test.com")
+        ).raise_for_status()
 
-        assert user is not None
-        assert user.email == "new@test.com"
+        assert identity is not None
+        assert identity.email == "new@test.com"
 
     async def test_not_found(self, connected_client) -> None:
         connected_client._http.put = AsyncMock(
@@ -441,10 +526,10 @@ class TestUpdateUser:
             )
         )
 
-        with pytest.raises(UserNotFoundError):
-            await connected_client.update_user(
-                user_id="nonexistent", email="x@test.com"
-            )
+        result = await connected_client.update_user(
+            user_id="nonexistent", email="x@test.com"
+        )
+        assert isinstance(result.error, UserNotFoundError)
 
 
 class TestDeleteUser:
@@ -467,43 +552,69 @@ class TestDeleteUser:
         assert result is False
 
 
-class TestCountUsers:
-    async def test_count(self, connected_client) -> None:
-        users = [_make_gotrue_user(user_id=f"u{i}") for i in range(3)]
-        resp = _mock_response(json_data={"users": users})
-        resp.headers = {"x-total-count": "42"}
-        connected_client._http.get = AsyncMock(return_value=resp)
+class TestFindUser:
+    async def test_by_user_id(self, connected_client) -> None:
+        user_data = _make_gotrue_user()
+        connected_client._http.get = AsyncMock(
+            return_value=_mock_response(json_data=user_data)
+        )
 
-        count = await connected_client.count_users()
-        assert count == 42
+        identity = await connected_client.find_user(user_id="user-123")
+        assert identity is not None
+        assert identity.id == "user-123"
 
-    async def test_count_fallback(self, connected_client) -> None:
-        """Falls back to len(users) if x-total-count header is missing."""
-        users = [_make_gotrue_user(user_id=f"u{i}") for i in range(3)]
-        resp = _mock_response(json_data={"users": users})
-        resp.headers = {}
-        connected_client._http.get = AsyncMock(return_value=resp)
+    async def test_missing_returns_none(self, connected_client) -> None:
+        connected_client._http.get = AsyncMock(
+            return_value=_mock_response(
+                status_code=404, json_data={"error": "User not found"}
+            )
+        )
 
-        count = await connected_client.count_users()
-        assert count == 3
+        assert await connected_client.find_user(user_id="nope") is None
+
+    async def test_email_unsupported(self, connected_client) -> None:
+        with pytest.raises(NotImplementedError):
+            await connected_client.find_user(email=TEST_EMAIL)
+
+    async def test_requires_exactly_one_key(self, connected_client) -> None:
+        with pytest.raises(ValueError):
+            await connected_client.find_user()
 
 
 # ── Password Recovery ─────────────────────────────────────────────
 
 
 class TestPasswordRecovery:
-    async def test_request_recovery(self, connected_client) -> None:
+    async def test_request_reset(self, connected_client) -> None:
         connected_client._http.post = AsyncMock(
             return_value=_mock_response(status_code=200)
         )
 
-        await connected_client.request_password_recovery(
-            email=TEST_EMAIL, recovery_url="https://app.com/reset"
-        )
+        await connected_client.request_password_reset(email=TEST_EMAIL)
 
         connected_client._http.post.assert_called_once()
         call_args = connected_client._http.post.call_args
         assert "recover" in call_args[0][0]
+
+    async def test_reset_password(self, connected_client) -> None:
+        user_data = _make_gotrue_user()
+        connected_client._http.put = AsyncMock(
+            return_value=_mock_response(json_data=user_data)
+        )
+
+        identity = (
+            await connected_client.reset_password("reset-token", "NewP@ss123")
+        ).raise_for_status()
+        assert identity is not None
+        assert identity.id == "user-123"
+
+    async def test_reset_password_invalid(self, connected_client) -> None:
+        connected_client._http.put = AsyncMock(
+            return_value=_mock_response(status_code=401, json_data={})
+        )
+
+        result = await connected_client.reset_password("bad-token", "NewP@ss123")
+        assert isinstance(result.error, InvalidTokenError)
 
 
 # ── Magic Link ────────────────────────────────────────────────────
@@ -515,8 +626,8 @@ class TestMagicLink:
             return_value=_mock_response(status_code=200)
         )
 
-        await connected_client.sign_in_with_magic_link(
-            email=TEST_EMAIL, magic_link_url="https://app.com/magic"
+        await connected_client.send_magic_link(
+            email=TEST_EMAIL, redirect_url="https://app.com/magic"
         )
 
         connected_client._http.post.assert_called_once()
@@ -529,19 +640,29 @@ class TestMagicLink:
             return_value=_mock_response(json_data=response_data)
         )
 
-        result = await connected_client.verify_magic_link("otp-token-123")
+        outcome = await connected_client.verify_magic_link("otp-token-123")
 
-        assert result is not None
-        assert result.user.email == TEST_EMAIL
+        assert outcome.status is AuthStatus.COMPLETE
+        assert outcome.identity is not None
+        assert outcome.identity.email == TEST_EMAIL
+
+    async def test_verify_magic_link_invalid(self, connected_client) -> None:
+        connected_client._http.post = AsyncMock(
+            return_value=_mock_response(status_code=401, json_data={})
+        )
+
+        outcome = await connected_client.verify_magic_link("bad-token")
+        assert outcome.status is AuthStatus.INVALID_TOKEN
+        assert isinstance(outcome.error, InvalidTokenError)
 
 
 # ── OAuth ─────────────────────────────────────────────────────────
 
 
 class TestOAuth:
-    def test_get_authorization_url(self, supabase_client) -> None:
-        url = supabase_client.get_oauth_authorization_url(
-            "google",
+    def test_authorization_url(self, supabase_client) -> None:
+        url = supabase_client.authorization_url(
+            provider="google",
             state="random-state",
             redirect_uri="https://app.com/callback",
         )
@@ -551,9 +672,9 @@ class TestOAuth:
         assert "state=random-state" in url
         assert "redirect_to=" in url
 
-    def test_get_authorization_url_with_scopes(self, supabase_client) -> None:
-        url = supabase_client.get_oauth_authorization_url(
-            "github",
+    def test_authorization_url_with_scopes(self, supabase_client) -> None:
+        url = supabase_client.authorization_url(
+            provider="github",
             state="state",
             scopes=["user:email", "read:org"],
         )
@@ -566,19 +687,317 @@ class TestOAuth:
             return_value=_mock_response(json_data=response_data)
         )
 
-        result = await connected_client.sign_in_with_oauth(
-            "google", "auth-code-123", redirect_uri="https://app.com/callback"
+        outcome = await connected_client.sign_in_with_oauth(
+            "auth-code-123",
+            provider="google",
+            redirect_uri="https://app.com/callback",
         )
 
-        assert result is not None
-        assert result.user.email == TEST_EMAIL
-        assert result.tokens.access_token
+        assert outcome.status is AuthStatus.COMPLETE
+        assert outcome.identity is not None
+        assert outcome.identity.email == TEST_EMAIL
+        assert outcome.tokens is not None
+        assert outcome.tokens.access_token
+
+    async def test_sign_in_with_oauth_rejected(self, connected_client) -> None:
+        connected_client._http.post = AsyncMock(
+            return_value=_mock_response(status_code=400, json_data={})
+        )
+
+        outcome = await connected_client.sign_in_with_oauth(
+            "bad-code", provider="google"
+        )
+        assert outcome.status is AuthStatus.INVALID_CREDENTIALS
+        assert isinstance(outcome.error, InvalidCredentialsError)
 
 
-# ── Sessions ──────────────────────────────────────────────────────
+# ── Sessions: list is unsupported ─────────────────────────────────
 
 
-class TestSessions:
-    async def test_list_sessions_returns_empty(self, supabase_client) -> None:
-        result = await supabase_client.list_sessions()
-        assert result == []
+class TestListSessionsUnsupported:
+    async def test_list_sessions_raises(self, supabase_client) -> None:
+        from derp.auth.exceptions import CapabilityNotSupportedError
+
+        with pytest.raises(CapabilityNotSupportedError):
+            await supabase_client.list_sessions()
+
+
+# ── Organizations (database-backed) ───────────────────────────────
+#
+# Orgs live in Postgres for the Supabase backend, so these run against a real
+# database. Admin methods address an org by exactly one of ``org_id=`` or
+# ``slug=``; backends select on whichever was given (no resolve round-trip).
+
+
+async def _create_supabase_org_tables(db: DatabaseEngine) -> None:
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS organizations (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            name VARCHAR(255) NOT NULL,
+            slug VARCHAR(255) UNIQUE NOT NULL,
+            metadata TEXT,
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+        )
+    """)
+    # Supabase keys members by the GoTrue user id (a string), no users FK.
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS org_members (
+            id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+            org_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+            user_id VARCHAR(255) NOT NULL,
+            role VARCHAR(50) NOT NULL DEFAULT 'member',
+            created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            UNIQUE (org_id, user_id)
+        )
+    """)
+
+
+@pytest.fixture
+async def org_db(clean_database: str) -> AsyncGenerator[DatabaseEngine, None]:
+    engine = DatabaseEngine(clean_database)
+    await engine.connect()
+    await _create_supabase_org_tables(engine)
+    yield engine
+    await engine.disconnect()
+
+
+@pytest.fixture
+def org_client(supabase_config: SupabaseConfig, org_db: DatabaseEngine):
+    from derp.auth.supabase_client import SupabaseAuthClient
+
+    client = SupabaseAuthClient(supabase_config)
+    client.set_db(org_db)
+    return client
+
+
+class TestOrgCrud:
+    async def test_create_and_get_by_id(self, org_client) -> None:
+        created = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        assert created.slug == "acme"
+
+        fetched = (await org_client.get_org(org_id=created.id)).raise_for_status()
+        assert fetched.id == created.id
+        assert fetched.name == "Acme"
+
+    async def test_get_by_slug_and_by_id_match(self, org_client) -> None:
+        created = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        by_slug = (await org_client.get_org(slug="acme")).raise_for_status()
+        by_id = (await org_client.get_org(org_id=created.id)).raise_for_status()
+        assert by_slug.id == by_id.id == created.id
+
+    async def test_get_requires_exactly_one_ref(self, org_client) -> None:
+        with pytest.raises(ValueError):
+            await org_client.get_org()
+        with pytest.raises(ValueError):
+            await org_client.get_org(org_id="x", slug="y")
+
+    async def test_get_missing_slug_returns_error(self, org_client) -> None:
+        result = await org_client.get_org(slug="does-not-exist")
+        assert isinstance(result.error, OrgNotFoundError)
+
+    async def test_get_missing_uuid_returns_error(self, org_client) -> None:
+        result = await org_client.get_org(org_id=str(uuid.uuid4()))
+        assert isinstance(result.error, OrgNotFoundError)
+
+    async def test_update_by_slug(self, org_client) -> None:
+        created = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        updated = (
+            await org_client.update_org(
+                slug="acme", name="Acme Inc", new_slug="acme-inc"
+            )
+        ).raise_for_status()
+        assert updated.id == created.id
+        assert updated.name == "Acme Inc"
+        assert updated.slug == "acme-inc"
+
+    async def test_update_by_id(self, org_client) -> None:
+        created = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        updated = (
+            await org_client.update_org(org_id=created.id, name="Renamed")
+        ).raise_for_status()
+        assert updated.name == "Renamed"
+        assert updated.slug == "acme"
+
+    async def test_update_missing_returns_error(self, org_client) -> None:
+        result = await org_client.update_org(slug="nope", name="x")
+        assert isinstance(result.error, OrgNotFoundError)
+
+    async def test_update_slug_conflict(self, org_client) -> None:
+        (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="o1")
+        ).raise_for_status()
+        (
+            await org_client.create_org(name="Beta", slug="beta", creator_id="o2")
+        ).raise_for_status()
+        result = await org_client.update_org(slug="beta", new_slug="acme")
+        assert isinstance(result.error, OrgSlugConflictError)
+
+    async def test_delete_by_slug(self, org_client) -> None:
+        (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        assert await org_client.delete_org(slug="acme") is True
+        result = await org_client.get_org(slug="acme")
+        assert isinstance(result.error, OrgNotFoundError)
+
+    async def test_delete_by_id(self, org_client) -> None:
+        created = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        assert await org_client.delete_org(org_id=created.id) is True
+
+    async def test_delete_missing_returns_false(self, org_client) -> None:
+        assert await org_client.delete_org(slug="nope") is False
+        assert await org_client.delete_org(org_id=str(uuid.uuid4())) is False
+
+
+class TestOrgMembership:
+    async def test_add_list_update_remove_by_id(self, org_client) -> None:
+        org = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+
+        member = (
+            await org_client.add_member(org_id=org.id, user_id="u2", role="member")
+        ).raise_for_status()
+        assert member.role == "member"
+
+        updated = (
+            await org_client.update_member(org_id=org.id, user_id="u2", role="admin")
+        ).raise_for_status()
+        assert updated.role == "admin"
+
+        members = await org_client.list_members(org_id=org.id)
+        assert {m.user_id for m in members.items} == {"owner-1", "u2"}
+
+        removed = (
+            await org_client.remove_member(org_id=org.id, user_id="u2")
+        ).raise_for_status()
+        assert removed is True
+        members = await org_client.list_members(org_id=org.id)
+        assert {m.user_id for m in members.items} == {"owner-1"}
+
+    async def test_add_list_update_remove_by_slug(self, org_client) -> None:
+        org = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        # Address the org by its slug rather than its id.
+        member = (
+            await org_client.add_member(slug="acme", user_id="u2", role="member")
+        ).raise_for_status()
+        assert member.org_id == org.id
+        assert member.role == "member"
+
+        # And list/update/remove also work addressed by slug.
+        members = await org_client.list_members(slug="acme")
+        assert {m.user_id for m in members.items} == {"owner-1", "u2"}
+
+        updated = (
+            await org_client.update_member(slug="acme", user_id="u2", role="admin")
+        ).raise_for_status()
+        assert updated.role == "admin"
+        removed = (
+            await org_client.remove_member(slug="acme", user_id="u2")
+        ).raise_for_status()
+        assert removed is True
+
+    async def test_add_member_requires_exactly_one_ref(self, org_client) -> None:
+        with pytest.raises(ValueError):
+            await org_client.add_member(user_id="u2")
+        with pytest.raises(ValueError):
+            await org_client.add_member(user_id="u2", org_id="x", slug="y")
+
+    async def test_add_member_slug_not_found(self, org_client) -> None:
+        result = await org_client.add_member(slug="ghost", user_id="u2")
+        assert isinstance(result.error, OrgNotFoundError)
+
+    async def test_add_duplicate_member(self, org_client) -> None:
+        org = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        (await org_client.add_member(org_id=org.id, user_id="u2")).raise_for_status()
+        result = await org_client.add_member(org_id=org.id, user_id="u2")
+        assert isinstance(result.error, MemberAlreadyExistsError)
+
+    async def test_update_member_slug_not_found(self, org_client) -> None:
+        result = await org_client.update_member(
+            slug="ghost", user_id="u2", role="admin"
+        )
+        assert isinstance(result.error, OrgMemberNotFoundError)
+
+    async def test_update_member_not_a_member(self, org_client) -> None:
+        org = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        result = await org_client.update_member(
+            org_id=org.id, user_id="ghost", role="admin"
+        )
+        assert isinstance(result.error, OrgMemberNotFoundError)
+
+    async def test_remove_member_not_a_member_returns_false(self, org_client) -> None:
+        org = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        result = await org_client.remove_member(org_id=org.id, user_id="ghost")
+        assert result.ok
+        assert result.value is False
+
+    async def test_remove_missing_org_returns_false(self, org_client) -> None:
+        result = await org_client.remove_member(slug="ghost", user_id="u2")
+        assert result.ok
+        assert result.value is False
+
+    async def test_remove_last_owner_returns_error(self, org_client) -> None:
+        org = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        result = await org_client.remove_member(org_id=org.id, user_id="owner-1")
+        assert isinstance(result.error, LastOwnerError)
+
+    async def test_list_members_unknown_org_empty(self, org_client) -> None:
+        page = await org_client.list_members(slug="ghost")
+        assert page.items == []
+        assert page.has_more is False
+
+
+class TestSetActiveOrg:
+    async def test_by_slug_and_id(self, org_client) -> None:
+        org = (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        by_id = (
+            await org_client.set_active_org(session_id="owner-1", org_id=org.id)
+        ).raise_for_status()
+        by_slug = (
+            await org_client.set_active_org(session_id="owner-1", slug="acme")
+        ).raise_for_status()
+        assert by_id.access_token
+        # Both address the same canonical org, so the signed context matches.
+        assert by_id.access_token == by_slug.access_token
+
+    async def test_clear(self, org_client) -> None:
+        tokens = (
+            await org_client.set_active_org(session_id="owner-1")
+        ).raise_for_status()
+        assert tokens.access_token == ""
+
+    async def test_not_a_member(self, org_client) -> None:
+        (
+            await org_client.create_org(name="Acme", slug="acme", creator_id="owner-1")
+        ).raise_for_status()
+        result = await org_client.set_active_org(session_id="stranger", slug="acme")
+        assert isinstance(result.error, OrgMemberNotFoundError)
+
+    async def test_missing_org(self, org_client) -> None:
+        result = await org_client.set_active_org(session_id="owner-1", slug="ghost")
+        assert isinstance(result.error, OrgMemberNotFoundError)

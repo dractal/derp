@@ -10,6 +10,7 @@ import pytest
 from derp.ai import AIClient
 from derp.config import (
     AIConfig,
+    ClickHouseConfig,
     DatabaseConfig,
     DerpConfig,
     KVConfig,
@@ -25,6 +26,7 @@ def _config(
     db_url: str,
     schema_path: str,
     replica_url: str | None = None,
+    clickhouse: ClickHouseConfig | None = None,
     storage: StorageConfig | None = None,
     kv: KVConfig | None = None,
     payments: PaymentsConfig | None = None,
@@ -36,6 +38,7 @@ def _config(
             replica_url=replica_url,
             schema_path=schema_path,
         ),
+        clickhouse=clickhouse,
         storage=storage,
         kv=kv,
         payments=payments,
@@ -50,6 +53,7 @@ def test_properties_require_active_session(client_schema_path: str) -> None:
 
     for accessor in (
         lambda c: c.db,
+        lambda c: c.ch,
         lambda c: c.storage,
         lambda c: c.auth,
         lambda c: c.kv,
@@ -94,6 +98,8 @@ async def test_optional_services_require_config(client_schema_path: str) -> None
         )
         await client.connect()
 
+        with pytest.raises(ValueError, match="`ClickHouseConfig` was not passed"):
+            _ = client.ch
         with pytest.raises(ValueError, match="`StorageConfig` was not passed"):
             _ = client.storage
         with pytest.raises(ValueError, match="`AuthConfig` was not passed"):
@@ -132,6 +138,34 @@ async def test_payments_service_available_in_session(client_schema_path: str) ->
 
     mock_payments.connect.assert_awaited_once()
     mock_payments.disconnect.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_clickhouse_engine_available_in_session(client_schema_path: str) -> None:
+    mock_db = MagicMock()
+    mock_db.connect = AsyncMock()
+    mock_db.disconnect = AsyncMock()
+    mock_ch = MagicMock()
+    mock_ch.connect = AsyncMock()
+    mock_ch.disconnect = AsyncMock()
+
+    with (
+        patch("derp.derp_client.DatabaseEngine", return_value=mock_db),
+        patch("derp.derp_client.ClickHouseEngine", return_value=mock_ch),
+    ):
+        client = DerpClient(
+            _config(
+                db_url="postgresql://unused",
+                schema_path=client_schema_path,
+                clickhouse=ClickHouseConfig(host="localhost"),
+            )
+        )
+        await client.connect()
+        assert client.ch is mock_ch
+        await client.disconnect()
+
+    mock_ch.connect.assert_awaited_once()
+    mock_ch.disconnect.assert_awaited_once()
 
 
 @pytest.mark.asyncio

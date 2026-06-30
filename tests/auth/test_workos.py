@@ -16,6 +16,15 @@ from workos.exceptions import (
     NotFoundException,
 )
 
+from derp.auth.base import (
+    AuthOutcome,
+    Identity,
+    Org,
+    OrgMember,
+    Page,
+    Session,
+    TokenSet,
+)
 from derp.auth.exceptions import (
     EmailAlreadyExistsError,
     InvalidCredentialsError,
@@ -25,7 +34,7 @@ from derp.auth.exceptions import (
     OrgSlugConflictError,
     UserNotFoundError,
 )
-from derp.auth.models import WorkOSOrganization
+from derp.auth.models import AuthStatus, WorkOSOrganization
 from derp.config import (
     AuthConfig,
     JWTConfig,
@@ -267,13 +276,13 @@ def _make_auth_response(
     return resp
 
 
-def _make_list_resource(items: list) -> MagicMock:
-    """Mock a WorkOSListResource that supports iteration and .data."""
+def _make_list_resource(items: list, after: str | None = None) -> MagicMock:
+    """Mock a WorkOSListResource that supports iteration, .data, and a cursor."""
     resource = MagicMock()
     resource.data = items
     resource.__iter__ = MagicMock(return_value=iter(items))
     resource.list_metadata = MagicMock()
-    resource.list_metadata.after = None
+    resource.list_metadata.after = after
     return resource
 
 
@@ -329,7 +338,23 @@ class TestWorkOSConfig:
             )
 
 
-# ── Authenticate ──────────────────────────────────────────────────
+# ── Capabilities ──────────────────────────────────────────────────
+
+
+class TestCapabilities:
+    def test_advertised_flags(self, workos_client) -> None:
+        assert workos_client.supports_password is True
+        assert workos_client.supports_oauth is True
+        assert workos_client.supports_sso is True
+        assert workos_client.supports_magic_link is True
+        assert workos_client.supports_orgs is True
+        assert workos_client.supports_sessions is True
+        # Left at the base default.
+        assert workos_client.supports_multi_tenant is False
+        assert workos_client.supports_mfa is False
+
+
+# ── verify_token / authenticate ───────────────────────────────────
 
 
 class TestAuthenticate:
@@ -342,9 +367,11 @@ class TestAuthenticate:
         workos_client._jwks_client = _mock_jwks_client(rsa_keypair)
         session = await workos_client.authenticate(request)
 
-        assert session is not None
+        assert isinstance(session, Session)
         assert session.user_id == "user_01XYZ"
         assert session.session_id == "session_01ABC"
+        assert session.is_anonymous is False
+        assert session.mfa.enrolled is False
 
     async def test_missing_auth_header(self, workos_client, rsa_keypair) -> None:
         workos_client._jwks_client = _mock_jwks_client(rsa_keypair)
@@ -391,8 +418,8 @@ class TestAuthenticate:
     async def test_org_id_passthrough_no_db(self, workos_client, rsa_keypair) -> None:
         """Auth is pure JWT — JWT.org_id surfaces unchanged with NO DB hit.
 
-        ``SessionInfo.org_id`` matches the value app FKs target (the WorkOS
-        org id) so tenant checks compare apples to apples.
+        ``Session.org_id`` matches the value app FKs target (the WorkOS org id)
+        so tenant checks compare apples to apples.
         """
         private_key, _ = rsa_keypair
         token = _make_jwt(private_key, org_id="org_01ABC", role="admin")
@@ -407,12 +434,12 @@ class TestAuthenticate:
         assert session is not None
         assert session.org_id == "org_01ABC"
         assert session.org_role == "admin"
-        assert session.role == "admin"
+        assert session.roles == ("admin",)
 
     async def test_org_id_omitted_when_jwt_has_none(
         self, workos_client, rsa_keypair
     ) -> None:
-        """JWT without org_id → SessionInfo.org_id is None, role still set."""
+        """JWT without org_id → Session.org_id is None, roles still set."""
         private_key, _ = rsa_keypair
         token = _make_jwt(private_key, role="admin")
         request = MagicMock()
@@ -424,7 +451,20 @@ class TestAuthenticate:
         assert session is not None
         assert session.org_id is None
         assert session.org_role is None
-        assert session.role == "admin"
+        assert session.roles == ("admin",)
+
+    async def test_default_role_when_absent(self, workos_client, rsa_keypair) -> None:
+        """A token with no role claim falls back to the default role."""
+        private_key, _ = rsa_keypair
+        token = _make_jwt(private_key)
+        request = MagicMock()
+        request.headers = {"Authorization": f"Bearer {token}"}
+
+        workos_client._jwks_client = _mock_jwks_client(rsa_keypair)
+        session = await workos_client.authenticate(request)
+
+        assert session is not None
+        assert session.roles == ("default",)
 
 
 # ── User CRUD ────────────────────────────────────────────────────
@@ -436,10 +476,20 @@ class TestGetUser:
         connected_client._workos.user_management.get_user = AsyncMock(return_value=user)
 
         result = await connected_client.get_user("user_01XYZ")
-        assert result is not None
+        assert isinstance(result, Identity)
         assert result.id == "user_01XYZ"
         assert result.email == TEST_EMAIL
-        assert result.first_name == "Alice"
+        assert result.email_verified is True
+        assert result.disabled is False
+        assert result.roles == ("default",)
+
+    async def test_unverified_user_is_disabled(self, connected_client) -> None:
+        user = _make_workos_user(email_verified=False)
+        connected_client._workos.user_management.get_user = AsyncMock(return_value=user)
+
+        result = await connected_client.get_user("user_01XYZ")
+        assert result.email_verified is False
+        assert result.disabled is True
 
     async def test_not_found(self, connected_client) -> None:
         connected_client._workos.user_management.get_user = AsyncMock(
@@ -449,10 +499,76 @@ class TestGetUser:
             await connected_client.get_user("nonexistent")
 
 
+class TestFindUser:
+    async def test_by_id_hit(self, connected_client) -> None:
+        connected_client._workos.user_management.get_user = AsyncMock(
+            return_value=_make_workos_user()
+        )
+        result = await connected_client.find_user(user_id="user_01XYZ")
+        assert result is not None
+        assert result.id == "user_01XYZ"
+
+    async def test_by_id_miss_returns_none(self, connected_client) -> None:
+        connected_client._workos.user_management.get_user = AsyncMock(
+            side_effect=_workos_exc(NotFoundException)
+        )
+        assert await connected_client.find_user(user_id="nope") is None
+
+    async def test_by_email_hit(self, connected_client) -> None:
+        connected_client._workos.user_management.list_users = AsyncMock(
+            return_value=_make_list_resource([_make_workos_user()])
+        )
+        result = await connected_client.find_user(email=TEST_EMAIL)
+        assert result is not None
+        assert result.email == TEST_EMAIL
+
+    async def test_by_email_miss_returns_none(self, connected_client) -> None:
+        connected_client._workos.user_management.list_users = AsyncMock(
+            return_value=_make_list_resource([])
+        )
+        assert await connected_client.find_user(email="ghost@example.com") is None
+
+    async def test_phone_unsupported_returns_none(self, connected_client) -> None:
+        assert await connected_client.find_user(phone="+15555550100") is None
+
+    async def test_requires_exactly_one(self, connected_client) -> None:
+        with pytest.raises(ValueError, match="exactly one"):
+            await connected_client.find_user()
+        with pytest.raises(ValueError, match="exactly one"):
+            await connected_client.find_user(user_id="x", email="y@z.com")
+
+
 class TestListUsers:
-    async def test_raises_not_implemented(self, connected_client) -> None:
-        with pytest.raises(NotImplementedError, match="list_users_by_cursor"):
-            await connected_client.list_users(limit=10)
+    async def test_first_page(self, connected_client) -> None:
+        users = [_make_workos_user(user_id="u1"), _make_workos_user(user_id="u2")]
+        connected_client._workos.user_management.list_users = AsyncMock(
+            return_value=_make_list_resource(users, after="cursor_abc")
+        )
+
+        page = await connected_client.list_users(limit=2)
+        assert isinstance(page, Page)
+        assert len(page.items) == 2
+        assert all(isinstance(i, Identity) for i in page.items)
+        assert page.has_more is True
+        assert page.next_cursor == "cursor_abc"
+
+    async def test_last_page(self, connected_client) -> None:
+        connected_client._workos.user_management.list_users = AsyncMock(
+            return_value=_make_list_resource(
+                [_make_workos_user(user_id="u3")], after=None
+            )
+        )
+
+        page = await connected_client.list_users(limit=2, cursor="cursor_abc")
+        assert len(page.items) == 1
+        assert page.has_more is False
+        assert page.next_cursor is None
+
+    async def test_cursor_maps_to_after(self, connected_client) -> None:
+        mock_fn = AsyncMock(return_value=_make_list_resource([], after=None))
+        connected_client._workos.user_management.list_users = mock_fn
+        await connected_client.list_users(limit=5, cursor="cur_xyz")
+        mock_fn.assert_awaited_once_with(limit=5, after="cur_xyz")
 
 
 class TestUpdateUser:
@@ -462,20 +578,22 @@ class TestUpdateUser:
             return_value=updated
         )
 
-        result = await connected_client.update_user(
-            user_id="user_01XYZ", email="new@test.com"
-        )
-        assert result is not None
+        result = (
+            await connected_client.update_user(
+                user_id="user_01XYZ", email="new@test.com"
+            )
+        ).raise_for_status()
+        assert isinstance(result, Identity)
         assert result.email == "new@test.com"
 
     async def test_not_found(self, connected_client) -> None:
         connected_client._workos.user_management.update_user = AsyncMock(
             side_effect=_workos_exc(NotFoundException)
         )
-        with pytest.raises(UserNotFoundError):
-            await connected_client.update_user(
-                user_id="nonexistent", email="x@test.com"
-            )
+        result = await connected_client.update_user(
+            user_id="nonexistent", email="x@test.com"
+        )
+        assert isinstance(result.error, UserNotFoundError)
 
 
 class TestDeleteUser:
@@ -494,12 +612,6 @@ class TestDeleteUser:
         assert result is False
 
 
-class TestCountUsers:
-    async def test_raises_not_implemented(self, connected_client) -> None:
-        with pytest.raises(NotImplementedError, match="list_users_by_cursor"):
-            await connected_client.count_users()
-
-
 # ── Sign Up ──────────────────────────────────────────────────────
 
 
@@ -514,20 +626,37 @@ class TestSignUp:
             return_value=auth_resp
         )
 
-        result = await connected_client.sign_up(
+        outcome = await connected_client.sign_up(
             email=TEST_EMAIL, password=TEST_PASSWORD
         )
-        assert result is not None
-        assert result.user.email == TEST_EMAIL
-        assert result.tokens.access_token
+        assert isinstance(outcome, AuthOutcome)
+        assert outcome.status is AuthStatus.COMPLETE
+        assert outcome.ok is True
+        assert outcome.identity is not None
+        assert outcome.identity.email == TEST_EMAIL
+        assert outcome.tokens is not None
+        assert outcome.tokens.access_token
 
     async def test_email_taken(self, connected_client) -> None:
         connected_client._workos.user_management.create_user = AsyncMock(
             side_effect=_workos_exc(ConflictException, "User already exists")
         )
-        with pytest.raises(EmailAlreadyExistsError) as exc:
-            await connected_client.sign_up(email=TEST_EMAIL, password=TEST_PASSWORD)
-        assert exc.value.email == TEST_EMAIL
+        outcome = await connected_client.sign_up(
+            email=TEST_EMAIL, password=TEST_PASSWORD
+        )
+        assert outcome.status is AuthStatus.EMAIL_EXISTS
+        assert outcome.ok is False
+        assert isinstance(outcome.error, EmailAlreadyExistsError)
+        assert outcome.error.email == TEST_EMAIL
+
+    async def test_email_taken_via_bad_request(self, connected_client) -> None:
+        connected_client._workos.user_management.create_user = AsyncMock(
+            side_effect=_workos_exc(BadRequestException, "email taken")
+        )
+        outcome = await connected_client.sign_up(
+            email=TEST_EMAIL, password=TEST_PASSWORD
+        )
+        assert outcome.status is AuthStatus.EMAIL_EXISTS
 
 
 # ── Sign In With Password ────────────────────────────────────────
@@ -540,63 +669,78 @@ class TestSignInWithPassword:
             return_value=auth_resp
         )
 
-        result = await connected_client.sign_in_with_password(TEST_EMAIL, TEST_PASSWORD)
-        assert result is not None
-        assert result.user.email == TEST_EMAIL
-        assert result.tokens.refresh_token == "refresh-token-abc"
+        outcome = await connected_client.sign_in_with_password(
+            identifier=TEST_EMAIL, password=TEST_PASSWORD
+        )
+        assert outcome.status is AuthStatus.COMPLETE
+        assert outcome.identity is not None
+        assert outcome.identity.email == TEST_EMAIL
+        assert isinstance(outcome.tokens, TokenSet)
+        assert outcome.tokens.refresh_token == "refresh-token-abc"
+        assert outcome.tokens.id_token is None
 
     async def test_invalid_credentials(self, connected_client) -> None:
         connected_client._workos.user_management.authenticate_with_password = AsyncMock(
             side_effect=_workos_exc(AuthenticationException, "Invalid credentials")
         )
-        with pytest.raises(InvalidCredentialsError):
-            await connected_client.sign_in_with_password(TEST_EMAIL, "wrong-password")
+        outcome = await connected_client.sign_in_with_password(
+            identifier=TEST_EMAIL, password="wrong-password"
+        )
+        assert outcome.status is AuthStatus.INVALID_CREDENTIALS
+        assert isinstance(outcome.error, InvalidCredentialsError)
 
 
 # ── Magic Auth ───────────────────────────────────────────────────
 
 
 class TestMagicAuth:
-    async def test_send_magic_auth_code(self, connected_client) -> None:
+    async def test_send_magic_link(self, connected_client) -> None:
         magic_auth = MagicMock()
         magic_auth.id = "magic_01ABC"
         connected_client._workos.user_management.create_magic_auth = AsyncMock(
             return_value=magic_auth
         )
 
-        await connected_client.sign_in_with_magic_link(
-            email=TEST_EMAIL, magic_link_url="https://app.com/magic"
+        await connected_client.send_magic_link(
+            email=TEST_EMAIL, redirect_url="https://app.com/magic"
         )
         connected_client._workos.user_management.create_magic_auth.assert_called_once()
 
-    async def test_verify_magic_auth(self, connected_client) -> None:
+    async def test_verify_magic_link(self, connected_client) -> None:
         auth_resp = _make_auth_response()
         connected_client._workos.user_management.authenticate_with_magic_auth = (
             AsyncMock(return_value=auth_resp)
         )
 
-        result = await connected_client.verify_magic_link("code-123", email=TEST_EMAIL)
-        assert result is not None
-        assert result.user.email == TEST_EMAIL
+        outcome = await connected_client.verify_magic_link("code-123", email=TEST_EMAIL)
+        assert outcome.status is AuthStatus.COMPLETE
+        assert outcome.identity is not None
+        assert outcome.identity.email == TEST_EMAIL
 
-    async def test_verify_magic_auth_without_email_raises(
-        self, connected_client
-    ) -> None:
+    async def test_verify_invalid_token(self, connected_client) -> None:
+        connected_client._workos.user_management.authenticate_with_magic_auth = (
+            AsyncMock(side_effect=_workos_exc(AuthenticationException, "bad code"))
+        )
+        outcome = await connected_client.verify_magic_link("bad", email=TEST_EMAIL)
+        assert outcome.status is AuthStatus.INVALID_TOKEN
+        assert isinstance(outcome.error, InvalidTokenError)
+
+    async def test_verify_without_email_raises(self, connected_client) -> None:
         with pytest.raises(ValueError, match="WorkOS requires email"):
             await connected_client.verify_magic_link("code-123")
 
 
-# ── OAuth ────────────────────────────────────────────────────────
+# ── OAuth / SSO ──────────────────────────────────────────────────
 
 
 class TestOAuth:
-    async def test_get_authorization_url(self, connected_client) -> None:
+    async def test_authorization_url(self, connected_client) -> None:
         connected_client._workos.user_management.get_authorization_url = MagicMock(
             return_value="https://api.workos.com/authorize?..."
         )
 
-        url = connected_client.get_oauth_authorization_url(
-            "GoogleOAuth",
+        url = connected_client.authorization_url(
+            provider="GoogleOAuth",
             state="random-state",
             redirect_uri="https://app.com/callback",
         )
@@ -606,8 +750,8 @@ class TestOAuth:
         mock_fn = MagicMock(return_value="https://api.workos.com/authorize")
         connected_client._workos.user_management.get_authorization_url = mock_fn
 
-        connected_client.get_oauth_authorization_url(
-            "google", state="s", redirect_uri="https://app.com/cb"
+        connected_client.authorization_url(
+            provider="google", state="s", redirect_uri="https://app.com/cb"
         )
         mock_fn.assert_called_once()
         assert mock_fn.call_args.kwargs["provider"] == "GoogleOAuth"
@@ -616,13 +760,24 @@ class TestOAuth:
         mock_fn = MagicMock(return_value="https://api.workos.com/authorize")
         connected_client._workos.user_management.get_authorization_url = mock_fn
 
-        connected_client.get_oauth_authorization_url(
-            "google",
+        connected_client.authorization_url(
+            provider="google",
             state="s",
             scopes=["email", "profile"],
             redirect_uri="https://app.com/cb",
         )
         assert mock_fn.call_args.kwargs["provider_scopes"] == ["email", "profile"]
+
+    async def test_sso_authorization_url_by_organization(
+        self, connected_client
+    ) -> None:
+        mock_fn = MagicMock(return_value="https://api.workos.com/authorize")
+        connected_client._workos.user_management.get_authorization_url = mock_fn
+
+        connected_client.authorization_url(
+            organization="org_01ABC", state="s", redirect_uri="https://app.com/cb"
+        )
+        assert mock_fn.call_args.kwargs["organization_id"] == "org_01ABC"
 
     async def test_sign_in_with_oauth(self, connected_client) -> None:
         auth_resp = _make_auth_response()
@@ -630,17 +785,38 @@ class TestOAuth:
             return_value=auth_resp
         )
 
-        result = await connected_client.sign_in_with_oauth(
-            "GoogleOAuth", "auth-code-123", redirect_uri="https://app.com/callback"
+        outcome = await connected_client.sign_in_with_oauth(
+            "auth-code-123",
+            provider="GoogleOAuth",
+            redirect_uri="https://app.com/callback",
         )
-        assert result is not None
-        assert result.user.email == TEST_EMAIL
+        assert outcome.status is AuthStatus.COMPLETE
+        assert outcome.identity is not None
+        assert outcome.identity.email == TEST_EMAIL
+
+    async def test_sign_in_with_oauth_rejected(self, connected_client) -> None:
+        connected_client._workos.user_management.authenticate_with_code = AsyncMock(
+            side_effect=_workos_exc(AuthenticationException, "bad code")
+        )
+        outcome = await connected_client.sign_in_with_oauth("bad", provider="google")
+        assert outcome.status is AuthStatus.INVALID_CREDENTIALS
+        assert isinstance(outcome.error, InvalidCredentialsError)
+
+    async def test_sign_in_with_sso(self, connected_client) -> None:
+        auth_resp = _make_auth_response()
+        connected_client._workos.user_management.authenticate_with_code = AsyncMock(
+            return_value=auth_resp
+        )
+
+        outcome = await connected_client.sign_in_with_sso("sso-code-123")
+        assert outcome.status is AuthStatus.COMPLETE
+        assert outcome.identity is not None
 
 
-# ── Refresh Token ────────────────────────────────────────────────
+# ── Refresh ──────────────────────────────────────────────────────
 
 
-class TestRefreshToken:
+class TestRefresh:
     async def test_success(self, connected_client) -> None:
         resp = MagicMock()
         resp.access_token = _make_access_token()
@@ -649,10 +825,13 @@ class TestRefreshToken:
             AsyncMock(return_value=resp)
         )
 
-        result = await connected_client.refresh_token("old-refresh-token")
-        assert result is not None
+        result = (
+            await connected_client.refresh("old-refresh-token")
+        ).raise_for_status()
+        assert isinstance(result, TokenSet)
         assert result.access_token == resp.access_token
         assert result.refresh_token == "new-refresh-token"
+        assert result.id_token is None
 
     async def test_invalid_refresh_token(self, connected_client) -> None:
         connected_client._workos.user_management.authenticate_with_refresh_token = (
@@ -662,8 +841,8 @@ class TestRefreshToken:
                 )
             )
         )
-        with pytest.raises(InvalidTokenError):
-            await connected_client.refresh_token("bad-token")
+        result = await connected_client.refresh("bad-token")
+        assert isinstance(result.error, InvalidTokenError)
 
     async def test_expired_refresh_token(self, connected_client) -> None:
         connected_client._workos.user_management.authenticate_with_refresh_token = (
@@ -671,11 +850,11 @@ class TestRefreshToken:
                 side_effect=_workos_exc(BadRequestException, "Refresh token expired")
             )
         )
-        with pytest.raises(InvalidTokenError):
-            await connected_client.refresh_token("expired-token")
+        result = await connected_client.refresh("expired-token")
+        assert isinstance(result.error, InvalidTokenError)
 
 
-# ── Sessions / Sign Out ──────────────────────────────────────────
+# ── Sessions ─────────────────────────────────────────────────────
 
 
 class TestSessions:
@@ -685,19 +864,34 @@ class TestSessions:
             return_value=_make_list_resource(sessions)
         )
 
-        result = await connected_client.list_sessions(user_id="user_01XYZ")
-        assert len(result) == 2
+        page = await connected_client.list_sessions(user_id="user_01XYZ")
+        assert isinstance(page, Page)
+        assert len(page.items) == 2
+        assert all(isinstance(s, Session) for s in page.items)
+        assert page.has_more is False
 
+    async def test_list_sessions_no_user_returns_empty(self, connected_client) -> None:
+        page = await connected_client.list_sessions()
+        assert page.items == []
+        assert page.has_more is False
 
-class TestSignOut:
-    async def test_sign_out(self, connected_client) -> None:
+    async def test_list_sessions_cursor(self, connected_client) -> None:
+        sessions = [_make_session()]
+        connected_client._workos.user_management.list_sessions = AsyncMock(
+            return_value=_make_list_resource(sessions, after="cur_next")
+        )
+        page = await connected_client.list_sessions(user_id="user_01XYZ", limit=1)
+        assert page.has_more is True
+        assert page.next_cursor == "cur_next"
+
+    async def test_revoke_session(self, connected_client) -> None:
         connected_client._workos.user_management.revoke_session = AsyncMock(
             return_value=None
         )
-        await connected_client.sign_out("session_01ABC")
+        await connected_client.revoke_session("session_01ABC")
         connected_client._workos.user_management.revoke_session.assert_called_once()
 
-    async def test_sign_out_all(self, connected_client) -> None:
+    async def test_revoke_all_sessions(self, connected_client) -> None:
         sessions = [
             _make_session(session_id="s1"),
             _make_session(session_id="s2"),
@@ -709,7 +903,7 @@ class TestSignOut:
             return_value=None
         )
 
-        await connected_client.sign_out_all("user_01XYZ")
+        await connected_client.revoke_all_sessions("user_01XYZ")
         assert connected_client._workos.user_management.revoke_session.call_count == 2
 
 
@@ -720,23 +914,24 @@ class TestOrganizations:
     async def test_create_inserts_local_mapping(self, connected_client_with_db) -> None:
         """Happy path: WorkOS create succeeds, local row is inserted."""
         client = connected_client_with_db
-        # Real WorkOS echoes back the ``metadata`` we passed during create.
         org = _make_workos_org(slug="acme-corp")
         client._workos.organizations.create_organization = AsyncMock(return_value=org)
         client._workos.user_management.create_organization_membership = AsyncMock(
             return_value=_make_workos_membership()
         )
 
-        result = await client.create_org(
-            name="Acme Corp", slug="acme-corp", creator_id="user_01XYZ"
-        )
+        result = (
+            await client.create_org(
+                name="Acme Corp", slug="acme-corp", creator_id="user_01XYZ"
+            )
+        ).raise_for_status()
 
-        assert result is not None
+        assert isinstance(result, Org)
         assert result.name == "Acme Corp"
         assert result.slug == "acme-corp"
-        # OrgInfo.id IS the WorkOS string id — no translation.
+        assert result.tenant_id is None
+        # Org.id IS the WorkOS string id — no translation.
         assert result.id == "org_01ABC"
-        # Verify the local slug-index row was inserted with id == workos id.
         rows = await (
             client._db()
             .select(WorkOSOrganization)
@@ -747,24 +942,27 @@ class TestOrganizations:
         assert rows[0].id == "org_01ABC"
         assert rows[0].slug == "acme-corp"
 
-    async def test_create_workos_conflict_raises(
+    async def test_create_workos_conflict_returns_error(
         self, connected_client_with_db
     ) -> None:
-        """WorkOS-side conflict (duplicate org) → OrgSlugConflictError, no local row."""
+        """WorkOS-side conflict (duplicate org) → OrgSlugConflictError attached,
+        no local row."""
         client = connected_client_with_db
         client._workos.organizations.create_organization = AsyncMock(
             side_effect=_workos_exc(ConflictException, "Conflict")
         )
-        with pytest.raises(OrgSlugConflictError) as exc:
-            await client.create_org(name="Acme", slug="acme", creator_id="user_01XYZ")
-        assert exc.value.slug == "acme"
+        result = await client.create_org(
+            name="Acme", slug="acme", creator_id="user_01XYZ"
+        )
+        assert isinstance(result.error, OrgSlugConflictError)
+        assert result.error.slug == "acme"
         rows = await client._db().select(WorkOSOrganization).execute()
         assert rows == []
 
     async def test_create_local_slug_conflict_rolls_back_workos(
         self, connected_client_with_db
     ) -> None:
-        """Slug already taken locally → roll back WorkOS create + raise."""
+        """Slug already taken locally → roll back WorkOS create + return error."""
         client = connected_client_with_db
         await _seed_workos_org(client, workos_org_id="org_existing", slug="taken-slug")
         client._workos.organizations.create_organization = AsyncMock(
@@ -772,60 +970,57 @@ class TestOrganizations:
         )
         client._workos.organizations.delete_organization = AsyncMock(return_value=None)
 
-        with pytest.raises(OrgSlugConflictError) as exc:
-            await client.create_org(
-                name="Other", slug="taken-slug", creator_id="user_01XYZ"
-            )
-        assert exc.value.slug == "taken-slug"
-        # WorkOS create was attempted, then rolled back.
+        result = await client.create_org(
+            name="Other", slug="taken-slug", creator_id="user_01XYZ"
+        )
+        assert isinstance(result.error, OrgSlugConflictError)
+        assert result.error.slug == "taken-slug"
         client._workos.organizations.delete_organization.assert_awaited_once_with(
             organization_id="org_new"
         )
 
-    async def test_get_by_org_id_passes_through_to_workos(
-        self, connected_client_with_db
-    ) -> None:
-        """``get_org(org_id=...)`` is passthrough — no DB hit, calls WorkOS directly.
+    async def test_get_by_id(self, connected_client_with_db) -> None:
+        """``get_org(<id>)`` resolves via the local index, then calls WorkOS.
 
         With no slug in WorkOS metadata, the slug comes back empty.
         """
         client = connected_client_with_db
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
         client._workos.organizations.get_organization = AsyncMock(
             return_value=_make_workos_org()
         )
 
-        result = await client.get_org(org_id="org_01ABC")
+        result = (await client.get_org(org_id="org_01ABC")).raise_for_status()
 
-        assert result is not None
         assert result.id == "org_01ABC"
         assert result.slug == ""  # no metadata slug → empty
         client._workos.organizations.get_organization.assert_awaited_once_with(
             organization_id="org_01ABC"
         )
 
-    async def test_get_by_org_id_returns_metadata_slug(
+    async def test_get_by_id_returns_metadata_slug(
         self, connected_client_with_db
     ) -> None:
-        """Slug is read from WorkOS metadata, not the local table."""
+        """Slug on the returned ``Org`` is read from WorkOS metadata."""
         client = connected_client_with_db
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
         client._workos.organizations.get_organization = AsyncMock(
             return_value=_make_workos_org(slug="acme-corp")
         )
 
-        result = await client.get_org(org_id="org_01ABC")
-
-        assert result is not None
+        result = (await client.get_org(org_id="org_01ABC")).raise_for_status()
         assert result.id == "org_01ABC"
         assert result.slug == "acme-corp"
 
     async def test_get_workos_404(self, connected_client_with_db) -> None:
-        """WorkOS NotFound → OrgNotFoundError."""
+        """WorkOS NotFound → OrgNotFoundError attached to the result."""
         client = connected_client_with_db
+        await _seed_workos_org(client, workos_org_id="org_does_not_exist", slug="ghost")
         client._workos.organizations.get_organization = AsyncMock(
             side_effect=_workos_exc(NotFoundException)
         )
-        with pytest.raises(OrgNotFoundError):
-            await client.get_org(org_id="org_does_not_exist")
+        result = await client.get_org(org_id="org_does_not_exist")
+        assert isinstance(result.error, OrgNotFoundError)
 
     async def test_get_by_slug_uses_local_index(self, connected_client_with_db) -> None:
         """Slug lookup hits the local table — never paginates WorkOS."""
@@ -836,22 +1031,46 @@ class TestOrganizations:
         )
         client._workos.organizations.list_organizations = AsyncMock()
 
-        result = await client.get_org(slug="my-slug")
-
-        assert result is not None
+        result = (await client.get_org(slug="my-slug")).raise_for_status()
         assert result.id == workos_id
         assert result.slug == "my-slug"
-        # The old implementation paginated list_organizations — assert we don't.
         client._workos.organizations.list_organizations.assert_not_called()
 
-    async def test_get_by_slug_unknown_slug_raises(
+    async def test_get_by_slug_or_id_resolve_same_org(
+        self, connected_client_with_db
+    ) -> None:
+        """``org_id=`` and ``slug=`` resolve to the same org (slug via local index)."""
+        client = connected_client_with_db
+        workos_id = await _seed_workos_org(
+            client, workos_org_id="org_01ABC", slug="acme-corp"
+        )
+        client._workos.organizations.get_organization = AsyncMock(
+            return_value=_make_workos_org(org_id="org_01ABC", slug="acme-corp")
+        )
+
+        by_slug = (await client.get_org(slug="acme-corp")).raise_for_status()
+        by_id = (await client.get_org(org_id="org_01ABC")).raise_for_status()
+
+        assert by_slug.id == by_id.id == workos_id == "org_01ABC"
+        # Both addressing modes hit WorkOS with the resolved id.
+        for call in client._workos.organizations.get_organization.await_args_list:
+            assert call.kwargs == {"organization_id": "org_01ABC"}
+
+    async def test_get_unknown_slug_returns_error(
         self, connected_client_with_db
     ) -> None:
         client = connected_client_with_db
         client._workos.organizations.get_organization = AsyncMock()
-        with pytest.raises(OrgNotFoundError):
-            await client.get_org(slug="never-existed")
+        result = await client.get_org(slug="never-existed")
+        assert isinstance(result.error, OrgNotFoundError)
         client._workos.organizations.get_organization.assert_not_called()
+
+    async def test_get_requires_exactly_one_ref(self, connected_client_with_db) -> None:
+        client = connected_client_with_db
+        with pytest.raises(ValueError, match="exactly one"):
+            await client.get_org()
+        with pytest.raises(ValueError, match="exactly one"):
+            await client.get_org(org_id="org_01ABC", slug="acme-corp")
 
     async def test_update_name_only(self, connected_client_with_db) -> None:
         client = connected_client_with_db
@@ -860,27 +1079,44 @@ class TestOrganizations:
             return_value=_make_workos_org(name="New Name")
         )
 
-        result = await client.update_org(org_id=workos_id, name="New Name")
-
-        assert result is not None
+        result = (
+            await client.update_org(org_id=workos_id, name="New Name")
+        ).raise_for_status()
         assert result.name == "New Name"
         assert result.id == workos_id
+
+    async def test_update_by_slug(self, connected_client_with_db) -> None:
+        """``update_org`` can address the row by slug; resolves to the WorkOS id."""
+        client = connected_client_with_db
+        workos_id = await _seed_workos_org(
+            client, workos_org_id="org_01ABC", slug="acme-corp"
+        )
+        client._workos.organizations.update_organization = AsyncMock(
+            return_value=_make_workos_org(org_id="org_01ABC", name="Renamed")
+        )
+
+        result = (
+            await client.update_org(slug="acme-corp", name="Renamed")
+        ).raise_for_status()
+        assert result.name == "Renamed"
+        assert result.id == workos_id
+        client._workos.organizations.update_organization.assert_awaited_once_with(
+            organization_id="org_01ABC", name="Renamed"
+        )
 
     async def test_update_slug_changes_local_row(
         self, connected_client_with_db
     ) -> None:
         client = connected_client_with_db
         workos_id = await _seed_workos_org(client, slug="old-slug")
-        # WorkOS echoes back the new metadata after update_organization.
         client._workos.organizations.update_organization = AsyncMock(
             return_value=_make_workos_org(slug="new-slug")
         )
 
-        result = await client.update_org(org_id=workos_id, slug="new-slug")
-
-        assert result is not None
+        result = (
+            await client.update_org(org_id=workos_id, new_slug="new-slug")
+        ).raise_for_status()
         assert result.slug == "new-slug"
-        # Local row reflects the new slug.
         rows = await (
             client._db()
             .select(WorkOSOrganization)
@@ -889,21 +1125,14 @@ class TestOrganizations:
         )
         assert rows[0].slug == "new-slug"
 
-    async def test_update_workos_404_raises(self, connected_client_with_db) -> None:
-        """``org_id=`` is passthrough; WorkOS NotFound surfaces as OrgNotFoundError."""
-        client = connected_client_with_db
-        client._workos.organizations.update_organization = AsyncMock(
-            side_effect=_workos_exc(NotFoundException)
-        )
-        with pytest.raises(OrgNotFoundError):
-            await client.update_org(org_id="org_does_not_exist", name="X")
-
-    async def test_update_unknown_slug_raises(self, connected_client_with_db) -> None:
-        """Unknown slug short-circuits — never hits WorkOS."""
+    async def test_update_unknown_slug_returns_error(
+        self, connected_client_with_db
+    ) -> None:
+        """A slug that resolves to nothing → OrgNotFoundError attached, no WorkOS."""
         client = connected_client_with_db
         client._workos.organizations.update_organization = AsyncMock()
-        with pytest.raises(OrgNotFoundError):
-            await client.update_org(org_slug="nope", name="X")
+        result = await client.update_org(slug="does-not-exist", name="X")
+        assert isinstance(result.error, OrgNotFoundError)
         client._workos.organizations.update_organization.assert_not_called()
 
     async def test_delete_removes_local_row(self, connected_client_with_db) -> None:
@@ -912,7 +1141,6 @@ class TestOrganizations:
         client._workos.organizations.delete_organization = AsyncMock(return_value=None)
 
         result = await client.delete_org(org_id=workos_id)
-
         assert result is True
         rows = await (
             client._db()
@@ -922,13 +1150,29 @@ class TestOrganizations:
         )
         assert rows == []
 
+    async def test_delete_by_slug(self, connected_client_with_db) -> None:
+        """``delete_org`` can address the row by slug; deletes by resolved id."""
+        client = connected_client_with_db
+        workos_id = await _seed_workos_org(
+            client, workos_org_id="org_01ABC", slug="acme-corp"
+        )
+        client._workos.organizations.delete_organization = AsyncMock(return_value=None)
+
+        result = await client.delete_org(slug="acme-corp")
+        assert result is True
+        client._workos.organizations.delete_organization.assert_awaited_once_with(
+            organization_id=workos_id
+        )
+        rows = await client._db().select(WorkOSOrganization).execute()
+        assert rows == []
+
     async def test_delete_unknown_slug_returns_false(
         self, connected_client_with_db
     ) -> None:
-        """Unknown slug short-circuits without touching WorkOS."""
+        """A slug that resolves to nothing → False, no WorkOS call."""
         client = connected_client_with_db
         client._workos.organizations.delete_organization = AsyncMock()
-        result = await client.delete_org(slug="nope")
+        result = await client.delete_org(slug="never-existed")
         assert result is False
         client._workos.organizations.delete_organization.assert_not_called()
 
@@ -943,12 +1187,11 @@ class TestOrganizations:
         )
 
         result = await client.delete_org(org_id=workos_id)
-
         assert result is True
         rows = await client._db().select(WorkOSOrganization).execute()
         assert rows == []
 
-    async def test_list_surfaces_all_orgs_with_slugs_from_metadata(
+    async def test_list_orgs_surfaces_all_with_slugs_from_metadata(
         self, connected_client_with_db
     ) -> None:
         """All WorkOS orgs surface; slug comes from each org's metadata."""
@@ -959,39 +1202,61 @@ class TestOrganizations:
             _make_workos_org(org_id="o2", name="Org B"),
         ]
         client._workos.organizations.list_organizations = AsyncMock(
-            return_value=_make_list_resource(list_orgs)
+            return_value=_make_list_resource(list_orgs, after=None)
         )
 
-        result = await client.list_orgs()
-
-        assert len(result) == 2
-        by_id = {o.id: o for o in result}
+        page = await client.list_orgs()
+        assert isinstance(page, Page)
+        assert len(page.items) == 2
+        by_id = {o.id: o for o in page.items}
         assert by_id["o1"].slug == "a"
         assert by_id["o1"].name == "Org A"
         assert by_id["o2"].slug == ""  # no metadata slug → empty
         assert by_id["o2"].name == "Org B"
+
+    async def test_list_orgs_cursor(self, connected_client_with_db) -> None:
+        client = connected_client_with_db
+        orgs = [_make_workos_org(org_id="o1", slug="a")]
+        client._workos.organizations.list_organizations = AsyncMock(
+            return_value=_make_list_resource(orgs, after="cur_next")
+        )
+        page = await client.list_orgs(limit=2)
+        assert page.has_more is True
+        assert page.next_cursor == "cur_next"
+
+    async def test_list_orgs_scoped_to_user(self, connected_client_with_db) -> None:
+        client = connected_client_with_db
+        memberships = _make_list_resource([_make_workos_membership(org_id="o1")])
+        client._workos.user_management.list_organization_memberships = AsyncMock(
+            return_value=memberships
+        )
+        client._workos.organizations.get_organization = AsyncMock(
+            return_value=_make_workos_org(org_id="o1", slug="a")
+        )
+
+        page = await client.list_orgs(user_id="user_01XYZ")
+        assert len(page.items) == 1
+        assert page.items[0].id == "o1"
 
 
 # ── Organization Memberships ─────────────────────────────────────
 
 
 class TestOrgMemberships:
-    async def test_add_member_passes_workos_id_through(
-        self, connected_client_with_db
-    ) -> None:
+    async def test_add_member(self, connected_client_with_db) -> None:
         client = connected_client_with_db
-        workos_id = await _seed_workos_org(client)
-        membership = _make_workos_membership()
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
         client._workos.user_management.create_organization_membership = AsyncMock(
-            return_value=membership
+            return_value=_make_workos_membership()
         )
 
-        result = await client.add_org_member(
-            org_id=workos_id, user_id="user_01XYZ", role="member"
-        )
+        result = (
+            await client.add_member(
+                org_id="org_01ABC", user_id="user_01XYZ", role="member"
+            )
+        ).raise_for_status()
 
-        assert result is not None
-        # No translation: org_id is the WorkOS string straight from the API.
+        assert isinstance(result, OrgMember)
         assert result.org_id == "org_01ABC"
         assert result.user_id == "user_01XYZ"
         assert result.role == "member"
@@ -1001,380 +1266,145 @@ class TestOrgMemberships:
             role_slug="member",
         )
 
-    async def test_add_member_unknown_slug_short_circuits(
-        self, connected_client_with_db
-    ) -> None:
-        """Unknown slug short-circuits without touching WorkOS."""
+    async def test_add_member_by_slug(self, connected_client_with_db) -> None:
+        """Addressing the org by slug resolves to the WorkOS id for the API call."""
         client = connected_client_with_db
-        client._workos.user_management.create_organization_membership = AsyncMock()
-        with pytest.raises(OrgNotFoundError):
-            await client.add_org_member(
-                slug="never-existed", user_id="user_01XYZ", role="member"
-            )
-        client._workos.user_management.create_organization_membership.assert_not_called()
-
-    async def test_update_member(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client)
-        membership = _make_workos_membership(role_slug="admin")
-        client._workos.user_management.list_organization_memberships = AsyncMock(
-            return_value=_make_list_resource([membership])
-        )
-        updated = _make_workos_membership(role_slug="admin")
-        client._workos.user_management.update_organization_membership = AsyncMock(
-            return_value=updated
-        )
-
-        result = await client.update_org_member(
-            org_id=workos_id, user_id="user_01XYZ", role="admin"
-        )
-
-        assert result is not None
-        assert result.role == "admin"
-        assert result.org_id == workos_id
-
-    async def test_remove_member(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client)
-        membership = _make_workos_membership()
-        client._workos.user_management.list_organization_memberships = AsyncMock(
-            return_value=_make_list_resource([membership])
-        )
-        client._workos.user_management.delete_organization_membership = AsyncMock(
-            return_value=None
-        )
-
-        result = await client.remove_org_member(org_id=workos_id, user_id="user_01XYZ")
-        assert result is True
-
-    async def test_remove_member_not_found(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client)
-        client._workos.user_management.list_organization_memberships = AsyncMock(
-            return_value=_make_list_resource([])
-        )
-
-        result = await client.remove_org_member(org_id=workos_id, user_id="nonexistent")
-        assert result is False
-
-    async def test_remove_member_unknown_slug(self, connected_client_with_db) -> None:
-        """Unknown slug short-circuits without touching WorkOS."""
-        client = connected_client_with_db
-        client._workos.user_management.list_organization_memberships = AsyncMock()
-        result = await client.remove_org_member(slug="nope", user_id="user_01XYZ")
-        assert result is False
-        client._workos.user_management.list_organization_memberships.assert_not_called()
-
-    async def test_list_members_raises_not_implemented(self, connected_client) -> None:
-        with pytest.raises(NotImplementedError, match="list_org_members_by_cursor"):
-            await connected_client.list_org_members(org_id="org_01ABC")
-
-    async def test_get_member(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client)
-        membership = _make_workos_membership()
-        client._workos.user_management.list_organization_memberships = AsyncMock(
-            return_value=_make_list_resource([membership])
-        )
-
-        result = await client.get_org_member(org_id=workos_id, user_id="user_01XYZ")
-        assert result is not None
-        assert result.user_id == "user_01XYZ"
-        assert result.org_id == workos_id
-
-    async def test_get_member_not_found(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client)
-        client._workos.user_management.list_organization_memberships = AsyncMock(
-            return_value=_make_list_resource([])
-        )
-
-        with pytest.raises(OrgMemberNotFoundError):
-            await client.get_org_member(org_id=workos_id, user_id="nonexistent")
-
-
-# ── Cursor-based pagination ──────────────────────────────────────
-
-
-def _make_list_resource_with_cursor(items: list, after: str | None) -> MagicMock:
-    """Mock a WorkOSListResource with a cursor."""
-    resource = MagicMock()
-    resource.data = items
-    resource.list_metadata = MagicMock()
-    resource.list_metadata.after = after
-    return resource
-
-
-class TestListUsersByCursor:
-    async def test_first_page(self, connected_client) -> None:
-        users = [_make_workos_user(user_id="u1"), _make_workos_user(user_id="u2")]
-        connected_client._workos.user_management.list_users = AsyncMock(
-            return_value=_make_list_resource_with_cursor(users, after="cursor_abc")
-        )
-
-        result = await connected_client.list_users_by_cursor(limit=2)
-        assert len(result.data) == 2
-        assert result.has_more is True
-        assert result.next_cursor == "cursor_abc"
-
-    async def test_last_page(self, connected_client) -> None:
-        users = [_make_workos_user(user_id="u3")]
-        connected_client._workos.user_management.list_users = AsyncMock(
-            return_value=_make_list_resource_with_cursor(users, after=None)
-        )
-
-        result = await connected_client.list_users_by_cursor(
-            limit=2, after="cursor_abc"
-        )
-        assert len(result.data) == 1
-        assert result.has_more is False
-        assert result.next_cursor is None
-
-    async def test_passes_after_to_sdk(self, connected_client) -> None:
-        connected_client._workos.user_management.list_users = AsyncMock(
-            return_value=_make_list_resource_with_cursor([], after=None)
-        )
-        await connected_client.list_users_by_cursor(limit=5, after="cur_xyz")
-        connected_client._workos.user_management.list_users.assert_called_once_with(
-            limit=5, after="cur_xyz"
-        )
-
-
-class TestListOrgMembersByCursor:
-    async def test_first_page(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client)
-        members = [
-            _make_workos_membership(user_id="u1"),
-            _make_workos_membership(user_id="u2"),
-        ]
-        client._workos.user_management.list_organization_memberships = AsyncMock(
-            return_value=_make_list_resource_with_cursor(members, after="cursor_abc")
-        )
-
-        result = await client.list_org_members_by_cursor(org_id=workos_id, limit=2)
-        assert len(result.data) == 2
-        assert result.has_more is True
-        assert result.next_cursor == "cursor_abc"
-        # All returned members carry the LOCAL org_id.
-        assert all(m.org_id == workos_id for m in result.data)
-
-    async def test_last_page(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client)
-        client._workos.user_management.list_organization_memberships = AsyncMock(
-            return_value=_make_list_resource_with_cursor([], after=None)
-        )
-
-        result = await client.list_org_members_by_cursor(
-            org_id=workos_id, limit=10, after="cursor_abc"
-        )
-        assert result.has_more is False
-        assert result.next_cursor is None
-
-    async def test_unknown_slug_raises(self, connected_client_with_db) -> None:
-        """Unknown slug short-circuits without touching WorkOS."""
-        client = connected_client_with_db
-        client._workos.user_management.list_organization_memberships = AsyncMock()
-        with pytest.raises(OrgNotFoundError):
-            await client.list_org_members_by_cursor(slug="never-existed")
-        client._workos.user_management.list_organization_memberships.assert_not_called()
-
-
-class TestListOrgsByCursor:
-    async def test_returns_cursor_result(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        orgs = [
-            _make_workos_org(org_id="o1", slug="a"),
-            _make_workos_org(org_id="o2", slug="b"),
-        ]
-        client._workos.organizations.list_organizations = AsyncMock(
-            return_value=_make_list_resource_with_cursor(orgs, after="cur_next")
-        )
-
-        result = await client.list_orgs_by_cursor(limit=2)
-
-        assert len(result.data) == 2
-        assert result.has_more is True
-        assert result.next_cursor == "cur_next"
-        assert {o.id for o in result.data} == {"o1", "o2"}
-        # Slugs sourced from each org's WorkOS metadata.
-        by_id = {o.id: o for o in result.data}
-        assert by_id["o1"].slug == "a"
-        assert by_id["o2"].slug == "b"
-
-    async def test_orgs_without_metadata_slug_surface_empty(
-        self, connected_client_with_db
-    ) -> None:
-        """Orgs whose WorkOS metadata lacks a slug surface with empty slug."""
-        client = connected_client_with_db
-        # o2 has no slug in metadata → still surfaces, with empty slug.
-        orgs = [
-            _make_workos_org(org_id="o1", slug="a"),
-            _make_workos_org(org_id="o2"),
-        ]
-        client._workos.organizations.list_organizations = AsyncMock(
-            return_value=_make_list_resource_with_cursor(orgs, after=None)
-        )
-
-        result = await client.list_orgs_by_cursor(limit=10)
-
-        ids_and_slugs = [(o.id, o.slug) for o in result.data]
-        assert ids_and_slugs == [("o1", "a"), ("o2", "")]
-
-
-class TestListSessionsByCursor:
-    async def test_returns_cursor_result(self, connected_client) -> None:
-        sessions = [_make_session(), _make_session(session_id="s2")]
-        connected_client._workos.user_management.list_sessions = AsyncMock(
-            return_value=_make_list_resource_with_cursor(sessions, after=None)
-        )
-
-        result = await connected_client.list_sessions_by_cursor(
-            user_id="user_01XYZ", limit=10
-        )
-        assert len(result.data) == 2
-        assert result.has_more is False
-
-
-# ── Org methods qualified by slug ────────────────────────────────
-
-
-class TestOrgMethodsBySlug:
-    """Every org-touching WorkOS method accepts ``slug=`` instead of ``org_id=``.
-
-    The local mapping table is the source of truth for slug → workos org id.
-    """
-
-    async def test_get_org_by_slug_kwarg(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client, slug="acme-corp")
-        client._workos.organizations.get_organization = AsyncMock(
-            return_value=_make_workos_org()
-        )
-        client._workos.organizations.list_organizations = AsyncMock()
-
-        result = await client.get_org(slug="acme-corp")
-
-        assert result is not None
-        assert result.id == workos_id
-        # Critical: never paginates the WorkOS API.
-        client._workos.organizations.list_organizations.assert_not_called()
-
-    async def test_get_org_requires_exactly_one(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        with pytest.raises(ValueError, match="exactly one"):
-            await client.get_org()
-        with pytest.raises(ValueError, match="exactly one"):
-            await client.get_org(org_id="x", slug="y")
-
-    async def test_update_org_by_org_slug(self, connected_client_with_db) -> None:
-        """``update_org`` uses ``org_slug=`` for lookup; ``slug=`` is the new value."""
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client, slug="acme")
-        client._workos.organizations.update_organization = AsyncMock(
-            return_value=_make_workos_org(name="New", slug="acme-renamed")
-        )
-
-        result = await client.update_org(
-            org_slug="acme", name="New", slug="acme-renamed"
-        )
-
-        assert result is not None
-        assert result.id == workos_id
-        assert result.name == "New"
-        assert result.slug == "acme-renamed"
-        rows = await (
-            client._db()
-            .select(WorkOSOrganization)
-            .where(WorkOSOrganization.id == workos_id)
-            .execute()
-        )
-        assert rows[0].slug == "acme-renamed"
-
-    async def test_delete_org_by_slug(self, connected_client_with_db) -> None:
-        client = connected_client_with_db
-        await _seed_workos_org(client, slug="goner")
-        client._workos.organizations.delete_organization = AsyncMock(return_value=None)
-
-        assert await client.delete_org(slug="goner") is True
-        rows = await client._db().select(WorkOSOrganization).execute()
-        assert rows == []
-
-    async def test_member_methods_by_slug(self, connected_client_with_db) -> None:
-        """add / get / update / remove / list_by_cursor — all keyed by slug."""
-        client = connected_client_with_db
-        workos_id = await _seed_workos_org(client, slug="acme")
-
-        # add_org_member
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
         client._workos.user_management.create_organization_membership = AsyncMock(
             return_value=_make_workos_membership()
         )
-        added = await client.add_org_member(slug="acme", user_id="user_01XYZ")
-        assert added is not None and added.org_id == workos_id
+
+        result = (
+            await client.add_member(
+                slug="acme-corp", user_id="user_01XYZ", role="member"
+            )
+        ).raise_for_status()
+
+        assert isinstance(result, OrgMember)
+        assert result.org_id == "org_01ABC"
         client._workos.user_management.create_organization_membership.assert_awaited_once_with(
             organization_id="org_01ABC",
             user_id="user_01XYZ",
             role_slug="member",
         )
 
-        # get_org_member
-        client._workos.user_management.list_organization_memberships = AsyncMock(
-            return_value=_make_list_resource([_make_workos_membership()])
-        )
-        got = await client.get_org_member(slug="acme", user_id="user_01XYZ")
-        assert got is not None and got.org_id == workos_id
+    async def test_add_member_unknown_slug_returns_error(
+        self, connected_client_with_db
+    ) -> None:
+        client = connected_client_with_db
+        client._workos.user_management.create_organization_membership = AsyncMock()
+        result = await client.add_member(slug="never-existed", user_id="user_01XYZ")
+        assert isinstance(result.error, OrgNotFoundError)
+        client._workos.user_management.create_organization_membership.assert_not_called()
 
-        # update_org_member
+    async def test_update_member(self, connected_client_with_db) -> None:
+        client = connected_client_with_db
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
+        membership = _make_workos_membership(role_slug="admin")
+        client._workos.user_management.list_organization_memberships = AsyncMock(
+            return_value=_make_list_resource([membership])
+        )
         client._workos.user_management.update_organization_membership = AsyncMock(
             return_value=_make_workos_membership(role_slug="admin")
         )
-        updated = await client.update_org_member(
-            slug="acme", user_id="user_01XYZ", role="admin"
-        )
-        assert updated is not None and updated.role == "admin"
 
-        # remove_org_member
+        result = (
+            await client.update_member(
+                org_id="org_01ABC", user_id="user_01XYZ", role="admin"
+            )
+        ).raise_for_status()
+        assert result.role == "admin"
+        assert result.org_id == "org_01ABC"
+
+    async def test_update_member_not_found(self, connected_client_with_db) -> None:
+        client = connected_client_with_db
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
+        client._workos.user_management.list_organization_memberships = AsyncMock(
+            return_value=_make_list_resource([])
+        )
+        result = await client.update_member(
+            org_id="org_01ABC", user_id="nonexistent", role="admin"
+        )
+        assert isinstance(result.error, OrgMemberNotFoundError)
+
+    async def test_remove_member(self, connected_client_with_db) -> None:
+        client = connected_client_with_db
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
+        client._workos.user_management.list_organization_memberships = AsyncMock(
+            return_value=_make_list_resource([_make_workos_membership()])
+        )
         client._workos.user_management.delete_organization_membership = AsyncMock(
             return_value=None
         )
-        removed = await client.remove_org_member(slug="acme", user_id="user_01XYZ")
-        assert removed is True
 
-        # list_org_members_by_cursor
-        client._workos.user_management.list_organization_memberships = AsyncMock(
-            return_value=_make_list_resource_with_cursor(
-                [_make_workos_membership()], after=None
-            )
-        )
-        cursor_result = await client.list_org_members_by_cursor(slug="acme", limit=5)
-        assert len(cursor_result.data) == 1
-        assert cursor_result.data[0].org_id == workos_id
+        result = (
+            await client.remove_member(org_id="org_01ABC", user_id="user_01XYZ")
+        ).raise_for_status()
+        assert result is True
 
-    async def test_unknown_slug_short_circuits(self, connected_client_with_db) -> None:
-        """Slug→id resolution miss raises before any WorkOS calls.
-
-        ``remove_org_member`` is the one bool-returning method; everything
-        else raises ``OrgNotFoundError``.
-        """
+    async def test_remove_member_not_found(self, connected_client_with_db) -> None:
         client = connected_client_with_db
-        client._workos.user_management.create_organization_membership = AsyncMock()
-        client._workos.user_management.list_organization_memberships = AsyncMock()
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
+        client._workos.user_management.list_organization_memberships = AsyncMock(
+            return_value=_make_list_resource([])
+        )
 
-        with pytest.raises(OrgNotFoundError):
-            await client.add_org_member(slug="nope", user_id="user_01XYZ")
-        with pytest.raises(OrgNotFoundError):
-            await client.get_org_member(slug="nope", user_id="user_01XYZ")
-        with pytest.raises(OrgNotFoundError):
-            await client.update_org_member(
-                slug="nope", user_id="user_01XYZ", role="admin"
-            )
-        with pytest.raises(OrgNotFoundError):
-            await client.list_org_members_by_cursor(slug="nope")
-        # remove_* is the bool-returning sibling — quietly returns False.
-        assert (
-            await client.remove_org_member(slug="nope", user_id="user_01XYZ")
-        ) is False
-        # None of these should have hit the WorkOS API.
-        client._workos.user_management.create_organization_membership.assert_not_called()
+        result = (
+            await client.remove_member(org_id="org_01ABC", user_id="nonexistent")
+        ).raise_for_status()
+        assert result is False
+
+    async def test_remove_member_unknown_slug_returns_false(
+        self, connected_client_with_db
+    ) -> None:
+        client = connected_client_with_db
+        client._workos.user_management.list_organization_memberships = AsyncMock()
+        result = (
+            await client.remove_member(slug="never-existed", user_id="user_01XYZ")
+        ).raise_for_status()
+        assert result is False
         client._workos.user_management.list_organization_memberships.assert_not_called()
+
+    async def test_list_members_first_page(self, connected_client_with_db) -> None:
+        client = connected_client_with_db
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
+        members = [
+            _make_workos_membership(user_id="u1"),
+            _make_workos_membership(user_id="u2"),
+        ]
+        client._workos.user_management.list_organization_memberships = AsyncMock(
+            return_value=_make_list_resource(members, after="cursor_abc")
+        )
+
+        page = await client.list_members(org_id="org_01ABC", limit=2)
+        assert isinstance(page, Page)
+        assert len(page.items) == 2
+        assert all(isinstance(m, OrgMember) for m in page.items)
+        assert page.has_more is True
+        assert page.next_cursor == "cursor_abc"
+
+    async def test_list_members_last_page(self, connected_client_with_db) -> None:
+        client = connected_client_with_db
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
+        client._workos.user_management.list_organization_memberships = AsyncMock(
+            return_value=_make_list_resource([], after=None)
+        )
+
+        page = await client.list_members(
+            org_id="org_01ABC", limit=10, cursor="cursor_abc"
+        )
+        assert page.has_more is False
+        assert page.next_cursor is None
+
+    async def test_list_members_by_slug_maps_to_after(
+        self, connected_client_with_db
+    ) -> None:
+        client = connected_client_with_db
+        await _seed_workos_org(client, workos_org_id="org_01ABC", slug="acme-corp")
+        mock_fn = AsyncMock(return_value=_make_list_resource([], after=None))
+        client._workos.user_management.list_organization_memberships = mock_fn
+        # Address by slug; the resolved WorkOS id flows to the API.
+        await client.list_members(slug="acme-corp", limit=5, cursor="cur_xyz")
+        mock_fn.assert_awaited_once_with(
+            organization_id="org_01ABC", limit=5, after="cur_xyz"
+        )

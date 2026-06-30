@@ -1,4 +1,8 @@
-"""Core authentication service."""
+"""Native authentication service — derp is its own IdP.
+
+Native mints and verifies its own JWTs and stores users, sessions, and orgs
+in Postgres. It is single-tenant: ``tenant_id`` is always ``None``.
+"""
 
 from __future__ import annotations
 
@@ -7,9 +11,21 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from derp.auth.base import BaseAuthClient
+from derp.auth.base import (
+    AuthOutcome,
+    AuthResult,
+    BaseAuthClient,
+    Identity,
+    MFAStatus,
+    Org,
+    OrgMember,
+    Page,
+    Session,
+    TokenSet,
+)
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
+    CapabilityNotSupportedError,
     ConfirmationURLMissingError,
     EmailAlreadyExistsError,
     InvalidCredentialsError,
@@ -29,13 +45,9 @@ from derp.auth.models import (
     AuthOrgMember,
     AuthProvider,
     AuthRequest,
-    AuthResult,
     AuthSession,
+    AuthStatus,
     AuthUser,
-    OrgInfo,
-    OrgMemberInfo,
-    SessionInfo,
-    UserInfo,
 )
 from derp.auth.password import (
     Argon2Hasher,
@@ -55,6 +67,13 @@ logger = logging.getLogger(__name__)
 
 class NativeAuthClient(BaseAuthClient):
     """Native authentication client (email/password, magic link, OAuth)."""
+
+    supports_password = True
+    supports_oauth = True
+    supports_magic_link = True
+    supports_orgs = True
+    supports_sessions = True
+    supports_user_admin = True
 
     def __init__(self, config: NativeAuthConfig):
         self._config: NativeAuthConfig = config
@@ -106,27 +125,6 @@ class NativeAuthClient(BaseAuthClient):
             raise ValueError("Email client not set. Must call `set_email()` first.")
         return self._email_client
 
-    @staticmethod
-    def _extract_client_info(
-        request: AuthRequest | None,
-        user_agent: str | None,
-        ip_address: str | None,
-    ) -> tuple[str | None, str | None]:
-        """Extract user_agent and ip_address from *request* when not given."""
-        if request is None:
-            return user_agent, ip_address
-        if user_agent is None:
-            user_agent = request.headers.get("User-Agent")
-        if ip_address is None:
-            forwarded = request.headers.get("X-Forwarded-For")
-            if forwarded:
-                ip_address = forwarded.split(",")[0].strip()
-            else:
-                client = getattr(request, "client", None)
-                if client is not None:
-                    ip_address = getattr(client, "host", None)
-        return user_agent, ip_address
-
     async def _invalidate_user_cache(
         self, user_id: str | uuid.UUID, email: str | None = None
     ) -> None:
@@ -141,25 +139,24 @@ class NativeAuthClient(BaseAuthClient):
                 )
 
     # =========================================================================
-    # User Management
+    # Response mapping
     # =========================================================================
 
-    def _to_user_info(self, user: AuthUser) -> UserInfo:
-        """Convert an internal AuthUser ORM model to a public UserInfo."""
-        return UserInfo(
+    def _to_identity(self, user: AuthUser) -> Identity:
+        """Convert an internal AuthUser ORM model to a public Identity."""
+        return Identity(
             id=str(user.id),
+            tenant_id=None,
             email=user.email,
-            first_name=user.first_name,
-            last_name=user.last_name,
-            username=user.username,
-            image_url=user.image_url,
-            role=user.role,
-            is_active=user.is_active,
-            is_superuser=user.is_superuser,
+            email_verified=user.email_confirmed_at is not None,
+            phone=None,
+            phone_verified=False,
+            is_anonymous=False,
+            disabled=not user.is_active,
+            roles=(user.role,),
             created_at=user.created_at,
             updated_at=user.updated_at,
             last_sign_in_at=user.last_sign_in_at,
-            email_confirmed_at=user.email_confirmed_at,
             metadata={
                 "provider": user.provider.value
                 if hasattr(user.provider, "value")
@@ -167,6 +164,21 @@ class NativeAuthClient(BaseAuthClient):
                 "provider_id": user.provider_id,
             },
         )
+
+    def _to_token_set(self, pair: TokenPair) -> TokenSet:
+        """Convert an internal TokenPair into a public TokenSet."""
+        return TokenSet(
+            access_token=pair.access_token,
+            refresh_token=pair.refresh_token,
+            id_token=pair.access_token or None,
+            token_type=pair.token_type,
+            expires_in=pair.expires_in,
+            expires_at=pair.expires_at,
+        )
+
+    # =========================================================================
+    # User Management
+    # =========================================================================
 
     async def _fetch_user(self, user_id: str | uuid.UUID) -> AuthUser | None:
         """Fetch a user by ID (internal, with caching)."""
@@ -200,7 +212,7 @@ class NativeAuthClient(BaseAuthClient):
             .first_or_none()
         )
 
-    async def get_user(self, user_id: str | uuid.UUID) -> UserInfo:
+    async def get_user(self, user_id: str) -> Identity:
         """Get a user by their ID.
 
         Raises:
@@ -209,18 +221,54 @@ class NativeAuthClient(BaseAuthClient):
         user = await self._fetch_user(user_id)
         if user is None:
             raise UserNotFoundError(f"User {user_id!r} not found")
-        return self._to_user_info(user)
+        return self._to_identity(user)
+
+    async def find_user(
+        self,
+        *,
+        user_id: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+    ) -> Identity | None:
+        """Find a user by id or email; ``None`` if no match.
+
+        Provide exactly one of ``user_id`` / ``email`` / ``phone``. Native
+        has no phone column, so ``phone`` lookup is unsupported.
+        """
+        provided = [k for k in (user_id, email, phone) if k is not None]
+        if len(provided) != 1:
+            raise ValueError("Provide exactly one of user_id=, email=, or phone=")
+        if phone is not None:
+            raise ValueError(
+                "Native auth has no phone column; phone lookup unsupported"
+            )
+        user = (
+            await self._fetch_user(user_id)
+            if user_id is not None
+            else await self._get_user_by_email(email)  # type: ignore[arg-type]
+        )
+        return self._to_identity(user) if user is not None else None
 
     async def list_users(
-        self, *, limit: int | None = None, offset: int | None = None
-    ) -> list[UserInfo]:
-        """List users ordered by creation date (newest first)."""
-        q = self._db().select(AuthUser).order_by(AuthUser.created_at, asc=False)
-        if limit is not None:
-            q = q.limit(limit)
-        if offset is not None:
-            q = q.offset(offset)
-        return [self._to_user_info(u) for u in await q.execute()]
+        self, *, limit: int = 50, cursor: str | None = None
+    ) -> Page[Identity]:
+        """List users ordered by creation date (newest first).
+
+        ``cursor`` is treated as an opaque stringified offset; ``None`` starts
+        at the first row.
+        """
+        offset = int(cursor) if cursor else 0
+        q = (
+            self._db()
+            .select(AuthUser)
+            .order_by(AuthUser.created_at, asc=False)
+            .limit(limit)
+            .offset(offset)
+        )
+        items = [self._to_identity(u) for u in await q.execute()]
+        has_more = len(items) == limit
+        next_cursor = str(offset + limit) if has_more else None
+        return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
     async def _get_user_by_email(self, email: str) -> AuthUser | None:
         """Get a user by their email address (internal use only).
@@ -258,24 +306,20 @@ class NativeAuthClient(BaseAuthClient):
             .first_or_none()
         )
 
-    async def update_user(
-        self,
-        *,
-        user_id: str | uuid.UUID,
-        email: str | None = None,
-        **kwargs: Any,
-    ) -> UserInfo:
+    async def update_user(self, *, user_id: str, **kwargs: Any) -> AuthResult[Identity]:
         """Update user data.
 
-        Raises:
-            UserNotFoundError: No user with that id.
+        On success ``result.value`` is the updated :class:`Identity`. Expected
+        failure (attached to ``result.error``): ``UserNotFoundError`` when no
+        user has that id.
         """
         user = await self._fetch_user(user_id=user_id)
         if not user:
-            raise UserNotFoundError(f"User {user_id!r} not found")
+            return AuthResult(error=UserNotFoundError(f"User {user_id!r} not found"))
 
         updates: dict[str, Any] = {"updated_at": datetime.now(UTC)}
 
+        email = kwargs.pop("email", None)
         if email is not None:
             updates["email"] = email.lower()
 
@@ -298,9 +342,9 @@ class NativeAuthClient(BaseAuthClient):
         if email is not None and email.lower() != user.email:
             await self._invalidate_user_cache(user_id, email)
 
-        return self._to_user_info(result)
+        return AuthResult(value=self._to_identity(result))
 
-    async def delete_user(self, user_id: str | uuid.UUID) -> bool:
+    async def delete_user(self, user_id: str) -> bool:
         """Delete a user and all their sessions."""
         row = await (
             self._db()
@@ -313,16 +357,12 @@ class NativeAuthClient(BaseAuthClient):
             return False
 
         _, email = row
-        await self.sign_out_all(user_id)
+        await self.revoke_all_sessions(user_id)
 
         await self._db().delete(AuthUser).where(AuthUser.id == str(user_id)).execute()
 
         await self._invalidate_user_cache(user_id, email)
         return True
-
-    async def count_users(self) -> int:
-        """Return the total number of users."""
-        return await self._db().select(AuthUser).count()
 
     # =========================================================================
     # Email/Password Authentication
@@ -331,27 +371,25 @@ class NativeAuthClient(BaseAuthClient):
     async def sign_up(
         self,
         *,
-        email: str,
-        password: str,
+        email: str | None = None,
+        phone: str | None = None,
+        password: str | None = None,
         request: AuthRequest | None = None,
         confirmation_url: str | None = None,
         confirmation_subject: str = "Confirm your email address",
-        user_agent: str | None = None,
-        ip_address: str | None = None,
         **kwargs: Any,
-    ) -> AuthResult:
+    ) -> AuthOutcome:
         """Register a new user with email and password.
+
+        Outcome status: ``COMPLETE``, ``EMAIL_EXISTS``, or ``WEAK_PASSWORD``.
 
         Raises:
             SignupDisabledError: Signup is disabled in config.
             ConfirmationURLMissingError: confirmation_url omitted while
                 ``enable_confirmation`` is on.
-            PasswordValidationError: Password did not meet requirements.
-            EmailAlreadyExistsError: An account with this email exists.
         """
-        user_agent, ip_address = self._extract_client_info(
-            request, user_agent, ip_address
-        )
+        if email is None:
+            raise ValueError("Native sign_up requires an email")
         if not self._config.enable_signup:
             raise SignupDisabledError()
         if confirmation_url is None and self._config.enable_confirmation:
@@ -360,9 +398,12 @@ class NativeAuthClient(BaseAuthClient):
             )
 
         # Validate password
-        validation = validate_password(self._config.password, password)
+        validation = validate_password(self._config.password, password or "")
         if not validation.valid:
-            raise PasswordValidationError("; ".join(validation.errors))
+            return AuthOutcome(
+                status=AuthStatus.WEAK_PASSWORD,
+                error=PasswordValidationError("; ".join(validation.errors)),
+            )
 
         # Check if user exists
         exists = await (
@@ -373,10 +414,13 @@ class NativeAuthClient(BaseAuthClient):
             .first_or_none()
         )
         if exists:
-            raise EmailAlreadyExistsError(email.lower())
+            return AuthOutcome(
+                status=AuthStatus.EMAIL_EXISTS,
+                error=EmailAlreadyExistsError(email.lower()),
+            )
 
         # Create user
-        hashed_password = await self._hasher.async_hash(password)
+        hashed_password = await self._hasher.async_hash(password or "")
         now = datetime.now(UTC)
 
         email_confirmed_at = None if self._config.enable_confirmation else now
@@ -423,57 +467,55 @@ class NativeAuthClient(BaseAuthClient):
             )
 
         # Create session and tokens
-        token_pair = await self._create_session(
-            user.id,
-            role=user.role,
-            user_agent=user_agent,
-            ip_address=ip_address,
-        )
+        token_pair = await self._create_session(user.id, role=user.role)
 
-        return AuthResult(user=self._to_user_info(user), tokens=token_pair)
+        return AuthOutcome(
+            status=AuthStatus.COMPLETE,
+            identity=self._to_identity(user),
+            tokens=token_pair,
+        )
 
     async def sign_in_with_password(
-        self,
-        email: str,
-        password: str,
-        *,
-        request: AuthRequest | None = None,
-        first_name: str | None = None,
-        last_name: str | None = None,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
-    ) -> AuthResult:
-        """Sign in with email and password.
+        self, *, identifier: str, password: str
+    ) -> AuthOutcome:
+        """Sign in with an email *identifier* + password.
 
-        Raises:
-            InvalidCredentialsError: Email/password did not match, or the
-                account is disabled / unconfirmed. The reason is logged at
-                ``WARNING`` for ops; the caller-visible error is opaque to
-                avoid email-enumeration leaks.
+        Outcome status: ``COMPLETE`` or ``INVALID_CREDENTIALS``. Wrong
+        password, unknown user, disabled, and unconfirmed all collapse to
+        ``INVALID_CREDENTIALS`` (logged at ``WARNING``) to avoid
+        email-enumeration leaks.
         """
-        user_agent, ip_address = self._extract_client_info(
-            request, user_agent, ip_address
-        )
+        email = identifier
         user = await self._get_user_by_email(email=email.lower())
         if not user:
             logger.warning("Sign-in failed: user not found for %s", email)
-            raise InvalidCredentialsError()
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS, error=InvalidCredentialsError()
+            )
 
         if not user.encrypted_password:
             logger.warning("Sign-in failed: no password set for %s", email)
-            raise InvalidCredentialsError()
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS, error=InvalidCredentialsError()
+            )
 
         if not await self._hasher.async_verify(password, user.encrypted_password):
             logger.warning("Sign-in failed: invalid password for %s", email)
-            raise InvalidCredentialsError()
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS, error=InvalidCredentialsError()
+            )
 
         if not user.is_active:
             logger.warning("Sign-in failed: account disabled for %s", email)
-            raise InvalidCredentialsError()
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS, error=InvalidCredentialsError()
+            )
 
         if self._config.enable_confirmation and not user.email_confirmed_at:
             logger.warning("Sign-in failed: email not confirmed for %s", email)
-            raise InvalidCredentialsError()
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS, error=InvalidCredentialsError()
+            )
 
         # Update last sign in (and rehash password if needed) in a single write
         now = datetime.now(UTC)
@@ -493,26 +535,26 @@ class NativeAuthClient(BaseAuthClient):
 
         await self._invalidate_user_cache(user.id, user.email)
 
-        token_pair = await self._create_session(
-            user.id,
-            role=user.role,
-            user_agent=user_agent,
-            ip_address=ip_address,
-        )
+        token_pair = await self._create_session(user.id, role=user.role)
 
-        return AuthResult(user=self._to_user_info(user), tokens=token_pair)
+        return AuthOutcome(
+            status=AuthStatus.COMPLETE,
+            identity=self._to_identity(user),
+            tokens=token_pair,
+        )
 
     # =========================================================================
     # Magic Link Authentication
     # =========================================================================
 
-    async def sign_in_with_magic_link(self, *, email: str, magic_link_url: str) -> None:
+    async def send_magic_link(self, *, email: str, redirect_url: str) -> None:
         """Send a magic link email for passwordless sign in.
 
         Creates user if they don't exist (if signup enabled).
 
         Raises:
-            ValueError: If magic link authentication is not enabled
+            ValueError: If magic link authentication is not enabled.
+            SignupDisabledError: User doesn't exist and signup is disabled.
         """
         if not self._config.enable_magic_link:
             raise ValueError("Magic link authentication is not enabled.")
@@ -555,29 +597,26 @@ class NativeAuthClient(BaseAuthClient):
             subject="Sign in to your account",
             to_email=email.lower(),
             template="magic_link.html",
-            magic_link_url=f"{magic_link_url}?token={token}",
+            magic_link_url=f"{redirect_url}?token={token}",
         )
 
     async def verify_magic_link(
-        self,
-        token: str,
-        *,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
-    ) -> AuthResult:
+        self, token: str, *, email: str | None = None
+    ) -> AuthOutcome:
         """Verify a magic link and sign in.
 
-        Raises:
-            InvalidTokenError: Token is unknown, expired, already used, or
-                points at a missing/disabled account. Specific reason is
-                logged at ``WARNING`` for ops.
+        Outcome status: ``COMPLETE`` or ``INVALID_TOKEN`` (unknown, expired,
+        already used, or pointing at a missing/disabled account).
         """
         kv_key = f"{self._config.cache_prefix}:magic_link:{token}".encode()
         user_id_bytes = await self._kv().get(kv_key)
 
         if user_id_bytes is None:
             logger.warning("Magic link verification failed: token expired or invalid")
-            raise InvalidTokenError("Magic link is invalid or expired")
+            return AuthOutcome(
+                status=AuthStatus.INVALID_TOKEN,
+                error=InvalidTokenError("Magic link is invalid or expired"),
+            )
 
         # Delete on use (single use)
         await self._kv().delete(kv_key)
@@ -585,13 +624,19 @@ class NativeAuthClient(BaseAuthClient):
         user = await self._fetch_user(user_id_bytes.decode())
         if not user:
             logger.warning("Magic link verification failed: user not found")
-            raise InvalidTokenError("Magic link is invalid or expired")
+            return AuthOutcome(
+                status=AuthStatus.INVALID_TOKEN,
+                error=InvalidTokenError("Magic link is invalid or expired"),
+            )
 
         if not user.is_active:
             logger.warning(
                 "Magic link verification failed: account disabled for %s", user.email
             )
-            raise InvalidTokenError("Magic link is invalid or expired")
+            return AuthOutcome(
+                status=AuthStatus.INVALID_TOKEN,
+                error=InvalidTokenError("Magic link is invalid or expired"),
+            )
 
         # Update user
         now = datetime.now(UTC)
@@ -614,14 +659,13 @@ class NativeAuthClient(BaseAuthClient):
 
         await self._invalidate_user_cache(user.id, user.email)
 
-        token_pair = await self._create_session(
-            user.id,
-            role=user.role,
-            user_agent=user_agent,
-            ip_address=ip_address,
-        )
+        token_pair = await self._create_session(user.id, role=user.role)
 
-        return AuthResult(user=self._to_user_info(user), tokens=token_pair)
+        return AuthOutcome(
+            status=AuthStatus.COMPLETE,
+            identity=self._to_identity(user),
+            tokens=token_pair,
+        )
 
     # =========================================================================
     # OAuth Authentication
@@ -635,50 +679,54 @@ class NativeAuthClient(BaseAuthClient):
             raise ValueError(f"OAuth provider not configured: {provider}")
         return oauth_provider
 
-    def get_oauth_authorization_url(
+    def authorization_url(
         self,
-        provider: str | AuthProvider,
+        *,
+        provider: str | AuthProvider | None = None,
+        organization: str | None = None,
+        connection: str | None = None,
+        domain: str | None = None,
         state: str,
-        scopes: list[str] | None = None,
         redirect_uri: str | None = None,
+        scopes: list[str] | None = None,
     ) -> str:
-        """Get the OAuth authorization URL for a provider.
+        """Build the social-OAuth authorization URL for a provider.
 
-        Args:
-            provider_name: Name of the OAuth provider
-            state: CSRF protection state token
-            scopes: Optional scopes to request
-            redirect_uri: Optional redirect URI override
-
-        Returns:
-            Authorization URL
+        Native only supports the social ``provider`` path; SSO selectors
+        (``organization`` / ``connection`` / ``domain``) are unsupported.
         """
+        if organization or connection or domain:
+            raise CapabilityNotSupportedError("sso")
+        if provider is None:
+            raise ValueError("Native authorization_url requires a provider")
         oauth_provider = self.get_oauth_provider(provider)
         return oauth_provider.get_authorization_url(state, scopes, redirect_uri)
 
     async def sign_in_with_oauth(
         self,
-        provider: str | AuthProvider,
         code: str,
         *,
+        provider: str | AuthProvider | None = None,
         redirect_uri: str | None = None,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
-    ) -> AuthResult:
+    ) -> AuthOutcome:
         """Complete OAuth sign in with authorization code.
 
         Creates the user record if this email has never signed in before.
 
-        Raises:
-            InvalidCredentialsError: Provider rejected the code, or the
-                matching account is disabled.
+        Outcome status: ``COMPLETE`` or ``INVALID_CREDENTIALS`` (provider
+        rejected the code, or the matching account is disabled).
         """
+        if provider is None:
+            raise ValueError("Native sign_in_with_oauth requires a provider")
         oauth_provider = self.get_oauth_provider(provider)
 
         # Get user info from provider
         user_info = await oauth_provider.authenticate(code, redirect_uri)
         if user_info is None:
-            raise InvalidCredentialsError("OAuth code rejected by provider")
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS,
+                error=InvalidCredentialsError("OAuth code rejected by provider"),
+            )
 
         # Find or create user
         user = await self._get_user_by_email(email=user_info.email)
@@ -691,7 +739,10 @@ class NativeAuthClient(BaseAuthClient):
                     "OAuth sign-in failed: account disabled for %s",
                     user.email,
                 )
-                raise InvalidCredentialsError()
+                return AuthOutcome(
+                    status=AuthStatus.INVALID_CREDENTIALS,
+                    error=InvalidCredentialsError(),
+                )
 
             updates: dict[str, Any] = {
                 "last_sign_in_at": now,
@@ -733,14 +784,13 @@ class NativeAuthClient(BaseAuthClient):
                 .execute()
             )
 
-        token_pair = await self._create_session(
-            user.id,
-            role=user.role,
-            user_agent=user_agent,
-            ip_address=ip_address,
-        )
+        token_pair = await self._create_session(user.id, role=user.role)
 
-        return AuthResult(user=self._to_user_info(user), tokens=token_pair)
+        return AuthOutcome(
+            status=AuthStatus.COMPLETE,
+            identity=self._to_identity(user),
+            tokens=token_pair,
+        )
 
     # =========================================================================
     # Session Management
@@ -753,7 +803,7 @@ class NativeAuthClient(BaseAuthClient):
         role: str = "default",
         user_agent: str | None = None,
         ip_address: str | None = None,
-    ) -> TokenPair:
+    ) -> TokenSet:
         """Create a new session and return tokens."""
         now = datetime.now(UTC)
         not_after = now + timedelta(days=self._config.session_expire_days)
@@ -775,15 +825,16 @@ class NativeAuthClient(BaseAuthClient):
             .execute()
         )
 
-        return create_token_pair(
+        pair = create_token_pair(
             self._config.jwt,
             user_id,
             session_id,
             refresh_token,
             extra_claims={"role": role},
         )
+        return self._to_token_set(pair)
 
-    async def refresh_token(self, refresh_token: str) -> TokenPair:
+    async def refresh(self, refresh_token: str) -> AuthResult[TokenSet]:
         """Refresh an access token using a refresh token.
 
         Implements token rotation for security. Happy path is 2 DB calls:
@@ -829,15 +880,21 @@ class NativeAuthClient(BaseAuthClient):
                         f"{self._config.cache_prefix}:session:{existing.session_id}".encode()
                     )
                 logger.warning("Refresh token reuse detected, all sessions revoked")
-                raise InvalidTokenError("Refresh token reuse detected")
+                return AuthResult(
+                    error=InvalidTokenError("Refresh token reuse detected")
+                )
             logger.warning("Refresh token invalid or revoked")
-            raise InvalidTokenError("Refresh token is invalid or revoked")
+            return AuthResult(
+                error=InvalidTokenError("Refresh token is invalid or revoked")
+            )
 
         [token_record] = revoked_rows
 
         if token_record.not_after < datetime.now(UTC):
             logger.warning("Refresh token failed: session expired")
-            raise InvalidTokenError("Refresh token session has expired")
+            return AuthResult(
+                error=InvalidTokenError("Refresh token session has expired")
+            )
 
         # Insert rotated token
         new_refresh_token = generate_secure_token()
@@ -863,48 +920,49 @@ class NativeAuthClient(BaseAuthClient):
                 f"{self._config.cache_prefix}:session:{token_record.session_id}".encode()
             )
 
-        return create_token_pair(
+        pair = create_token_pair(
             self._config.jwt,
             token_record.user_id,
             token_record.session_id,
             new_refresh_token,
             extra_claims={"role": token_record.role},
         )
+        return AuthResult(value=self._to_token_set(pair))
 
-    async def authenticate(self, request: AuthRequest) -> SessionInfo | None:
-        """Authenticate a request via JWT (networkless).
+    async def verify_token(self, token: str) -> Session | None:
+        """Verify a JWT access token (networkless) and return its session.
 
-        Extracts the Bearer token from the Authorization header,
-        decodes and verifies the JWT signature and expiry.
-        Returns ``SessionInfo`` built from JWT claims, or ``None``
-        if the token is missing, invalid, or expired.
+        Decodes and verifies the JWT signature and expiry, building a
+        ``Session`` from its claims; returns ``None`` if the token is invalid
+        or expired.
         """
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return None
-        token = auth_header.removeprefix("Bearer ")
         payload = decode_token(self._config.jwt, token)
         if payload is None:
             return None
         extra = payload.extra or {}
-        return SessionInfo(
+        return Session(
             user_id=payload.sub,
             session_id=payload.session_id,
-            role=extra.get("role", "default"),
-            expires_at=payload.exp,
-            metadata=extra,
+            tenant_id=None,
             org_id=extra.get("org_id"),
             org_role=extra.get("org_role"),
+            roles=(extra.get("role", "default"),),
+            scopes=(),
+            is_anonymous=False,
+            mfa=MFAStatus(enrolled=False, satisfied=False, factor_types=()),
+            issued_at=payload.iat,
+            expires_at=payload.exp,
+            claims=extra,
         )
 
     async def list_sessions(
-        self,
-        *,
-        user_id: str | uuid.UUID | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[SessionInfo]:
-        """List active (non-revoked) sessions ordered by creation date."""
+        self, *, user_id: str | None = None, limit: int = 50, cursor: str | None = None
+    ) -> Page[Session]:
+        """List active (non-revoked) sessions ordered by creation date.
+
+        ``cursor`` is an opaque stringified offset.
+        """
+        offset = int(cursor) if cursor else 0
         q = (
             self._db()
             .select(AuthSession)
@@ -913,26 +971,31 @@ class NativeAuthClient(BaseAuthClient):
         )
         if user_id is not None:
             q = q.where(AuthSession.user_id == str(user_id))
-        if limit is not None:
-            q = q.limit(limit)
-        if offset is not None:
-            q = q.offset(offset)
+        q = q.limit(limit).offset(offset)
         sessions = await q.execute()
-        return [
-            SessionInfo(
+        items = [
+            Session(
                 user_id=str(s.user_id),
                 session_id=str(s.session_id),
-                role="default",
-                expires_at=s.not_after,
-                metadata={},
-                org_id=s.org_id,
+                tenant_id=None,
+                org_id=str(s.org_id) if s.org_id is not None else None,
                 org_role=None,
+                roles=(s.role,),
+                scopes=(),
+                is_anonymous=False,
+                mfa=MFAStatus(enrolled=False, satisfied=False, factor_types=()),
+                issued_at=s.created_at,
+                expires_at=s.not_after,
+                claims={},
             )
             for s in sessions
         ]
+        has_more = len(items) == limit
+        next_cursor = str(offset + limit) if has_more else None
+        return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
-    async def sign_out(self, session_id: str | uuid.UUID) -> None:
-        """Sign out by deleting all tokens for a session."""
+    async def revoke_session(self, session_id: str) -> AuthResult[bool]:
+        """Revoke a session by deleting all of its tokens."""
         await (
             self._db()
             .delete(AuthSession)
@@ -945,9 +1008,10 @@ class NativeAuthClient(BaseAuthClient):
             await self._kv_client.delete(
                 f"{self._config.cache_prefix}:session:{session_id}".encode()
             )
+        return AuthResult(value=True)
 
-    async def sign_out_all(self, user_id: str | uuid.UUID) -> None:
-        """Sign out all sessions for a user by deleting all tokens."""
+    async def revoke_all_sessions(self, user_id: str) -> AuthResult[bool]:
+        """Revoke all sessions for a user by deleting all their tokens."""
         session_ids = await (
             self._db()
             .delete(AuthSession)
@@ -963,16 +1027,17 @@ class NativeAuthClient(BaseAuthClient):
                 for sid in session_ids
             ]
             await self._kv_client.delete_many(cache_keys)
+        return AuthResult(value=True)
 
     # =========================================================================
     # Password Recovery
     # =========================================================================
 
-    async def request_password_recovery(
+    async def request_password_reset(
         self,
         *,
         email: str,
-        recovery_url: str,
+        redirect_url: str | None = None,
         recovery_subject: str = "Reset your password",
         **kwargs: Any,
     ) -> None:
@@ -1007,11 +1072,13 @@ class NativeAuthClient(BaseAuthClient):
             subject=recovery_subject,
             to_email=email.lower(),
             template="recovery.html",
-            recovery_url=f"{recovery_url}?token={token}",
+            recovery_url=f"{redirect_url}?token={token}",
             **kwargs,
         )
 
-    async def reset_password(self, token: str, new_password: str) -> UserInfo:
+    async def reset_password(
+        self, token: str, new_password: str
+    ) -> AuthResult[Identity]:
         """Reset password using recovery token.
 
         Raises:
@@ -1022,21 +1089,27 @@ class NativeAuthClient(BaseAuthClient):
         # Validate password
         validation = validate_password(self._config.password, new_password)
         if not validation.valid:
-            raise PasswordValidationError("; ".join(validation.errors))
+            return AuthResult(
+                error=PasswordValidationError("; ".join(validation.errors))
+            )
 
         # Look up recovery token in KV
         kv_key = f"{self._config.cache_prefix}:recovery:{token}".encode()
         user_id_bytes = await self._kv().get(kv_key)
 
         if user_id_bytes is None:
-            raise InvalidTokenError("Recovery token is invalid or expired")
+            return AuthResult(
+                error=InvalidTokenError("Recovery token is invalid or expired")
+            )
 
         # Delete token (single use)
         await self._kv().delete(kv_key)
 
         user = await self._fetch_user(user_id=user_id_bytes.decode())
         if user is None:
-            raise InvalidTokenError("Recovery token is invalid or expired")
+            return AuthResult(
+                error=InvalidTokenError("Recovery token is invalid or expired")
+            )
 
         # Update password
         hashed_password = await self._hasher.async_hash(new_password)
@@ -1054,15 +1127,15 @@ class NativeAuthClient(BaseAuthClient):
         await self._invalidate_user_cache(user.id, user.email)
 
         # Sign out all sessions (security measure)
-        await self.sign_out_all(user.id)
+        await self.revoke_all_sessions(str(user.id))
 
-        return self._to_user_info(result)
+        return AuthResult(value=self._to_identity(result))
 
     # =========================================================================
     # Email Confirmation
     # =========================================================================
 
-    async def confirm_email(self, token: str) -> UserInfo:
+    async def verify_email(self, token: str) -> AuthResult[Identity]:
         """Confirm email address with token.
 
         Raises:
@@ -1073,14 +1146,18 @@ class NativeAuthClient(BaseAuthClient):
         user_id_bytes = await self._kv().get(kv_key)
 
         if user_id_bytes is None:
-            raise InvalidTokenError("Confirmation token is invalid or expired")
+            return AuthResult(
+                error=InvalidTokenError("Confirmation token is invalid or expired")
+            )
 
         # Delete token (single use)
         await self._kv().delete(kv_key)
 
         user = await self._fetch_user(user_id=user_id_bytes.decode())
         if user is None:
-            raise InvalidTokenError("Confirmation token is invalid or expired")
+            return AuthResult(
+                error=InvalidTokenError("Confirmation token is invalid or expired")
+            )
 
         # Confirm email
         now = datetime.now(UTC)
@@ -1095,59 +1172,17 @@ class NativeAuthClient(BaseAuthClient):
 
         await self._invalidate_user_cache(user.id, user.email)
 
-        return self._to_user_info(result)
-
-    async def resend_confirmation_email(
-        self,
-        *,
-        email: str,
-        confirmation_url: str,
-        confirmation_subject: str = "Confirm your email address",
-        **kwargs: Any,
-    ) -> None:
-        """Resend email confirmation.
-
-        Does not reveal whether user exists for security.
-        """
-        row = await (
-            self._db()
-            .select(AuthUser.id, AuthUser.email_confirmed_at)
-            .from_(AuthUser)
-            .where(AuthUser.email == email.lower())
-            .first_or_none()
-        )
-        if not row:
-            return
-
-        uid, confirmed_at = row
-        if confirmed_at:
-            return  # Already confirmed
-
-        # Store new confirmation token in KV
-        token = generate_secure_token()
-        ttl = self._config.confirmation_token_expire_hours * 3600
-        await self._kv().set(
-            f"{self._config.cache_prefix}:confirmation:{token}".encode(),
-            str(uid).encode(),
-            ttl=ttl,
-        )
-
-        await self._email().send_email(
-            subject=confirmation_subject,
-            to_email=email.lower(),
-            template="confirmation.html",
-            confirmation_url=f"{confirmation_url}?token={token}",
-            **kwargs,
-        )
+        return AuthResult(value=self._to_identity(result))
 
     # =========================================================================
     # Organizations
     # =========================================================================
 
-    def _to_org_info(self, org: AuthOrganization) -> OrgInfo:
-        """Convert an AuthOrganization ORM model to a public OrgInfo."""
-        return OrgInfo(
+    def _to_org(self, org: AuthOrganization) -> Org:
+        """Convert an AuthOrganization ORM model to a public Org."""
+        return Org(
             id=str(org.id),
+            tenant_id=None,
             name=org.name,
             slug=org.slug,
             metadata=org.metadata or {},
@@ -1155,9 +1190,9 @@ class NativeAuthClient(BaseAuthClient):
             updated_at=org.updated_at,
         )
 
-    def _to_org_member_info(self, member: AuthOrgMember) -> OrgMemberInfo:
-        """Convert an AuthOrgMember ORM model to a public OrgMemberInfo."""
-        return OrgMemberInfo(
+    def _to_org_member(self, member: AuthOrgMember) -> OrgMember:
+        """Convert an AuthOrgMember ORM model to a public OrgMember."""
+        return OrgMember(
             org_id=str(member.org_id),
             user_id=str(member.user_id),
             role=member.role,
@@ -1170,13 +1205,14 @@ class NativeAuthClient(BaseAuthClient):
         *,
         name: str,
         slug: str,
-        creator_id: str | uuid.UUID,
+        creator_id: str,
         **kwargs: Any,
-    ) -> OrgInfo:
+    ) -> AuthResult[Org]:
         """Create an organization. The creator is added as owner.
 
-        Raises:
-            OrgSlugConflictError: Slug is already taken.
+        On success, ``result.value`` is the new :class:`Org`. Expected failure:
+        :class:`OrgSlugConflictError` (slug already taken) is attached to
+        ``result.error``.
         """
         now = datetime.now(UTC)
         org = await (
@@ -1188,7 +1224,7 @@ class NativeAuthClient(BaseAuthClient):
             .execute()
         )
         if org is None:
-            raise OrgSlugConflictError(slug)
+            return AuthResult(error=OrgSlugConflictError(slug))
 
         # Add creator as owner
         await (
@@ -1204,134 +1240,103 @@ class NativeAuthClient(BaseAuthClient):
             .execute()
         )
 
-        return self._to_org_info(org)
-
-    async def _resolve_org_id(
-        self,
-        *,
-        org_id: str | uuid.UUID | None,
-        slug: str | None,
-    ) -> str | None:
-        """Translate (org_id, slug) → canonical id.
-
-        Exactly one must be provided. Returns the canonical id, or ``None``
-        when ``slug`` was given but no matching org exists. Raises
-        ``ValueError`` when neither or both are provided.
-        """
-        if (org_id is None) == (slug is None):
-            raise ValueError("Provide exactly one of org_id= or slug=")
-        if slug is not None:
-            org = await (
-                self._db()
-                .select(AuthOrganization)
-                .where(AuthOrganization.slug == slug)
-                .first_or_none()
-            )
-            return str(org.id) if org else None
-        return str(org_id)
+        return AuthResult(value=self._to_org(org))
 
     async def get_org(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-    ) -> OrgInfo:
-        """Get an organization by ID or slug. Provide exactly one.
+        self, *, org_id: str | None = None, slug: str | None = None
+    ) -> AuthResult[Org]:
+        """Get an org by id or slug (pass exactly one).
 
-        Raises:
-            OrgNotFoundError: No matching org.
+        Expected failure: :class:`OrgNotFoundError` attached to ``result.error``
+        when nothing matches.
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        org = await (
-            self._db()
-            .select(AuthOrganization)
-            .where(AuthOrganization.id == canonical)
-            .first_or_none()
+        self._check_org_ref(org_id, slug)
+        q = self._db().select(AuthOrganization)
+        q = (
+            q.where(AuthOrganization.id == org_id)
+            if org_id is not None
+            else q.where(AuthOrganization.slug == slug)
         )
-        if org is None:
-            raise OrgNotFoundError(f"No org with id {canonical!r}")
-        return self._to_org_info(org)
+        found = await q.first_or_none()
+        if found is None:
+            return AuthResult(
+                error=OrgNotFoundError(f"No org matching {org_id or slug!r}")
+            )
+        return AuthResult(value=self._to_org(found))
 
     async def update_org(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
-        org_slug: str | None = None,
-        name: str | None = None,
+        org_id: str | None = None,
         slug: str | None = None,
+        name: str | None = None,
+        new_slug: str | None = None,
         **kwargs: Any,
-    ) -> OrgInfo:
-        """Update an organization. Identify by ``org_id`` or ``org_slug``.
+    ) -> AuthResult[Org]:
+        """Update an org's fields. Address by ``org_id`` or ``slug`` (one).
 
-        ``slug`` is the new slug to assign — not the lookup key.
+        ``name`` / ``new_slug`` are the new values to assign (``new_slug`` is
+        spelled distinctly so it never collides with the addressing ``slug``).
 
-        Raises:
-            OrgNotFoundError: Org identifier did not resolve.
-            OrgSlugConflictError: New slug collides with another org.
+        Expected failures attached to ``result.error``:
+        :class:`OrgNotFoundError`, :class:`OrgSlugConflictError`.
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=org_slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {org_slug!r}")
-
-        existing = await (
-            self._db()
-            .select(AuthOrganization)
-            .where(AuthOrganization.id == canonical)
-            .first_or_none()
+        self._check_org_ref(org_id, slug)
+        q = self._db().select(AuthOrganization)
+        q = (
+            q.where(AuthOrganization.id == org_id)
+            if org_id is not None
+            else q.where(AuthOrganization.slug == slug)
         )
+        existing = await q.first_or_none()
         if existing is None:
-            raise OrgNotFoundError(f"No org with id {canonical!r}")
+            return AuthResult(
+                error=OrgNotFoundError(f"No org matching {org_id or slug!r}")
+            )
 
         updates: dict[str, Any] = {"updated_at": datetime.now(UTC)}
         if name is not None:
             updates["name"] = name
-        if slug is not None:
-            updates["slug"] = slug
+        if new_slug is not None:
+            updates["slug"] = new_slug
 
         try:
             [result] = await (
                 self._db()
                 .update(AuthOrganization)
                 .set(**updates)
-                .where(AuthOrganization.id == canonical)
+                .where(AuthOrganization.id == existing.id)
                 .returning(AuthOrganization)
                 .execute()
             )
-        except Exception as e:
+        except Exception:
             # Slug uniqueness is enforced at the column level; surface a
             # typed conflict only if the caller actually changed the slug.
-            if slug is not None:
-                raise OrgSlugConflictError(slug) from e
+            if new_slug is not None:
+                return AuthResult(error=OrgSlugConflictError(new_slug))
             raise
 
-        return self._to_org_info(result)
+        return AuthResult(value=self._to_org(result))
 
     async def delete_org(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
+        self, *, org_id: str | None = None, slug: str | None = None
     ) -> bool:
-        """Delete an organization and all its memberships."""
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            return False
-
-        existing = await (
-            self._db()
-            .select(AuthOrganization)
-            .where(AuthOrganization.id == canonical)
-            .first_or_none()
+        """Delete an org (by id or slug) and its memberships. ``False`` if absent."""
+        self._check_org_ref(org_id, slug)
+        q = self._db().select(AuthOrganization)
+        q = (
+            q.where(AuthOrganization.id == org_id)
+            if org_id is not None
+            else q.where(AuthOrganization.slug == slug)
         )
+        existing = await q.first_or_none()
         if existing is None:
             return False
 
         await (
             self._db()
             .delete(AuthOrganization)
-            .where(AuthOrganization.id == canonical)
+            .where(AuthOrganization.id == existing.id)
             .execute()
         )
         return True
@@ -1339,11 +1344,15 @@ class NativeAuthClient(BaseAuthClient):
     async def list_orgs(
         self,
         *,
-        user_id: str | uuid.UUID | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[OrgInfo]:
-        """List organizations, optionally filtered by user membership."""
+        user_id: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> Page[Org]:
+        """List organizations, optionally filtered by user membership.
+
+        ``cursor`` is an opaque stringified offset.
+        """
+        offset = int(cursor) if cursor else 0
         q = (
             self._db()
             .select(AuthOrganization)
@@ -1356,205 +1365,175 @@ class NativeAuthClient(BaseAuthClient):
                 AuthOrgMember.org_id == AuthOrganization.id,
             ).where(AuthOrgMember.user_id == str(user_id))
 
-        if limit is not None:
-            q = q.limit(limit)
-        if offset is not None:
-            q = q.offset(offset)
-        return [self._to_org_info(o) for o in await q.execute()]
+        q = q.limit(limit).offset(offset)
+        items = [self._to_org(o) for o in await q.execute()]
+        has_more = len(items) == limit
+        next_cursor = str(offset + limit) if has_more else None
+        return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
     # =========================================================================
     # Organization Membership
     # =========================================================================
 
-    async def add_org_member(
+    async def add_member(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
+        user_id: str,
+        org_id: str | None = None,
         slug: str | None = None,
-        user_id: str | uuid.UUID,
         role: str = "member",
-    ) -> OrgMemberInfo:
-        """Add a user to an organization (identify by ``org_id`` or ``slug``).
+    ) -> AuthResult[OrgMember]:
+        """Add a user to an org (by id or slug).
 
-        Raises:
-            OrgNotFoundError: Org identifier did not resolve.
-            MemberAlreadyExistsError: User is already a member.
+        Expected failures attached to ``result.error``:
+        :class:`OrgNotFoundError`, :class:`MemberAlreadyExistsError`.
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
+        self._check_org_ref(org_id, slug)
+        db = self._db()
+        # The FK needs the canonical id: use org_id directly, else resolve the
+        # slug with a single lookup.
+        canonical = org_id
         if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        now = datetime.now(UTC)
-        member = await (
-            self._db()
-            .insert(AuthOrgMember)
-            .values(
-                org_id=canonical,
-                user_id=str(user_id),
-                role=role,
-                created_at=now,
-                updated_at=now,
+            org = await (
+                db.select(AuthOrganization)
+                .where(AuthOrganization.slug == slug)
+                .first_or_none()
             )
+            if org is None:
+                return AuthResult(error=OrgNotFoundError(f"No org matching {slug!r}"))
+            canonical = str(org.id)
+
+        member = await (
+            db.insert(AuthOrgMember)
+            .values(org_id=canonical, user_id=str(user_id), role=role)
             .ignore_conflicts(target=(AuthOrgMember.org_id, AuthOrgMember.user_id))
             .returning(AuthOrgMember)
             .execute()
         )
         if member is None:
-            raise MemberAlreadyExistsError()
+            return AuthResult(error=MemberAlreadyExistsError())
 
-        return self._to_org_member_info(member)
+        return AuthResult(value=self._to_org_member(member))
 
-    async def update_org_member(
+    async def update_member(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-        user_id: str | uuid.UUID,
+        user_id: str,
         role: str,
-    ) -> OrgMemberInfo:
-        """Update a member's role.
+        org_id: str | None = None,
+        slug: str | None = None,
+    ) -> AuthResult[OrgMember]:
+        """Change a member's role in an org (by id or slug).
 
-        Raises:
-            OrgNotFoundError: Org identifier did not resolve.
-            OrgMemberNotFoundError: User is not a member of the org.
+        Expected failure: :class:`OrgMemberNotFoundError` attached to
+        ``result.error`` (not a member, or no such org).
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        existing = await (
-            self._db()
-            .select(AuthOrgMember)
-            .where(AuthOrgMember.org_id == canonical)
-            .where(AuthOrgMember.user_id == str(user_id))
-            .first_or_none()
-        )
+        self._check_org_ref(org_id, slug)
+        db = self._db()
+        sel = db.select(AuthOrgMember).where(AuthOrgMember.user_id == str(user_id))
+        if org_id is not None:
+            sel = sel.where(AuthOrgMember.org_id == org_id)
+        else:
+            sel = sel.inner_join(
+                AuthOrganization, AuthOrganization.id == AuthOrgMember.org_id
+            ).where(AuthOrganization.slug == slug)
+        existing = await sel.first_or_none()
         if existing is None:
-            raise OrgMemberNotFoundError(
-                f"User {user_id!r} is not a member of org {canonical!r}"
+            return AuthResult(
+                error=OrgMemberNotFoundError(
+                    f"User {user_id!r} is not a member of org {org_id or slug!r}"
+                )
             )
 
+        # existing.org_id is the canonical id — reuse it, no extra lookup.
         [result] = await (
-            self._db()
-            .update(AuthOrgMember)
+            db.update(AuthOrgMember)
             .set(role=role, updated_at=datetime.now(UTC))
-            .where(AuthOrgMember.org_id == canonical)
+            .where(AuthOrgMember.org_id == existing.org_id)
             .where(AuthOrgMember.user_id == str(user_id))
             .returning(AuthOrgMember)
             .execute()
         )
 
-        return self._to_org_member_info(result)
+        return AuthResult(value=self._to_org_member(result))
 
-    async def remove_org_member(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-        user_id: str | uuid.UUID,
-    ) -> bool:
-        """Remove a user from an organization.
+    async def remove_member(
+        self, *, user_id: str, org_id: str | None = None, slug: str | None = None
+    ) -> AuthResult[bool]:
+        """Remove a member from an org (by id or slug).
 
-        Returns ``False`` if the org or membership does not exist.
-
-        Raises:
-            LastOwnerError: Removing this member would leave the org without
-                an owner.
+        ``result.value`` is ``True`` if a row was removed, ``False`` if the
+        user wasn't a member. Expected failure: :class:`LastOwnerError`
+        attached to ``result.error`` when removing would leave the org without
+        an owner.
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            return False
-        existing = await (
-            self._db()
-            .select(AuthOrgMember)
-            .where(AuthOrgMember.org_id == canonical)
-            .where(AuthOrgMember.user_id == str(user_id))
-            .first_or_none()
-        )
+        self._check_org_ref(org_id, slug)
+        db = self._db()
+        sel = db.select(AuthOrgMember).where(AuthOrgMember.user_id == str(user_id))
+        if org_id is not None:
+            sel = sel.where(AuthOrgMember.org_id == org_id)
+        else:
+            sel = sel.inner_join(
+                AuthOrganization, AuthOrganization.id == AuthOrgMember.org_id
+            ).where(AuthOrganization.slug == slug)
+        existing = await sel.first_or_none()
         if existing is None:
-            return False
+            return AuthResult(value=False)
 
-        # Prevent removing the last owner
+        # Prevent removing the last owner. existing.org_id is the canonical id.
         if existing.role == "owner":
             owner_count = await (
-                self._db()
-                .select(AuthOrgMember)
-                .where(AuthOrgMember.org_id == canonical)
+                db.select(AuthOrgMember)
+                .where(AuthOrgMember.org_id == existing.org_id)
                 .where(AuthOrgMember.role == "owner")
                 .count()
             )
             if owner_count <= 1:
                 logger.error(
                     "Remove org member failed: cannot remove last owner of org %s",
-                    canonical,
+                    existing.org_id,
                 )
-                raise LastOwnerError(
-                    f"Cannot remove the last owner of org {canonical!r}"
+                return AuthResult(
+                    error=LastOwnerError(
+                        f"Cannot remove the last owner of org {existing.org_id!r}"
+                    )
                 )
 
         await (
-            self._db()
-            .delete(AuthOrgMember)
-            .where(AuthOrgMember.org_id == canonical)
+            db.delete(AuthOrgMember)
+            .where(AuthOrgMember.org_id == existing.org_id)
             .where(AuthOrgMember.user_id == str(user_id))
             .execute()
         )
-        return True
+        return AuthResult(value=True)
 
-    async def list_org_members(
+    async def list_members(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
+        org_id: str | None = None,
         slug: str | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[OrgMemberInfo]:
-        """List members of an organization (identify by ``org_id`` or ``slug``).
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> Page[OrgMember]:
+        """List members of an org (by id or slug). ``cursor`` is an opaque offset.
 
-        Raises:
-            OrgNotFoundError: Org identifier did not resolve.
+        An unknown org yields an empty page (no existence query needed).
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        q = (
-            self._db()
-            .select(AuthOrgMember)
-            .where(AuthOrgMember.org_id == canonical)
-            .order_by(AuthOrgMember.created_at, asc=True)
-        )
-        if limit is not None:
-            q = q.limit(limit)
-        if offset is not None:
-            q = q.offset(offset)
-        return [self._to_org_member_info(m) for m in await q.execute()]
-
-    async def get_org_member(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-        user_id: str | uuid.UUID,
-    ) -> OrgMemberInfo:
-        """Get a single membership record.
-
-        Raises:
-            OrgNotFoundError: Org identifier did not resolve.
-            OrgMemberNotFoundError: User is not a member of the org.
-        """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        member = await (
-            self._db()
-            .select(AuthOrgMember)
-            .where(AuthOrgMember.org_id == canonical)
-            .where(AuthOrgMember.user_id == str(user_id))
-            .first_or_none()
-        )
-        if member is None:
-            raise OrgMemberNotFoundError(
-                f"User {user_id!r} is not a member of org {canonical!r}"
-            )
-        return self._to_org_member_info(member)
+        self._check_org_ref(org_id, slug)
+        db = self._db()
+        offset = int(cursor) if cursor else 0
+        q = db.select(AuthOrgMember)
+        if org_id is not None:
+            q = q.where(AuthOrgMember.org_id == org_id)
+        else:
+            q = q.inner_join(
+                AuthOrganization, AuthOrganization.id == AuthOrgMember.org_id
+            ).where(AuthOrganization.slug == slug)
+        q = q.order_by(AuthOrgMember.created_at, asc=True).limit(limit).offset(offset)
+        items = [self._to_org_member(m) for m in await q.execute()]
+        has_more = len(items) == limit
+        next_cursor = str(offset + limit) if has_more else None
+        return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
     # =========================================================================
     # Organization Session Context
@@ -1563,16 +1542,17 @@ class NativeAuthClient(BaseAuthClient):
     async def set_active_org(
         self,
         *,
-        session_id: str | uuid.UUID,
-        org_id: str | uuid.UUID | None,
-    ) -> TokenPair:
-        """Switch the active organization for a session.
+        session_id: str,
+        org_id: str | None = None,
+        slug: str | None = None,
+    ) -> AuthResult[TokenSet]:
+        """Switch a session's active org (by id or slug); reissues tokens.
 
-        Pass ``org_id=None`` to clear the active org.
-
-        Raises:
-            InvalidTokenError: Session id is unknown or already revoked.
-            OrgMemberNotFoundError: User is not a member of the target org.
+        Pass neither ``org_id`` nor ``slug`` to clear the active org. On success
+        ``result.value`` is the reissued :class:`TokenSet`. Expected failures
+        (attached to ``result.error``): ``InvalidTokenError`` (session unknown
+        or revoked), ``OrgNotFoundError`` (slug matches no org), and
+        ``OrgMemberNotFoundError`` (user isn't a member of the target org).
         """
         # Find the active session
         session = await (
@@ -1585,32 +1565,51 @@ class NativeAuthClient(BaseAuthClient):
         )
         if session is None:
             logger.error("Set active org failed: session not found")
-            raise InvalidTokenError("Session not found or revoked")
+            return AuthResult(error=InvalidTokenError("Session not found or revoked"))
 
         extra_claims: dict[str, Any] = {"role": session.role}
 
-        if org_id is not None:
+        if org_id is not None or slug is not None:
+            self._check_org_ref(org_id, slug)
+            # The membership check + claim need the canonical id: use org_id
+            # directly, else resolve the slug with a single lookup.
+            canonical = org_id
+            if canonical is None:
+                org = await (
+                    self._db()
+                    .select(AuthOrganization)
+                    .where(AuthOrganization.slug == slug)
+                    .first_or_none()
+                )
+                if org is None:
+                    return AuthResult(
+                        error=OrgNotFoundError(f"No org matching {slug!r}")
+                    )
+                canonical = str(org.id)
+
             # Verify user is a member
             member = await (
                 self._db()
                 .select(AuthOrgMember)
-                .where(AuthOrgMember.org_id == str(org_id))
+                .where(AuthOrgMember.org_id == canonical)
                 .where(AuthOrgMember.user_id == str(session.user_id))
                 .first_or_none()
             )
             if member is None:
-                raise OrgMemberNotFoundError(
-                    f"User {session.user_id!r} is not a member of org {org_id!r}"
+                return AuthResult(
+                    error=OrgMemberNotFoundError(
+                        f"User {session.user_id!r} is not a member of org {canonical!r}"
+                    )
                 )
 
-            extra_claims["org_id"] = str(org_id)
+            extra_claims["org_id"] = canonical
             extra_claims["org_role"] = member.role
 
             # Update session's org_id
             await (
                 self._db()
                 .update(AuthSession)
-                .set(org_id=str(org_id))
+                .set(org_id=canonical)
                 .where(AuthSession.session_id == str(session_id))
                 .where(~AuthSession.revoked)
                 .execute()
@@ -1626,10 +1625,11 @@ class NativeAuthClient(BaseAuthClient):
                 .execute()
             )
 
-        return create_token_pair(
+        pair = create_token_pair(
             self._config.jwt,
             session.user_id,
             session.session_id,
             session.token,
             extra_claims=extra_claims,
         )
+        return AuthResult(value=self._to_token_set(pair))

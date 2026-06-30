@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
@@ -11,7 +10,18 @@ import jwt as pyjwt
 from etils import epy
 from jwt import PyJWKClient
 
-from derp.auth.base import BaseAuthClient
+from derp.auth.base import (
+    AuthOutcome,
+    AuthResult,
+    BaseAuthClient,
+    Identity,
+    MFAStatus,
+    Org,
+    OrgMember,
+    Page,
+    Session,
+    TokenSet,
+)
 from derp.auth.exceptions import (
     AuthBackendError,
     AuthNotConnectedError,
@@ -24,15 +34,9 @@ from derp.auth.exceptions import (
     OrgSlugConflictError,
     UserNotFoundError,
 )
-from derp.auth.jwt import TokenPair
 from derp.auth.models import (
-    AuthRequest,
-    AuthResult,
-    CursorResult,
-    OrgInfo,
-    OrgMemberInfo,
-    SessionInfo,
-    UserInfo,
+    AuthProvider,
+    AuthStatus,
     WorkOSOrganization,
 )
 from derp.config import WorkOSConfig
@@ -56,14 +60,21 @@ _PROVIDER_MAP: dict[str, str] = {
 class WorkOSAuthClient(BaseAuthClient):
     """WorkOS-backed authentication client.
 
-    Delegates user management, sign-up, sign-in, and organization
-    management to the WorkOS API. JWT verification is performed locally
+    Delegates user management, sign-up, sign-in, organization management, and
+    enterprise SSO to the WorkOS API. JWT verification is performed locally
     against the WorkOS JWKS endpoint.
 
-    WorkOS uses cursor-based pagination. The offset-based ``list_users``,
-    ``count_users``, and ``list_org_members`` methods raise
-    ``NotImplementedError`` — use the ``*_by_cursor`` variants instead.
+    WorkOS is cursor-native: ``list_users`` / ``list_orgs`` / ``list_members``
+    / ``list_sessions`` map the base's opaque ``cursor`` straight onto WorkOS's
+    ``after`` cursor and surface ``Page.next_cursor`` from the list metadata.
     """
+
+    supports_password = True
+    supports_oauth = True
+    supports_sso = True
+    supports_magic_link = True
+    supports_orgs = True
+    supports_sessions = True
 
     def __init__(self, config: WorkOSConfig) -> None:
         self._config = config
@@ -91,85 +102,162 @@ class WorkOSAuthClient(BaseAuthClient):
     def _db(self) -> DatabaseEngine:
         if self._database_client is None:
             raise ValueError(
-                "Database client not set. Organization methods require "
+                "Database client not set. Organization slug lookups require "
                 "a database. Call `set_db()` first."
             )
         return self._database_client
 
+    def _client(self) -> workos.AsyncWorkOSClient:
+        if self._workos is None:
+            raise AuthNotConnectedError()
+        return self._workos
+
     # ------------------------------------------------------------------
-    # Org id resolution
+    # Org resolution (org_id or slug)
     #
     # The WorkOS org id is the canonical handle everywhere — it's what
     # JWTs carry, what the WorkOS API expects, and what app FKs target.
     # The local ``WorkOSOrganization`` table is purely a slug → id index
-    # (its UNIQUE constraint also enforces slug uniqueness across orgs).
+    # (its UNIQUE constraint also enforces slug uniqueness across orgs),
+    # and its ``id`` column IS the WorkOS org id.
     #
-    # When callers pass ``org_id=``, we use it directly with no DB hit.
-    # When they pass ``slug=``, we look up the matching id locally.
+    # Admin methods address an org by exactly one of ``org_id`` / ``slug``.
+    # When ``org_id`` is given it IS the WorkOS id — used directly with no
+    # DB round-trip. When ``slug`` is given, ``_resolve_slug`` reads the
+    # local index (``slug = $1``) and returns the row's ``id`` (the WorkOS
+    # org id), or ``None`` when nothing maps that slug.
     #
     # The slug VALUE itself comes from WorkOS org metadata, written by
     # ``create_org`` / ``update_org`` and read straight off the returned
     # org object — no DB hit needed for the id → slug direction.
     # ------------------------------------------------------------------
 
-    async def _resolve_workos_org_id(
-        self,
-        *,
-        org_id: str | uuid.UUID | None,
-        slug: str | None,
-    ) -> str | None:
-        """Resolve (org_id, slug) → the WorkOS org id.
+    async def _resolve_slug(self, slug: str) -> str | None:
+        """Resolve *slug* → the WorkOS org id via the local index, or ``None``.
 
-        Exactly one of ``org_id`` / ``slug`` must be provided. Returns
-        the WorkOS-string id, or ``None`` when ``slug`` was given but no
-        matching local row exists. Raises ``ValueError`` on bad input.
-
-        The ``org_id`` path does NOT hit the database — passthrough only.
-        Slug paths read one row from the local table.
+        Reads one row from the local slug index matching ``slug = $1`` and
+        returns the row's ``id`` (the WorkOS org id), or ``None`` when no
+        local row maps the given slug.
         """
-        if (org_id is None) == (slug is None):
-            raise ValueError("Provide exactly one of org_id= or slug=")
-        if slug is not None:
-            row = await (
-                self._db()
-                .select(WorkOSOrganization)
-                .where(WorkOSOrganization.slug == slug)
-                .first_or_none()
-            )
-            return row.id if row else None
-        return str(org_id)
+        row = await (
+            self._db()
+            .select(WorkOSOrganization)
+            .where(WorkOSOrganization.slug == slug)
+            .first_or_none()
+        )
+        return row.id if row else None
+
+    async def _workos_id(self, org_id: str | None, slug: str | None) -> str | None:
+        """Resolve an ``org_id``/``slug`` reference to a WorkOS org id, or ``None``.
+
+        Callers validate the reference with :meth:`_check_org_ref` first. An
+        ``org_id`` is the WorkOS id itself (no DB hit); a ``slug`` is looked up
+        in the local index, yielding ``None`` when no row maps it.
+        """
+        if org_id is not None:
+            return org_id
+        assert slug is not None
+        return await self._resolve_slug(slug)
 
     # ------------------------------------------------------------------
-    # Mappers
+    # Mappers (single source of truth)
     #
-    # Conversion from WorkOS API objects to our public types is inlined
-    # at each call site rather than extracted into helpers. The shape is
-    # uniform — read the raw fields, normalise dates/metadata, build the
-    # dataclass — and inlining keeps each method readable end-to-end.
-    # The price is some duplication; the gain is no indirection.
+    # WorkOS API objects are mapped to our public dataclasses here rather
+    # than inline at every call site. The shape is uniform across get /
+    # update / sign-in / list, so one helper kills the duplication.
     # ------------------------------------------------------------------
 
-    def _cursor_result[T](self, items: list[T], list_metadata: Any) -> CursorResult[T]:
-        """Build a CursorResult from a WorkOS list response."""
-        after = getattr(list_metadata, "after", None)
-        return CursorResult(data=items, has_more=after is not None, next_cursor=after)
+    def _to_identity(self, user: Any) -> Identity:
+        """Build an ``Identity`` from a WorkOS user object.
+
+        WorkOS metadata is ``Dict[str, str]``, so booleans round-trip as
+        ``"true"``/``"false"`` strings — compare explicitly. ``disabled``
+        mirrors the old ``is_active = email_verified`` rule (inverted): an
+        unverified WorkOS user is treated as disabled.
+        """
+        metadata = dict(user.metadata)
+        return Identity(
+            id=user.id,
+            tenant_id=None,
+            email=user.email,
+            email_verified=user.email_verified,
+            phone=None,
+            phone_verified=False,
+            is_anonymous=False,
+            disabled=not user.email_verified,
+            roles=(metadata.get("role", "default"),),
+            created_at=datetime.fromisoformat(user.created_at),
+            updated_at=datetime.fromisoformat(user.updated_at),
+            last_sign_in_at=(
+                datetime.fromisoformat(user.last_sign_in_at)
+                if user.last_sign_in_at
+                else None
+            ),
+            metadata=metadata,
+        )
+
+    def _to_token_set(self, resp: Any) -> TokenSet:
+        """Build a ``TokenSet`` from a WorkOS authentication response."""
+        claims = pyjwt.decode(resp.access_token, options={"verify_signature": False})
+        expires_at = datetime.fromtimestamp(claims["exp"], tz=UTC)
+        expires_in = max(int(expires_at.timestamp() - datetime.now(UTC).timestamp()), 0)
+        return TokenSet(
+            access_token=resp.access_token,
+            refresh_token=resp.refresh_token,
+            id_token=None,
+            token_type="bearer",
+            expires_in=expires_in,
+            expires_at=expires_at,
+        )
+
+    def _to_org(self, org: Any) -> Org:
+        """Build an ``Org`` from a WorkOS organization object."""
+        return Org(
+            id=org.id,
+            tenant_id=None,
+            name=org.name,
+            slug=org.metadata.get("slug", ""),
+            created_at=datetime.fromisoformat(org.created_at),
+            updated_at=datetime.fromisoformat(org.updated_at),
+            metadata=dict(org.metadata),
+        )
+
+    def _to_member(self, membership: Any) -> OrgMember:
+        """Build an ``OrgMember`` from a WorkOS membership object."""
+        return OrgMember(
+            org_id=membership.organization_id,
+            user_id=membership.user_id,
+            role=membership.role["slug"],
+            created_at=datetime.fromisoformat(membership.created_at),
+            updated_at=datetime.fromisoformat(membership.updated_at),
+        )
+
+    def _completed(self, resp: Any) -> AuthOutcome:
+        """Build a ``COMPLETE`` outcome (identity + tokens) from an auth response.
+
+        The token decode is the only system-vs-user distinction left in the
+        flows: a provider response carrying a malformed access token is a
+        backend bug, not a user error, so it raises rather than returning a
+        failure outcome.
+        """
+        try:
+            tokens = self._to_token_set(resp)
+        except pyjwt.exceptions.InvalidTokenError as e:
+            raise InvalidTokenError(f"WorkOS returned a malformed token: {e}") from e
+        return AuthOutcome(
+            status=AuthStatus.COMPLETE,
+            identity=self._to_identity(resp.user),
+            tokens=tokens,
+        )
 
     # ------------------------------------------------------------------
-    # Authentication
+    # Authentication / runtime
     # ------------------------------------------------------------------
 
-    async def authenticate(self, request: AuthRequest) -> SessionInfo | None:
-        """Verify a WorkOS JWT from the Authorization header."""
+    async def verify_token(self, token: str) -> Session | None:
+        """Verify a WorkOS JWT against the JWKS and return its session."""
         if self._jwks_client is None:
             raise AuthNotConnectedError()
-
-        auth_header = request.headers.get("authorization") or request.headers.get(
-            "Authorization"
-        )
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return None
-
-        token = auth_header[7:]
 
         try:
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
@@ -182,529 +270,397 @@ class WorkOSAuthClient(BaseAuthClient):
         except (pyjwt.exceptions.PyJWKClientError, pyjwt.exceptions.InvalidTokenError):
             return None
 
-        return SessionInfo(
+        org_id = claims.get("org_id")
+        role = claims.get("role", "default")
+        return Session(
             user_id=claims["sub"],
             session_id=claims.get("sid", claims["sub"]),
-            role=claims.get("role", "default"),
+            tenant_id=None,
+            org_id=org_id,
+            org_role=role if org_id else None,
+            roles=(role,),
+            scopes=(),
+            is_anonymous=False,
+            mfa=MFAStatus(enrolled=False, satisfied=False, factor_types=()),
+            issued_at=datetime.fromtimestamp(claims["iat"], tz=UTC),
             expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC),
-            metadata={},
-            org_id=claims.get("org_id"),
-            org_role=claims.get("role") if claims.get("org_id") else None,
+            claims=claims,
         )
 
     # ------------------------------------------------------------------
     # User management
     # ------------------------------------------------------------------
 
-    async def get_user(self, user_id: str | uuid.UUID) -> UserInfo:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+    async def get_user(self, user_id: str) -> Identity:
+        client = self._client()
         try:
-            user = await self._workos.user_management.get_user(user_id=str(user_id))
+            user = await client.user_management.get_user(user_id=str(user_id))
         except workos_exc.NotFoundException as e:
             raise UserNotFoundError(f"User {user_id!r} not found") from e
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS get_user failed: {e}") from e
-        return UserInfo(
-            id=user.id,
-            email=user.email,
-            first_name=user.first_name,
-            last_name=user.last_name,
-            image_url=user.profile_picture_url,
-            role=user.metadata.get("role", "default"),
-            is_active=user.email_verified,
-            # WorkOS metadata is Dict[str, str], so booleans round-trip as
-            # "true"/"false" strings — compare explicitly rather than relying
-            # on truthiness (a stored "false" would have been truthy).
-            is_superuser=user.metadata.get("is_superuser") == "true",
-            email_confirmed_at=(
-                datetime.fromisoformat(user.created_at) if user.email_verified else None
-            ),
-            last_sign_in_at=(
-                datetime.fromisoformat(user.last_sign_in_at)
-                if user.last_sign_in_at
-                else None
-            ),
-            created_at=datetime.fromisoformat(user.created_at),
-            updated_at=datetime.fromisoformat(user.updated_at),
-            metadata=dict(user.metadata),
-        )
+        return self._to_identity(user)
 
-    async def list_users(
-        self, *, limit: int | None = None, offset: int | None = None
-    ) -> list[UserInfo]:
-        raise NotImplementedError(
-            "WorkOS uses cursor-based pagination. Use list_users_by_cursor() instead."
-        )
-
-    async def update_user(
+    async def find_user(
         self,
         *,
-        user_id: str | uuid.UUID,
+        user_id: str | None = None,
         email: str | None = None,
-        **kwargs: Any,
-    ) -> UserInfo:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+        phone: str | None = None,
+    ) -> Identity | None:
+        """Find a user by a unique key; ``None`` if no match.
+
+        Provide exactly one of ``user_id`` / ``email`` / ``phone``. WorkOS has
+        no phone directory, so a ``phone=`` lookup always resolves to ``None``.
+        """
+        provided = [k for k in (user_id, email, phone) if k is not None]
+        if len(provided) != 1:
+            raise ValueError("Provide exactly one of user_id=, email=, or phone=")
+        client = self._client()
+        if user_id is not None:
+            try:
+                return await self.get_user(user_id)
+            except UserNotFoundError:
+                return None
+        if phone is not None:
+            return None
+        try:
+            result = await client.user_management.list_users(email=email, limit=1)
+        except workos_exc.BaseRequestException as e:
+            raise AuthBackendError(f"WorkOS find_user failed: {e}") from e
+        users = list(result.data)
+        return self._to_identity(users[0]) if users else None
+
+    async def list_users(
+        self, *, limit: int = 50, cursor: str | None = None
+    ) -> Page[Identity]:
+        """List users using WorkOS's native cursor (``after``)."""
+        client = self._client()
+        kwargs: dict[str, Any] = {"limit": limit}
+        if cursor is not None:
+            kwargs["after"] = cursor
+        try:
+            result = await client.user_management.list_users(**kwargs)
+        except workos_exc.BaseRequestException as e:
+            raise AuthBackendError(f"WorkOS list_users failed: {e}") from e
+        after = getattr(result.list_metadata, "after", None)
+        return Page(
+            items=[self._to_identity(u) for u in result.data],
+            next_cursor=after,
+            has_more=after is not None,
+        )
+
+    async def update_user(self, *, user_id: str, **kwargs: Any) -> AuthResult[Identity]:
+        client = self._client()
         params: dict[str, Any] = {"user_id": str(user_id)}
-        if email is not None:
-            params["email"] = email
+        if kwargs.get("email") is not None:
+            params["email"] = kwargs.pop("email")
+        else:
+            kwargs.pop("email", None)
         for field in ("first_name", "last_name"):
             if field in kwargs:
                 params[field] = kwargs.pop(field)
         params["metadata"] = kwargs
         try:
-            user = await self._workos.user_management.update_user(**params)
-        except workos_exc.NotFoundException as e:
-            raise UserNotFoundError(f"User {user_id!r} not found") from e
+            user = await client.user_management.update_user(**params)
+        except workos_exc.NotFoundException:
+            return AuthResult(error=UserNotFoundError(f"User {user_id!r} not found"))
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS update_user failed: {e}") from e
-        return UserInfo(
-            id=user.id,
-            email=user.email,
-            first_name=user.first_name,
-            last_name=user.last_name,
-            image_url=user.profile_picture_url,
-            role=user.metadata.get("role", "default"),
-            is_active=user.email_verified,
-            is_superuser=user.metadata.get("is_superuser") == "true",
-            email_confirmed_at=(
-                datetime.fromisoformat(user.created_at) if user.email_verified else None
-            ),
-            last_sign_in_at=(
-                datetime.fromisoformat(user.last_sign_in_at)
-                if user.last_sign_in_at
-                else None
-            ),
-            created_at=datetime.fromisoformat(user.created_at),
-            updated_at=datetime.fromisoformat(user.updated_at),
-            metadata=dict(user.metadata),
-        )
+        return AuthResult(value=self._to_identity(user))
 
-    async def delete_user(self, user_id: str | uuid.UUID) -> bool:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+    async def delete_user(self, user_id: str) -> bool:
+        client = self._client()
         try:
-            await self._workos.user_management.delete_user(user_id=str(user_id))
+            await client.user_management.delete_user(user_id=str(user_id))
         except workos_exc.NotFoundException:
             return False
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS delete_user failed: {e}") from e
         return True
 
-    async def count_users(self) -> int:
-        raise NotImplementedError(
-            "WorkOS does not support count_users. "
-            "Use list_users_by_cursor() to paginate."
-        )
-
     # ------------------------------------------------------------------
     # Sessions
     # ------------------------------------------------------------------
 
     async def list_sessions(
-        self,
-        *,
-        user_id: str | uuid.UUID | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[SessionInfo]:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+        self, *, user_id: str | None = None, limit: int = 50, cursor: str | None = None
+    ) -> Page[Session]:
+        """List a user's active sessions (WorkOS requires a ``user_id``).
+
+        Without a ``user_id`` WorkOS has nothing to enumerate, so this returns
+        an empty page.
+        """
+        client = self._client()
         if user_id is None:
-            return []
-        kwargs: dict[str, Any] = {"user_id": str(user_id)}
-        if limit is not None:
-            kwargs["limit"] = limit
+            return Page(items=[], next_cursor=None, has_more=False)
+        kwargs: dict[str, Any] = {"user_id": str(user_id), "limit": limit}
+        if cursor is not None:
+            kwargs["after"] = cursor
         try:
-            result = await self._workos.user_management.list_sessions(**kwargs)
+            result = await client.user_management.list_sessions(**kwargs)
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS list_sessions failed: {e}") from e
-
         sessions = [
-            SessionInfo(
-                user_id=session.user_id,
-                session_id=session.id,
-                role="default",
-                expires_at=datetime.fromisoformat(session.expires_at),
-                metadata={},
-                org_id=None,
+            Session(
+                user_id=s.user_id,
+                session_id=s.id,
+                tenant_id=None,
+                org_id=getattr(s, "organization_id", None),
                 org_role=None,
+                roles=(),
+                scopes=(),
+                is_anonymous=False,
+                mfa=MFAStatus(enrolled=False, satisfied=False, factor_types=()),
+                issued_at=datetime.fromisoformat(s.created_at),
+                expires_at=datetime.fromisoformat(s.expires_at),
+                claims={},
             )
-            for session in result.data
+            for s in result.data
         ]
-        return sessions
+        after = getattr(result.list_metadata, "after", None)
+        return Page(items=sessions, next_cursor=after, has_more=after is not None)
 
-    async def sign_out(self, session_id: str | uuid.UUID) -> None:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+    async def revoke_session(self, session_id: str) -> AuthResult[bool]:
+        client = self._client()
         try:
-            await self._workos.user_management.revoke_session(
-                session_id=str(session_id)
-            )
+            await client.user_management.revoke_session(session_id=str(session_id))
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS revoke_session failed: {e}") from e
+        return AuthResult(value=True)
 
-    async def sign_out_all(self, user_id: str | uuid.UUID) -> None:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+    async def revoke_all_sessions(self, user_id: str) -> AuthResult[bool]:
+        client = self._client()
         try:
-            result = await self._workos.user_management.list_sessions(
-                user_id=str(user_id)
-            )
+            result = await client.user_management.list_sessions(user_id=str(user_id))
             for session in result.data:
-                await self._workos.user_management.revoke_session(session_id=session.id)
+                await client.user_management.revoke_session(session_id=session.id)
         except workos_exc.BaseRequestException as e:
-            raise AuthBackendError(f"WorkOS sign_out_all failed: {e}") from e
+            raise AuthBackendError(f"WorkOS revoke_all_sessions failed: {e}") from e
+        return AuthResult(value=True)
 
     # ------------------------------------------------------------------
-    # Sign-up / sign-in
+    # Sign-up / sign-in (password)
     # ------------------------------------------------------------------
 
     async def sign_up(
         self,
         *,
-        email: str,
-        password: str,
-        request: AuthRequest | None = None,
-        confirmation_url: str | None = None,
-        confirmation_subject: str = "Confirm your email address",
-        user_agent: str | None = None,
-        ip_address: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+        password: str | None = None,
         **kwargs: Any,
-    ) -> AuthResult:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+    ) -> AuthOutcome:
+        if email is None or password is None:
+            raise ValueError("WorkOS sign_up requires both email= and password=")
+        client = self._client()
         try:
-            await self._workos.user_management.create_user(
+            await client.user_management.create_user(
                 email=email,
                 password=password,
                 first_name=kwargs.get("first_name"),
                 last_name=kwargs.get("last_name"),
             )
-        except workos_exc.ConflictException as e:
-            raise EmailAlreadyExistsError(email) from e
+        except workos_exc.ConflictException:
+            return AuthOutcome(
+                status=AuthStatus.EMAIL_EXISTS,
+                error=EmailAlreadyExistsError(email),
+            )
         # WorkOS sometimes signals duplicate-email as 422 BadRequest depending
         # on settings; treat that as the same conflict to keep one error shape.
-        except workos_exc.BadRequestException as e:
-            raise EmailAlreadyExistsError(email) from e
+        except workos_exc.BadRequestException:
+            return AuthOutcome(
+                status=AuthStatus.EMAIL_EXISTS,
+                error=EmailAlreadyExistsError(email),
+            )
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS create_user failed: {e}") from e
         try:
-            auth_resp = await self._workos.user_management.authenticate_with_password(
+            auth_resp = await client.user_management.authenticate_with_password(
                 email=email,
                 password=password,
-                ip_address=ip_address,
-                user_agent=user_agent,
             )
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS post-signup auth failed: {e}") from e
-        try:
-            claims = pyjwt.decode(
-                auth_resp.access_token, options={"verify_signature": False}
-            )
-        except pyjwt.exceptions.InvalidTokenError as e:
-            raise InvalidTokenError(f"WorkOS post-signup auth failed: {e}") from e
-
-        return AuthResult(
-            user=UserInfo(
-                id=auth_resp.user.id,
-                email=auth_resp.user.email,
-                first_name=auth_resp.user.first_name,
-                last_name=auth_resp.user.last_name,
-                image_url=auth_resp.user.profile_picture_url,
-                role=auth_resp.user.metadata.get("role", "default"),
-                is_active=auth_resp.user.email_verified,
-                is_superuser=auth_resp.user.metadata.get("is_superuser") == "true",
-                email_confirmed_at=(
-                    datetime.fromisoformat(auth_resp.user.created_at)
-                    if auth_resp.user.email_verified
-                    else None
-                ),
-                last_sign_in_at=(
-                    datetime.fromisoformat(auth_resp.user.last_sign_in_at)
-                    if auth_resp.user.last_sign_in_at
-                    else None
-                ),
-                created_at=datetime.fromisoformat(auth_resp.user.created_at),
-                updated_at=datetime.fromisoformat(auth_resp.user.updated_at),
-                metadata=auth_resp.user.metadata,
-            ),
-            tokens=TokenPair(
-                access_token=auth_resp.access_token,
-                refresh_token=auth_resp.refresh_token,
-                expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC),
-            ),
-        )
+        return self._completed(auth_resp)
 
     async def sign_in_with_password(
-        self,
-        email: str,
-        password: str,
-        *,
-        request: AuthRequest | None = None,
-        first_name: str | None = None,
-        last_name: str | None = None,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
-    ) -> AuthResult:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+        self, *, identifier: str, password: str
+    ) -> AuthOutcome:
+        client = self._client()
         try:
-            resp = await self._workos.user_management.authenticate_with_password(
-                email=email,
+            resp = await client.user_management.authenticate_with_password(
+                email=identifier,
                 password=password,
-                ip_address=ip_address,
-                user_agent=user_agent,
             )
-        except workos_exc.AuthenticationException as e:
-            raise InvalidCredentialsError() from e
+        except workos_exc.AuthenticationException:
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS,
+                error=InvalidCredentialsError(),
+            )
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(
                 f"WorkOS authenticate_with_password failed: {e}"
             ) from e
-        try:
-            claims = pyjwt.decode(
-                resp.access_token, options={"verify_signature": False}
-            )
-        except pyjwt.exceptions.InvalidTokenError as e:
-            raise InvalidTokenError(
-                f"WorkOS authenticate_with_password failed: {e}"
-            ) from e
+        return self._completed(resp)
 
-        return AuthResult(
-            user=UserInfo(
-                id=resp.user.id,
-                email=resp.user.email,
-                first_name=resp.user.first_name,
-                last_name=resp.user.last_name,
-                image_url=resp.user.profile_picture_url,
-                role=resp.user.metadata.get("role", "default"),
-                is_active=resp.user.email_verified,
-                is_superuser=resp.user.metadata.get("is_superuser") == "true",
-                email_confirmed_at=(
-                    datetime.fromisoformat(resp.user.created_at)
-                    if resp.user.email_verified
-                    else None
-                ),
-                last_sign_in_at=(
-                    datetime.fromisoformat(resp.user.last_sign_in_at)
-                    if resp.user.last_sign_in_at
-                    else None
-                ),
-                created_at=datetime.fromisoformat(resp.user.created_at),
-                updated_at=datetime.fromisoformat(resp.user.updated_at),
-                metadata=resp.user.metadata,
-            ),
-            tokens=TokenPair(
-                access_token=resp.access_token,
-                refresh_token=resp.refresh_token,
-                expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC),
-            ),
-        )
+    # ------------------------------------------------------------------
+    # Magic link
+    # ------------------------------------------------------------------
 
-    async def sign_in_with_magic_link(self, *, email: str, magic_link_url: str) -> None:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+    async def send_magic_link(self, *, email: str, redirect_url: str) -> None:
+        client = self._client()
         try:
-            await self._workos.user_management.create_magic_auth(email=email)
+            await client.user_management.create_magic_auth(email=email)
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS create_magic_auth failed: {e}") from e
 
     async def verify_magic_link(
-        self,
-        token: str,
-        *,
-        email: str | None = None,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
-    ) -> AuthResult:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+        self, token: str, *, email: str | None = None
+    ) -> AuthOutcome:
+        client = self._client()
         if email is None:
             raise ValueError(
                 "WorkOS requires email for magic auth verification. "
                 "Pass email= to verify_magic_link()."
             )
         try:
-            resp = await self._workos.user_management.authenticate_with_magic_auth(
+            resp = await client.user_management.authenticate_with_magic_auth(
                 code=token,
                 email=email,
-                ip_address=ip_address,
-                user_agent=user_agent,
             )
-        except workos_exc.AuthenticationException as e:
-            raise InvalidTokenError("Magic link is invalid or expired") from e
+        except workos_exc.AuthenticationException:
+            return AuthOutcome(
+                status=AuthStatus.INVALID_TOKEN,
+                error=InvalidTokenError("Magic link is invalid or expired"),
+            )
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(
                 f"WorkOS authenticate_with_magic_auth failed: {e}"
             ) from e
-        claims = pyjwt.decode(resp.access_token, options={"verify_signature": False})
-        user = resp.user
-        return AuthResult(
-            user=UserInfo(
-                id=user.id,
-                email=user.email,
-                first_name=user.first_name,
-                last_name=user.last_name,
-                image_url=user.profile_picture_url,
-                role=user.metadata.get("role", "default"),
-                is_active=user.email_verified,
-                is_superuser=user.metadata.get("is_superuser") == "true",
-                email_confirmed_at=(
-                    datetime.fromisoformat(user.created_at)
-                    if user.email_verified
-                    else None
-                ),
-                last_sign_in_at=(
-                    datetime.fromisoformat(user.last_sign_in_at)
-                    if user.last_sign_in_at
-                    else None
-                ),
-                created_at=datetime.fromisoformat(user.created_at),
-                updated_at=datetime.fromisoformat(user.updated_at),
-                metadata=dict(user.metadata),
-            ),
-            tokens=TokenPair(
-                access_token=resp.access_token,
-                refresh_token=resp.refresh_token,
-                expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC),
-            ),
-        )
+        return self._completed(resp)
 
     # ------------------------------------------------------------------
-    # OAuth
+    # Redirect flows: OAuth (provider) + enterprise SSO (organization/connection)
     # ------------------------------------------------------------------
 
-    def get_oauth_authorization_url(
+    def authorization_url(
         self,
-        provider: str,
+        *,
+        provider: str | AuthProvider | None = None,
+        organization: str | None = None,
+        connection: str | None = None,
+        domain: str | None = None,
         state: str,
-        scopes: list[str] | None = None,
         redirect_uri: str | None = None,
+        scopes: list[str] | None = None,
     ) -> str:
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        workos_provider = _PROVIDER_MAP.get(str(provider), str(provider))
+        """Build the WorkOS redirect URL for social OAuth or enterprise SSO.
+
+        Pass ``provider`` for social/OIDC; pass ``organization`` /
+        ``connection`` / ``domain`` for an SSO connection. WorkOS brokers both
+        through one ``get_authorization_url`` call.
+        """
+        client = self._client()
         kwargs: dict[str, Any] = {
-            "provider": workos_provider,
             "redirect_uri": redirect_uri or self._config.redirect_uri or "",
             "state": state,
         }
+        if provider is not None:
+            name = provider.value if isinstance(provider, AuthProvider) else provider
+            kwargs["provider"] = _PROVIDER_MAP.get(name, name)
+        if organization is not None:
+            kwargs["organization_id"] = organization
+        if connection is not None:
+            kwargs["connection_id"] = connection
+        if domain is not None:
+            kwargs["domain_hint"] = domain
         if scopes is not None:
             kwargs["provider_scopes"] = scopes
-        return self._workos.user_management.get_authorization_url(**kwargs)
+        return client.user_management.get_authorization_url(**kwargs)
 
     async def sign_in_with_oauth(
         self,
-        provider: str,
         code: str,
         *,
+        provider: str | AuthProvider | None = None,
         redirect_uri: str | None = None,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
-    ) -> AuthResult:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+    ) -> AuthOutcome:
+        """Exchange a WorkOS authorization code for a session."""
+        return await self._authenticate_with_code(code, op="sign_in_with_oauth")
+
+    async def sign_in_with_sso(
+        self, credential: str, *, redirect_uri: str | None = None
+    ) -> AuthOutcome:
+        """Complete enterprise SSO. WorkOS returns an org-scoped session.
+
+        WorkOS hands back an authorization ``code`` for the SSO callback, the
+        same artifact as social OAuth, so both go through
+        ``authenticate_with_code``.
+        """
+        return await self._authenticate_with_code(credential, op="sign_in_with_sso")
+
+    async def _authenticate_with_code(self, code: str, *, op: str) -> AuthOutcome:
+        client = self._client()
         try:
-            resp = await self._workos.user_management.authenticate_with_code(
-                code=code,
-                ip_address=ip_address,
-                user_agent=user_agent,
+            resp = await client.user_management.authenticate_with_code(code=code)
+        except workos_exc.AuthenticationException:
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS,
+                error=InvalidCredentialsError("Authorization code rejected"),
             )
-        except workos_exc.AuthenticationException as e:
-            raise InvalidCredentialsError("OAuth code rejected") from e
         except workos_exc.BaseRequestException as e:
-            raise AuthBackendError(f"WorkOS authenticate_with_code failed: {e}") from e
-        claims = pyjwt.decode(resp.access_token, options={"verify_signature": False})
-        user = resp.user
-        return AuthResult(
-            user=UserInfo(
-                id=user.id,
-                email=user.email,
-                first_name=user.first_name,
-                last_name=user.last_name,
-                image_url=user.profile_picture_url,
-                role=user.metadata.get("role", "default"),
-                is_active=user.email_verified,
-                is_superuser=user.metadata.get("is_superuser") == "true",
-                email_confirmed_at=(
-                    datetime.fromisoformat(user.created_at)
-                    if user.email_verified
-                    else None
-                ),
-                last_sign_in_at=(
-                    datetime.fromisoformat(user.last_sign_in_at)
-                    if user.last_sign_in_at
-                    else None
-                ),
-                created_at=datetime.fromisoformat(user.created_at),
-                updated_at=datetime.fromisoformat(user.updated_at),
-                metadata=dict(user.metadata),
-            ),
-            tokens=TokenPair(
-                access_token=resp.access_token,
-                refresh_token=resp.refresh_token,
-                expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC),
-            ),
-        )
+            raise AuthBackendError(f"WorkOS {op} failed: {e}") from e
+        return self._completed(resp)
 
     # ------------------------------------------------------------------
     # Tokens
     # ------------------------------------------------------------------
 
-    async def refresh_token(self, refresh_token: str) -> TokenPair:
-        if self._workos is None:
-            raise AuthNotConnectedError()
+    async def refresh(self, refresh_token: str) -> AuthResult[TokenSet]:
+        client = self._client()
         try:
-            resp = await self._workos.user_management.authenticate_with_refresh_token(
+            resp = await client.user_management.authenticate_with_refresh_token(
                 refresh_token=refresh_token,
             )
         except (
             workos_exc.AuthenticationException,
             workos_exc.BadRequestException,
-        ) as e:
-            raise InvalidTokenError("Refresh token is invalid or expired") from e
+        ):
+            return AuthResult(
+                error=InvalidTokenError("Refresh token is invalid or expired")
+            )
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(
                 f"WorkOS authenticate_with_refresh_token failed: {e}"
             ) from e
-        claims = pyjwt.decode(
-            resp.access_token,
-            options={"verify_signature": False},
-        )
-        return TokenPair(
-            access_token=resp.access_token,
-            refresh_token=resp.refresh_token,
-            expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC),
-        )
+        return AuthResult(value=self._to_token_set(resp))
 
     # ------------------------------------------------------------------
     # Organizations
     # ------------------------------------------------------------------
 
     async def create_org(
-        self, *, name: str, slug: str, creator_id: str | uuid.UUID, **kwargs: Any
-    ) -> OrgInfo:
-        """Create an org on WorkOS and record its local mapping.
+        self, *, name: str, slug: str, creator_id: str, **kwargs: Any
+    ) -> AuthResult[Org]:
+        """Create an org on WorkOS and record its local slug mapping.
 
-        WorkOS is created first so we can capture the workos_org_id for the
-        local row. If the local INSERT loses a slug race, we roll back the
-        WorkOS org so we never leave it dangling without a local mapping.
+        WorkOS is created first so we can capture the org id for the local
+        row. If the local INSERT loses a slug race, we roll back the WorkOS
+        org so we never leave it dangling without a local mapping.
 
-        Raises:
-            OrgSlugConflictError: Slug is already taken (locally or on WorkOS).
+        On success, ``result.value`` is the new :class:`Org`. Expected failure:
+        :class:`OrgSlugConflictError` (slug already taken locally or on WorkOS)
+        is attached to ``result.error``.
         """
-        if self._workos is None:
-            raise AuthNotConnectedError()
-
+        client = self._client()
         try:
-            org = await self._workos.organizations.create_organization(
+            org = await client.organizations.create_organization(
                 name=name,
                 metadata={"slug": slug},
             )
-        except workos_exc.ConflictException as e:
-            raise OrgSlugConflictError(slug) from e
+        except workos_exc.ConflictException:
+            return AuthResult(error=OrgSlugConflictError(slug))
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS create_organization failed: {e}") from e
 
@@ -720,33 +676,19 @@ class WorkOSAuthClient(BaseAuthClient):
             if local is None:
                 # Slug claimed by a concurrent request between the WorkOS
                 # create and the local insert. Roll back the WorkOS org.
-                await self._workos.organizations.delete_organization(
-                    organization_id=org.id,
-                )
-                raise OrgSlugConflictError(slug)
+                await client.organizations.delete_organization(organization_id=org.id)
+                return AuthResult(error=OrgSlugConflictError(slug))
 
-            await self._workos.user_management.create_organization_membership(
+            await client.user_management.create_organization_membership(
                 organization_id=org.id,
                 user_id=str(creator_id),
                 role_slug="owner",
             )
-            return OrgInfo(
-                id=org.id,
-                name=org.name,
-                slug=org.metadata.get("slug", ""),
-                metadata=dict(org.metadata),
-                created_at=datetime.fromisoformat(org.created_at),
-                updated_at=datetime.fromisoformat(org.updated_at),
-            )
-        except OrgSlugConflictError:
-            # Already cleaned up above; re-raise without double-deleting.
-            raise
+            return AuthResult(value=self._to_org(org))
         except Exception:
             # Anything past the local insert failed (membership creation,
             # network error). Tear both sides down so callers can retry.
-            await self._workos.organizations.delete_organization(
-                organization_id=org.id,
-            )
+            await client.organizations.delete_organization(organization_id=org.id)
             await (
                 self._db()
                 .delete(WorkOSOrganization)
@@ -756,111 +698,153 @@ class WorkOSAuthClient(BaseAuthClient):
             raise
 
     async def get_org(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-    ) -> OrgInfo:
-        """Look up an org by id (passthrough) or slug (local lookup)."""
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        workos_id = await self._resolve_workos_org_id(org_id=org_id, slug=slug)
+        self, *, org_id: str | None = None, slug: str | None = None
+    ) -> AuthResult[Org]:
+        """Get an org by id or slug (pass exactly one).
+
+        ``org_id`` is the WorkOS id, used directly. ``slug`` is resolved to a
+        WorkOS id via the local index.
+
+        Expected failure: :class:`OrgNotFoundError` attached to ``result.error``
+        when nothing matches.
+        """
+        self._check_org_ref(org_id, slug)
+        client = self._client()
+        workos_id = await self._workos_id(org_id, slug)
         if workos_id is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
+            return AuthResult(
+                error=OrgNotFoundError(f"No org matching {org_id or slug!r}")
+            )
         try:
-            org = await self._workos.organizations.get_organization(
+            org_obj = await client.organizations.get_organization(
                 organization_id=workos_id,
             )
-        except workos_exc.NotFoundException as e:
-            raise OrgNotFoundError(f"No org with id {workos_id!r}") from e
+        except workos_exc.NotFoundException:
+            return AuthResult(error=OrgNotFoundError(f"No org with id {workos_id!r}"))
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS get_organization failed: {e}") from e
-        return OrgInfo(
-            id=org.id,
-            name=org.name,
-            slug=org.metadata.get("slug", ""),
-            metadata=dict(org.metadata),
-            created_at=datetime.fromisoformat(org.created_at),
-            updated_at=datetime.fromisoformat(org.updated_at),
-        )
+        return AuthResult(value=self._to_org(org_obj))
+
+    async def list_orgs(
+        self, *, user_id: str | None = None, limit: int = 50, cursor: str | None = None
+    ) -> Page[Org]:
+        """List orgs (cursor-paginated), scoped to a member if ``user_id`` given.
+
+        Slugs come from each org's WorkOS metadata; orgs without a slug in
+        metadata surface with an empty slug rather than being filtered.
+        """
+        client = self._client()
+
+        if user_id is None:
+            kwargs: dict[str, Any] = {"limit": limit}
+            if cursor is not None:
+                kwargs["after"] = cursor
+            try:
+                result = await client.organizations.list_organizations(**kwargs)
+            except workos_exc.BaseRequestException as e:
+                raise AuthBackendError(f"WorkOS list_organizations failed: {e}") from e
+            after = getattr(result.list_metadata, "after", None)
+            return Page(
+                items=[self._to_org(o) for o in result.data],
+                next_cursor=after,
+                has_more=after is not None,
+            )
+
+        # Memberships only carry org ids, so fetch each org for its
+        # name/metadata. WorkOS drives the membership cursor.
+        mkwargs: dict[str, Any] = {"user_id": str(user_id), "limit": limit}
+        if cursor is not None:
+            mkwargs["after"] = cursor
+        try:
+            memberships = await client.user_management.list_organization_memberships(
+                **mkwargs
+            )
+        except workos_exc.BaseRequestException as e:
+            raise AuthBackendError(
+                f"WorkOS list_organization_memberships failed: {e}"
+            ) from e
+        out: list[Org] = []
+        for m in memberships.data:
+            try:
+                org = await client.organizations.get_organization(
+                    organization_id=m.organization_id,
+                )
+            except workos_exc.NotFoundException:
+                continue
+            except workos_exc.BaseRequestException as e:
+                raise AuthBackendError(f"WorkOS get_organization failed: {e}") from e
+            out.append(self._to_org(org))
+        after = getattr(memberships.list_metadata, "after", None)
+        return Page(items=out, next_cursor=after, has_more=after is not None)
 
     async def update_org(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
-        org_slug: str | None = None,
-        name: str | None = None,
+        org_id: str | None = None,
         slug: str | None = None,
+        name: str | None = None,
+        new_slug: str | None = None,
         **kwargs: Any,
-    ) -> OrgInfo:
-        """Update name and/or slug.
+    ) -> AuthResult[Org]:
+        """Update an org's name and/or slug. Address by ``org_id`` or ``slug`` (one).
 
-        Identify by ``org_id`` or ``org_slug``; ``slug`` is the new value.
+        ``name`` / ``new_slug`` are the *new* values to assign (``new_slug`` is
+        spelled distinctly from the addressing ``slug``); the local slug-index
+        row is updated first so a uniqueness conflict fails fast before touching
+        WorkOS.
 
-        Raises:
-            OrgNotFoundError: Org identifier did not resolve.
-            OrgSlugConflictError: New slug is already taken.
+        Expected failures attached to ``result.error``: :class:`OrgNotFoundError`
+        (reference did not resolve) and :class:`OrgSlugConflictError` (new slug
+        is already taken).
         """
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        workos_id = await self._resolve_workos_org_id(org_id=org_id, slug=org_slug)
+        self._check_org_ref(org_id, slug)
+        client = self._client()
+        workos_id = await self._workos_id(org_id, slug)
         if workos_id is None:
-            raise OrgNotFoundError(f"No org with slug {org_slug!r}")
+            return AuthResult(
+                error=OrgNotFoundError(f"No org matching {org_id or slug!r}")
+            )
 
-        if slug is not None:
-            # Local slug update first — fails fast on uniqueness conflict
-            # before we touch WorkOS.
+        if new_slug is not None:
             try:
                 await (
                     self._db()
                     .update(WorkOSOrganization)
-                    .set(slug=slug)
+                    .set(slug=new_slug)
                     .where(WorkOSOrganization.id == workos_id)
                     .execute()
                 )
-            except Exception as e:
-                raise OrgSlugConflictError(slug) from e
+            except Exception:
+                return AuthResult(error=OrgSlugConflictError(new_slug))
 
         params: dict[str, Any] = {"organization_id": workos_id}
         if name is not None:
             params["name"] = name
-        if slug is not None:
-            params["metadata"] = {"slug": slug}
+        if new_slug is not None:
+            params["metadata"] = {"slug": new_slug}
         try:
-            org = await self._workos.organizations.update_organization(**params)
-        except workos_exc.NotFoundException as e:
-            raise OrgNotFoundError(f"No org with id {workos_id!r}") from e
+            org_obj = await client.organizations.update_organization(**params)
+        except workos_exc.NotFoundException:
+            return AuthResult(error=OrgNotFoundError(f"No org with id {workos_id!r}"))
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(f"WorkOS update_organization failed: {e}") from e
-
-        return OrgInfo(
-            id=org.id,
-            name=org.name,
-            slug=org.metadata.get("slug", ""),
-            metadata=dict(org.metadata),
-            created_at=datetime.fromisoformat(org.created_at),
-            updated_at=datetime.fromisoformat(org.updated_at),
-        )
+        return AuthResult(value=self._to_org(org_obj))
 
     async def delete_org(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
+        self, *, org_id: str | None = None, slug: str | None = None
     ) -> bool:
-        """Delete on WorkOS + locally. Cleans up local row even if WorkOS 404s.
+        """Delete on WorkOS + locally. Address by ``org_id`` or ``slug`` (one).
 
-        Returns ``False`` if the org cannot be found by id or slug.
+        Cleans up the local row even on a WorkOS 404. Returns ``False`` if the
+        org cannot be found (a given slug maps to no local row).
         """
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        workos_id = await self._resolve_workos_org_id(org_id=org_id, slug=slug)
+        self._check_org_ref(org_id, slug)
+        client = self._client()
+        workos_id = await self._workos_id(org_id, slug)
         if workos_id is None:
             return False
         try:
-            await self._workos.organizations.delete_organization(
-                organization_id=workos_id,
-            )
+            await client.organizations.delete_organization(organization_id=workos_id)
         except workos_exc.NotFoundException:
             # WorkOS already lost it. Still scrub the local mapping.
             pass
@@ -874,359 +858,150 @@ class WorkOSAuthClient(BaseAuthClient):
         )
         return True
 
-    async def list_orgs(
-        self,
-        *,
-        user_id: str | uuid.UUID | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[OrgInfo]:
-        """List orgs, scoped to a user's memberships if ``user_id`` is given.
-
-        Slugs come from each org's WorkOS metadata; orgs without a slug
-        in metadata surface with an empty slug rather than being filtered.
-        """
-        if self._workos is None:
-            raise AuthNotConnectedError()
-
-        if user_id is None:
-            kwargs: dict[str, Any] = {}
-            if limit is not None:
-                kwargs["limit"] = limit
-            try:
-                result = await self._workos.organizations.list_organizations(**kwargs)
-            except workos_exc.BaseRequestException as e:
-                raise AuthBackendError(f"WorkOS list_organizations failed: {e}") from e
-            return [
-                OrgInfo(
-                    id=o.id,
-                    name=o.name,
-                    slug=o.metadata.get("slug", ""),
-                    metadata=dict(o.metadata),
-                    created_at=datetime.fromisoformat(o.created_at),
-                    updated_at=datetime.fromisoformat(o.updated_at),
-                )
-                for o in result.data
-            ]
-
-        # Memberships only carry org ids, so fetch each org for its
-        # name/metadata. One WorkOS round-trip per org.
-        try:
-            memberships = (
-                await self._workos.user_management.list_organization_memberships(
-                    user_id=str(user_id),
-                )
-            )
-        except workos_exc.BaseRequestException as e:
-            raise AuthBackendError(
-                f"WorkOS list_organization_memberships failed: {e}"
-            ) from e
-        out: list[OrgInfo] = []
-        for m in memberships.data:
-            try:
-                org = await self._workos.organizations.get_organization(
-                    organization_id=m.organization_id,
-                )
-            except workos_exc.NotFoundException:
-                continue
-            except workos_exc.BaseRequestException as e:
-                raise AuthBackendError(f"WorkOS get_organization failed: {e}") from e
-            out.append(
-                OrgInfo(
-                    id=org.id,
-                    name=org.name,
-                    slug=org.metadata.get("slug", ""),
-                    metadata=dict(org.metadata),
-                    created_at=datetime.fromisoformat(org.created_at),
-                    updated_at=datetime.fromisoformat(org.updated_at),
-                )
-            )
-        return out
-
     # ------------------------------------------------------------------
     # Organization membership
     # ------------------------------------------------------------------
 
-    async def add_org_member(
+    async def add_member(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
+        user_id: str,
+        org_id: str | None = None,
         slug: str | None = None,
-        user_id: str | uuid.UUID,
         role: str = "member",
-    ) -> OrgMemberInfo:
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        workos_id = await self._resolve_workos_org_id(org_id=org_id, slug=slug)
+    ) -> AuthResult[OrgMember]:
+        """Add a user to an org (by id or slug).
+
+        Expected failures attached to ``result.error``:
+        :class:`OrgNotFoundError` (given slug matches no org) and
+        :class:`MemberAlreadyExistsError` (already a member).
+        """
+        self._check_org_ref(org_id, slug)
+        client = self._client()
+        workos_id = await self._workos_id(org_id, slug)
         if workos_id is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        try:
-            membership = (
-                await self._workos.user_management.create_organization_membership(
-                    organization_id=workos_id,
-                    user_id=str(user_id),
-                    role_slug=role,
-                )
+            return AuthResult(
+                error=OrgNotFoundError(f"No org matching {org_id or slug!r}")
             )
-        except workos_exc.ConflictException as e:
-            raise MemberAlreadyExistsError() from e
+        try:
+            membership = await client.user_management.create_organization_membership(
+                organization_id=workos_id,
+                user_id=str(user_id),
+                role_slug=role,
+            )
+        except workos_exc.ConflictException:
+            return AuthResult(error=MemberAlreadyExistsError())
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(
                 f"WorkOS create_organization_membership failed: {e}"
             ) from e
-        return OrgMemberInfo(
-            org_id=membership.organization_id,
-            user_id=membership.user_id,
-            role=membership.role["slug"],
-            created_at=datetime.fromisoformat(membership.created_at),
-            updated_at=datetime.fromisoformat(membership.updated_at),
-        )
+        return AuthResult(value=self._to_member(membership))
 
-    async def update_org_member(
+    async def update_member(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-        user_id: str | uuid.UUID,
+        user_id: str,
         role: str,
-    ) -> OrgMemberInfo:
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        workos_id = await self._resolve_workos_org_id(org_id=org_id, slug=slug)
+        org_id: str | None = None,
+        slug: str | None = None,
+    ) -> AuthResult[OrgMember]:
+        """Change a member's role in an org (by id or slug).
+
+        Expected failure attached to ``result.error``:
+        :class:`OrgMemberNotFoundError` (not a member, or the org slug matches
+        no org).
+        """
+        self._check_org_ref(org_id, slug)
+        client = self._client()
+        workos_id = await self._workos_id(org_id, slug)
         if workos_id is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
+            return AuthResult(
+                error=OrgMemberNotFoundError(f"No org matching {org_id or slug!r}")
+            )
         try:
-            memberships = (
-                await self._workos.user_management.list_organization_memberships(
-                    organization_id=workos_id,
-                    user_id=str(user_id),
-                )
+            memberships = await client.user_management.list_organization_memberships(
+                organization_id=workos_id,
+                user_id=str(user_id),
             )
             for m in memberships.data:
                 if m.user_id == str(user_id):
-                    updated = await (
-                        self._workos.user_management.update_organization_membership(
+                    updated = (
+                        await client.user_management.update_organization_membership(
                             organization_membership_id=m.id,
                             role_slug=role,
                         )
                     )
-                    return OrgMemberInfo(
-                        org_id=updated.organization_id,
-                        user_id=updated.user_id,
-                        role=updated.role["slug"],
-                        created_at=datetime.fromisoformat(updated.created_at),
-                        updated_at=datetime.fromisoformat(updated.updated_at),
-                    )
+                    return AuthResult(value=self._to_member(updated))
         except workos_exc.BaseRequestException as e:
-            raise AuthBackendError(f"WorkOS update_org_member failed: {e}") from e
-        raise OrgMemberNotFoundError(
-            f"User {user_id!r} is not a member of org {workos_id!r}"
+            raise AuthBackendError(f"WorkOS update_member failed: {e}") from e
+        return AuthResult(
+            error=OrgMemberNotFoundError(
+                f"User {user_id!r} is not a member of org {workos_id!r}"
+            )
         )
 
-    async def remove_org_member(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-        user_id: str | uuid.UUID,
-    ) -> bool:
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        workos_id = await self._resolve_workos_org_id(org_id=org_id, slug=slug)
+    async def remove_member(
+        self, *, user_id: str, org_id: str | None = None, slug: str | None = None
+    ) -> AuthResult[bool]:
+        """Remove a member from an org (by id or slug).
+
+        ``result.value`` is ``True`` if a row was removed, ``False`` if the
+        user wasn't a member (or a given slug matches no org). WorkOS doesn't
+        expose a last-owner constraint here, so :class:`LastOwnerError` isn't
+        produced by this backend.
+        """
+        self._check_org_ref(org_id, slug)
+        client = self._client()
+        workos_id = await self._workos_id(org_id, slug)
         if workos_id is None:
-            return False
+            return AuthResult(value=False)
         try:
-            memberships = (
-                await self._workos.user_management.list_organization_memberships(
-                    organization_id=workos_id,
-                    user_id=str(user_id),
-                )
+            memberships = await client.user_management.list_organization_memberships(
+                organization_id=workos_id,
+                user_id=str(user_id),
             )
             for m in memberships.data:
                 if m.user_id == str(user_id):
-                    await self._workos.user_management.delete_organization_membership(
+                    await client.user_management.delete_organization_membership(
                         organization_membership_id=m.id,
                     )
-                    return True
+                    return AuthResult(value=True)
         except workos_exc.BaseRequestException as e:
-            raise AuthBackendError(f"WorkOS remove_org_member failed: {e}") from e
-        return False
+            raise AuthBackendError(f"WorkOS remove_member failed: {e}") from e
+        return AuthResult(value=False)
 
-    async def list_org_members(
+    async def list_members(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
+        org_id: str | None = None,
         slug: str | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[OrgMemberInfo]:
-        raise NotImplementedError(
-            "WorkOS uses cursor-based pagination. "
-            "Use list_org_members_by_cursor() instead."
-        )
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> Page[OrgMember]:
+        """List members of an org (by id or slug) using WorkOS's native cursor.
 
-    async def get_org_member(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-        user_id: str | uuid.UUID,
-    ) -> OrgMemberInfo:
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        workos_id = await self._resolve_workos_org_id(org_id=org_id, slug=slug)
-        if workos_id is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        try:
-            memberships = (
-                await self._workos.user_management.list_organization_memberships(
-                    organization_id=workos_id,
-                    user_id=str(user_id),
-                )
-            )
-        except workos_exc.BaseRequestException as e:
-            raise AuthBackendError(
-                f"WorkOS list_organization_memberships failed: {e}"
-            ) from e
-        for m in memberships.data:
-            if m.user_id == str(user_id):
-                return OrgMemberInfo(
-                    org_id=m.organization_id,
-                    user_id=m.user_id,
-                    role=m.role["slug"],
-                    created_at=datetime.fromisoformat(m.created_at),
-                    updated_at=datetime.fromisoformat(m.updated_at),
-                )
-        raise OrgMemberNotFoundError(
-            f"User {user_id!r} is not a member of org {workos_id!r}"
-        )
-
-    # ------------------------------------------------------------------
-    # Cursor-based pagination
-    # ------------------------------------------------------------------
-
-    async def list_users_by_cursor(
-        self, *, limit: int = 10, after: str | None = None
-    ) -> CursorResult[UserInfo]:
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        kwargs: dict[str, Any] = {"limit": limit}
-        if after is not None:
-            kwargs["after"] = after
-        try:
-            result = await self._workos.user_management.list_users(**kwargs)
-        except workos_exc.BaseRequestException as e:
-            raise AuthBackendError(f"WorkOS list_users failed: {e}") from e
-        users = [
-            UserInfo(
-                id=u.id,
-                email=u.email,
-                first_name=u.first_name,
-                last_name=u.last_name,
-                image_url=u.profile_picture_url,
-                role=u.metadata.get("role", "default"),
-                is_active=u.email_verified,
-                is_superuser=u.metadata.get("is_superuser") == "true",
-                email_confirmed_at=(
-                    datetime.fromisoformat(u.created_at) if u.email_verified else None
-                ),
-                last_sign_in_at=(
-                    datetime.fromisoformat(u.last_sign_in_at)
-                    if u.last_sign_in_at
-                    else None
-                ),
-                created_at=datetime.fromisoformat(u.created_at),
-                updated_at=datetime.fromisoformat(u.updated_at),
-                metadata=dict(u.metadata),
-            )
-            for u in result.data
-        ]
-        return self._cursor_result(users, result.list_metadata)
-
-    async def list_sessions_by_cursor(
-        self,
-        *,
-        user_id: str | uuid.UUID,
-        limit: int = 10,
-        after: str | None = None,
-    ) -> CursorResult[Any]:
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        kwargs: dict[str, Any] = {"user_id": str(user_id), "limit": limit}
-        if after is not None:
-            kwargs["after"] = after
-        try:
-            result = await self._workos.user_management.list_sessions(**kwargs)
-        except workos_exc.BaseRequestException as e:
-            raise AuthBackendError(f"WorkOS list_sessions failed: {e}") from e
-        return self._cursor_result(list(result.data), result.list_metadata)
-
-    async def list_orgs_by_cursor(
-        self,
-        *,
-        user_id: str | uuid.UUID | None = None,
-        limit: int = 10,
-        after: str | None = None,
-    ) -> CursorResult[OrgInfo]:
-        """Cursor-paginated org list.
-
-        WorkOS drives the cursor; slugs come from each org's metadata.
-        Orgs missing a slug in metadata surface with an empty slug.
+        Raises:
+            OrgNotFoundError: A given slug matches no org.
         """
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        kwargs: dict[str, Any] = {"limit": limit}
-        if after is not None:
-            kwargs["after"] = after
-        try:
-            result = await self._workos.organizations.list_organizations(**kwargs)
-        except workos_exc.BaseRequestException as e:
-            raise AuthBackendError(f"WorkOS list_organizations failed: {e}") from e
-        orgs = [
-            OrgInfo(
-                id=o.id,
-                name=o.name,
-                slug=o.metadata.get("slug", ""),
-                metadata=dict(o.metadata),
-                created_at=datetime.fromisoformat(o.created_at),
-                updated_at=datetime.fromisoformat(o.updated_at),
-            )
-            for o in result.data
-        ]
-        return self._cursor_result(orgs, result.list_metadata)
-
-    async def list_org_members_by_cursor(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-        limit: int = 10,
-        after: str | None = None,
-    ) -> CursorResult[OrgMemberInfo]:
-        if self._workos is None:
-            raise AuthNotConnectedError()
-        workos_id = await self._resolve_workos_org_id(org_id=org_id, slug=slug)
+        self._check_org_ref(org_id, slug)
+        client = self._client()
+        workos_id = await self._workos_id(org_id, slug)
         if workos_id is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
+            raise OrgNotFoundError(f"No org matching {org_id or slug!r}")
         kwargs: dict[str, Any] = {"organization_id": workos_id, "limit": limit}
-        if after is not None:
-            kwargs["after"] = after
+        if cursor is not None:
+            kwargs["after"] = cursor
         try:
-            result = await self._workos.user_management.list_organization_memberships(
+            result = await client.user_management.list_organization_memberships(
                 **kwargs
             )
         except workos_exc.BaseRequestException as e:
             raise AuthBackendError(
                 f"WorkOS list_organization_memberships failed: {e}"
             ) from e
-        members = [
-            OrgMemberInfo(
-                org_id=m.organization_id,
-                user_id=m.user_id,
-                role=m.role["slug"],
-                created_at=datetime.fromisoformat(m.created_at),
-                updated_at=datetime.fromisoformat(m.updated_at),
-            )
-            for m in result.data
-        ]
-        return self._cursor_result(members, result.list_metadata)
+        after = getattr(result.list_metadata, "after", None)
+        return Page(
+            items=[self._to_member(m) for m in result.data],
+            next_cursor=after,
+            has_more=after is not None,
+        )

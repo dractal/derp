@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import hmac
 import json
 import logging
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import jwt as pyjwt
 
-from derp.auth.base import BaseAuthClient
+from derp.auth.base import (
+    AuthOutcome,
+    AuthResult,
+    BaseAuthClient,
+    Identity,
+    MFAStatus,
+    Org,
+    OrgMember,
+    Page,
+    Session,
+    TokenSet,
+)
 from derp.auth.exceptions import (
     AuthBackendError,
     AuthNotConnectedError,
@@ -27,17 +38,12 @@ from derp.auth.exceptions import (
     OrgSlugConflictError,
     UserNotFoundError,
 )
-from derp.auth.jwt import TokenPair
 from derp.auth.models import (
     AuthOrganization,
     AuthProvider,
     AuthRequest,
-    AuthResult,
-    OrgInfo,
-    OrgMemberInfo,
-    SessionInfo,
+    AuthStatus,
     SupabaseOrgMember,
-    UserInfo,
 )
 from derp.config import SupabaseConfig
 from derp.orm import DatabaseEngine
@@ -53,6 +59,12 @@ class SupabaseAuthClient(BaseAuthClient):
     is performed locally using the project's JWT secret. Organizations
     are stored in the local database.
     """
+
+    supports_password = True
+    supports_oauth = True
+    supports_magic_link = True
+    supports_orgs = True
+    supports_user_admin = True
 
     def __init__(self, config: SupabaseConfig) -> None:
         self._config = config
@@ -120,12 +132,11 @@ class SupabaseAuthClient(BaseAuthClient):
 
     # -- Response mapping --------------------------------------------------------
 
-    def _to_user_info(self, data: dict[str, Any]) -> UserInfo:
+    def _to_identity(self, data: dict[str, Any]) -> Identity:
         user_meta = data.get("user_metadata") or {}
         app_meta = data.get("app_metadata") or {}
 
         role = app_meta.get("role", data.get("role", "authenticated"))
-        is_superuser = bool(app_meta.get("is_superuser", False))
 
         banned_until = data.get("banned_until")
         is_active = banned_until is None
@@ -154,42 +165,45 @@ class SupabaseAuthClient(BaseAuthClient):
         _consumed = {"first_name", "last_name", "avatar_url"}
         metadata = {k: v for k, v in user_meta.items() if k not in _consumed}
 
-        return UserInfo(
+        return Identity(
             id=data.get("id", ""),
-            email=data.get("email", ""),
-            first_name=user_meta.get("first_name"),
-            last_name=user_meta.get("last_name"),
-            username=None,
-            image_url=user_meta.get("avatar_url"),
-            role=role,
-            is_active=is_active,
-            is_superuser=is_superuser,
-            email_confirmed_at=email_confirmed_at,
-            last_sign_in_at=last_sign_in_at,
+            tenant_id=None,
+            email=data.get("email") or None,
+            email_verified=email_confirmed_at is not None,
+            phone=None,
+            phone_verified=False,
+            is_anonymous=False,
+            disabled=not is_active,
+            roles=(role,),
             created_at=created_at,
             updated_at=updated_at,
+            last_sign_in_at=last_sign_in_at,
             metadata=metadata,
         )
 
-    def _to_token_pair(self, data: dict[str, Any]) -> TokenPair:
+    def _to_token_set(self, data: dict[str, Any]) -> TokenSet:
         expires_in = data.get("expires_in", 3600)
         expires_at_ts = data.get("expires_at")
         if expires_at_ts:
             expires_at = datetime.fromtimestamp(int(expires_at_ts), tz=UTC)
         else:
             expires_at = datetime.now(UTC)
-        return TokenPair(
-            access_token=data.get("access_token", ""),
-            refresh_token=data.get("refresh_token", ""),
+        access_token = data.get("access_token", "")
+        return TokenSet(
+            access_token=access_token,
+            refresh_token=data.get("refresh_token") or None,
+            id_token=access_token or None,
             token_type="bearer",
             expires_in=expires_in,
             expires_at=expires_at,
         )
 
-    def _to_auth_result(self, data: dict[str, Any]) -> AuthResult:
-        user = self._to_user_info(data["user"])
-        tokens = self._to_token_pair(data)
-        return AuthResult(user=user, tokens=tokens)
+    def _to_outcome(self, data: dict[str, Any]) -> AuthOutcome:
+        return AuthOutcome(
+            status=AuthStatus.COMPLETE,
+            identity=self._to_identity(data["user"]),
+            tokens=self._to_token_set(data),
+        )
 
     # -- Org context signing (HMAC) ----------------------------------------------
 
@@ -213,15 +227,8 @@ class SupabaseAuthClient(BaseAuthClient):
 
     # -- Authentication ----------------------------------------------------------
 
-    async def authenticate(self, request: AuthRequest) -> SessionInfo | None:
-        auth_header = request.headers.get("authorization") or request.headers.get(
-            "Authorization"
-        )
-        if not auth_header or not auth_header.startswith("Bearer "):
-            return None
-
-        token = auth_header[7:]
-
+    async def verify_token(self, token: str) -> Session | None:
+        """Verify a Supabase JWT locally (HS256) and return its session."""
         try:
             claims = pyjwt.decode(
                 token,
@@ -236,30 +243,54 @@ class SupabaseAuthClient(BaseAuthClient):
         if not user_id:
             return None
 
-        session_id = claims.get("session_id", user_id)
-        role = claims.get("role", "authenticated")
+        iat = claims.get("iat")
+        issued_at = (
+            datetime.fromtimestamp(iat, tz=UTC)
+            if iat is not None
+            else datetime.now(UTC)
+        )
 
-        org_id: str | None = None
-        org_role: str | None = None
+        return Session(
+            user_id=user_id,
+            session_id=claims.get("session_id", user_id),
+            tenant_id=None,
+            org_id=None,
+            org_role=None,
+            roles=(claims.get("role", "authenticated"),),
+            scopes=(),
+            is_anonymous=False,
+            mfa=MFAStatus(enrolled=False, satisfied=False, factor_types=()),
+            issued_at=issued_at,
+            expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC),
+            claims=claims,
+        )
+
+    async def authenticate(self, request: AuthRequest) -> Session | None:
+        """Verify the Bearer token, then layer on org context from ``X-Org-Context``.
+
+        Overrides the base helper because Supabase carries the active org in a
+        signed request header, not in the access token itself.
+        """
+        auth_header = request.headers.get("authorization") or request.headers.get(
+            "Authorization"
+        )
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return None
+        session = await self.verify_token(auth_header[7:])
+        if session is None:
+            return None
+
         org_header = request.headers.get("X-Org-Context")
         if org_header:
-            result = self._verify_org_context(user_id, org_header)
+            result = self._verify_org_context(session.user_id, org_header)
             if result is not None:
                 org_id, org_role = result
-
-        return SessionInfo(
-            user_id=user_id,
-            session_id=session_id,
-            role=role,
-            expires_at=datetime.fromtimestamp(claims["exp"], tz=UTC),
-            metadata={},
-            org_id=org_id,
-            org_role=org_role,
-        )
+                session = dataclasses.replace(session, org_id=org_id, org_role=org_role)
+        return session
 
     # -- User management (admin API) ---------------------------------------------
 
-    async def get_user(self, user_id: str | uuid.UUID) -> UserInfo:
+    async def get_user(self, user_id: str) -> Identity:
         http = self._ensure_http()
         try:
             resp = await http.get(
@@ -271,19 +302,51 @@ class SupabaseAuthClient(BaseAuthClient):
             raise UserNotFoundError(f"User {user_id!r} not found")
         if not resp.is_success:
             raise self._backend_error("get_user", resp)
-        return self._to_user_info(resp.json())
+        return self._to_identity(resp.json())
+
+    async def find_user(
+        self,
+        *,
+        user_id: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+    ) -> Identity | None:
+        """Find a user by id; ``None`` if no match (provide exactly one key).
+
+        Email lookup is unsupported: GoTrue exposes no admin get-by-email
+        endpoint, so resolving an email would mean paginating the directory.
+        Phone lookup is likewise unsupported.
+        """
+        provided = [k for k in (user_id, email, phone) if k is not None]
+        if len(provided) != 1:
+            raise ValueError("Provide exactly one of user_id=, email=, or phone=")
+        if email is not None:
+            raise NotImplementedError(
+                "Supabase has no admin email-lookup endpoint; "
+                "find_user supports user_id only."
+            )
+        if phone is not None:
+            raise NotImplementedError(
+                "Supabase has no admin phone-lookup endpoint; "
+                "find_user supports user_id only."
+            )
+        assert user_id is not None  # guaranteed by the exactly-one check above
+        try:
+            return await self.get_user(user_id)
+        except UserNotFoundError:
+            return None
 
     async def list_users(
-        self, *, limit: int | None = None, offset: int | None = None
-    ) -> list[UserInfo]:
+        self, *, limit: int = 50, cursor: str | None = None
+    ) -> Page[Identity]:
+        """List users. GoTrue pages by 1-based page number.
+
+        ``cursor`` is treated as an opaque stringified page index; ``None``
+        starts at page 1.
+        """
         http = self._ensure_http()
-        params: dict[str, Any] = {}
-        if limit is not None:
-            params["per_page"] = limit
-        if offset is not None and limit:
-            params["page"] = (offset // limit) + 1
-        elif offset is not None:
-            params["page"] = offset + 1
+        page = int(cursor) if cursor else 1
+        params: dict[str, Any] = {"per_page": limit, "page": page}
 
         try:
             resp = await http.get(
@@ -295,17 +358,15 @@ class SupabaseAuthClient(BaseAuthClient):
             raise self._backend_error("list_users", resp)
         data = resp.json()
         users = data.get("users", []) if isinstance(data, dict) else data
-        return [self._to_user_info(u) for u in users]
+        items = [self._to_identity(u) for u in users]
+        has_more = len(items) == limit
+        next_cursor = str(page + 1) if has_more else None
+        return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
-    async def update_user(
-        self,
-        *,
-        user_id: str | uuid.UUID,
-        email: str | None = None,
-        **kwargs: Any,
-    ) -> UserInfo:
+    async def update_user(self, *, user_id: str, **kwargs: Any) -> AuthResult[Identity]:
         http = self._ensure_http()
         body: dict[str, Any] = {}
+        email = kwargs.get("email")
         if email is not None:
             body["email"] = email
 
@@ -330,12 +391,12 @@ class SupabaseAuthClient(BaseAuthClient):
         except httpx.HTTPError as e:
             raise AuthBackendError(f"Supabase update_user network error: {e}") from e
         if resp.status_code == 404:
-            raise UserNotFoundError(f"User {user_id!r} not found")
+            return AuthResult(error=UserNotFoundError(f"User {user_id!r} not found"))
         if not resp.is_success:
             raise self._backend_error("update_user", resp)
-        return self._to_user_info(resp.json())
+        return AuthResult(value=self._to_identity(resp.json()))
 
-    async def delete_user(self, user_id: str | uuid.UUID) -> bool:
+    async def delete_user(self, user_id: str) -> bool:
         http = self._ensure_http()
         try:
             resp = await http.delete(
@@ -349,40 +410,16 @@ class SupabaseAuthClient(BaseAuthClient):
             raise self._backend_error("delete_user", resp)
         return True
 
-    async def count_users(self) -> int:
-        http = self._ensure_http()
-        try:
-            resp = await http.get(
-                "admin/users",
-                headers=self._admin_headers(),
-                params={"per_page": 1},
-            )
-        except httpx.HTTPError as e:
-            raise AuthBackendError(f"Supabase count_users network error: {e}") from e
-        if not resp.is_success:
-            raise self._backend_error("count_users", resp)
-
-        total = resp.headers.get("x-total-count")
-        if total is not None:
-            return int(total)
-
-        data = resp.json()
-        users = data.get("users", []) if isinstance(data, dict) else data
-        return len(users)
-
     # -- Sign-up / sign-in -------------------------------------------------------
 
     async def sign_up(
         self,
         *,
-        email: str,
-        password: str,
-        request: AuthRequest | None = None,
-        confirmation_url: str | None = None,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
+        email: str | None = None,
+        phone: str | None = None,
+        password: str | None = None,
         **kwargs: Any,
-    ) -> AuthResult:
+    ) -> AuthOutcome:
         http = self._ensure_http()
         body: dict[str, Any] = {"email": email, "password": password}
         if kwargs.get("data"):
@@ -397,44 +434,33 @@ class SupabaseAuthClient(BaseAuthClient):
             "user_already_exists",
             "email_exists",
         }:
-            raise EmailAlreadyExistsError(email)
+            return AuthOutcome(
+                status=AuthStatus.EMAIL_EXISTS,
+                error=EmailAlreadyExistsError(email or ""),
+            )
         if not resp.is_success:
             logger.error("Supabase sign-up failed: %s", resp.text)
             raise self._backend_error("sign_up", resp)
 
         data = resp.json()
         if "access_token" not in data:
-            # Supabase returns user without tokens when confirmation is required.
-            # The signup itself succeeded, so return tokenless AuthResult.
-            return AuthResult(
-                user=self._to_user_info(data.get("user", data)),
-                tokens=TokenPair(
-                    access_token="",
-                    refresh_token="",
-                    token_type="bearer",
-                    expires_in=0,
-                    expires_at=datetime.now(UTC),
-                ),
+            # Supabase returns a user without tokens when confirmation is
+            # required. The signup itself succeeded.
+            return AuthOutcome(
+                status=AuthStatus.VERIFICATION_REQUIRED,
+                identity=self._to_identity(data.get("user", data)),
             )
-        return self._to_auth_result(data)
+        return self._to_outcome(data)
 
     async def sign_in_with_password(
-        self,
-        email: str,
-        password: str,
-        *,
-        request: AuthRequest | None = None,
-        first_name: str | None = None,
-        last_name: str | None = None,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
-    ) -> AuthResult:
+        self, *, identifier: str, password: str
+    ) -> AuthOutcome:
         http = self._ensure_http()
         try:
             resp = await http.post(
                 "token",
                 params={"grant_type": "password"},
-                json={"email": email, "password": password},
+                json={"email": identifier, "password": password},
             )
         except httpx.HTTPError as e:
             raise AuthBackendError(
@@ -442,48 +468,52 @@ class SupabaseAuthClient(BaseAuthClient):
             ) from e
         # GoTrue returns 400 for bad credentials, 401 for unconfirmed email.
         if resp.status_code in (400, 401):
-            raise InvalidCredentialsError()
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS,
+                error=InvalidCredentialsError(),
+            )
         if not resp.is_success:
             raise self._backend_error("sign_in_with_password", resp)
-        return self._to_auth_result(resp.json())
+        return self._to_outcome(resp.json())
 
-    async def sign_in_with_magic_link(self, *, email: str, magic_link_url: str) -> None:
+    # -- Passwordless: magic link ------------------------------------------------
+
+    async def send_magic_link(self, *, email: str, redirect_url: str) -> None:
         http = self._ensure_http()
         try:
             resp = await http.post("otp", json={"email": email})
         except httpx.HTTPError as e:
             raise AuthBackendError(
-                f"Supabase sign_in_with_magic_link network error: {e}"
+                f"Supabase send_magic_link network error: {e}"
             ) from e
         if not resp.is_success:
-            raise self._backend_error("sign_in_with_magic_link", resp)
+            raise self._backend_error("send_magic_link", resp)
 
     async def verify_magic_link(
-        self,
-        token: str,
-        *,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
-    ) -> AuthResult:
+        self, token: str, *, email: str | None = None
+    ) -> AuthOutcome:
         http = self._ensure_http()
+        body: dict[str, Any] = {"type": "magiclink", "token": token}
+        if email is not None:
+            body["email"] = email
         try:
-            resp = await http.post(
-                "verify",
-                json={"type": "magiclink", "token": token},
-            )
+            resp = await http.post("verify", json=body)
         except httpx.HTTPError as e:
             raise AuthBackendError(
                 f"Supabase verify_magic_link network error: {e}"
             ) from e
         if resp.status_code in (400, 401, 403, 404):
-            raise InvalidTokenError("Magic link is invalid or expired")
+            return AuthOutcome(
+                status=AuthStatus.INVALID_TOKEN,
+                error=InvalidTokenError("Magic link is invalid or expired"),
+            )
         if not resp.is_success:
             raise self._backend_error("verify_magic_link", resp)
-        return self._to_auth_result(resp.json())
+        return self._to_outcome(resp.json())
 
     # -- Token refresh -----------------------------------------------------------
 
-    async def refresh_token(self, refresh_token: str) -> TokenPair:
+    async def refresh(self, refresh_token: str) -> AuthResult[TokenSet]:
         http = self._ensure_http()
         try:
             resp = await http.post(
@@ -492,34 +522,33 @@ class SupabaseAuthClient(BaseAuthClient):
                 json={"refresh_token": refresh_token},
             )
         except httpx.HTTPError as e:
-            raise AuthBackendError(f"Supabase refresh_token network error: {e}") from e
+            raise AuthBackendError(f"Supabase refresh network error: {e}") from e
         if resp.status_code in (400, 401):
-            raise InvalidTokenError("Refresh token is invalid or expired")
+            return AuthResult(
+                error=InvalidTokenError("Refresh token is invalid or expired")
+            )
         if not resp.is_success:
-            raise self._backend_error("refresh_token", resp)
-        return self._to_token_pair(resp.json())
+            raise self._backend_error("refresh", resp)
+        return AuthResult(value=self._to_token_set(resp.json()))
 
     # -- Password recovery -------------------------------------------------------
 
-    async def request_password_recovery(
-        self,
-        *,
-        email: str,
-        recovery_url: str = "",
-        recovery_subject: str = "Reset your password",
-        **kwargs: Any,
+    async def request_password_reset(
+        self, *, email: str, redirect_url: str | None = None
     ) -> None:
         http = self._ensure_http()
         try:
             resp = await http.post("recover", json={"email": email})
         except httpx.HTTPError as e:
             raise AuthBackendError(
-                f"Supabase request_password_recovery network error: {e}"
+                f"Supabase request_password_reset network error: {e}"
             ) from e
         if not resp.is_success:
-            raise self._backend_error("request_password_recovery", resp)
+            raise self._backend_error("request_password_reset", resp)
 
-    async def reset_password(self, token: str, new_password: str) -> UserInfo:
+    async def reset_password(
+        self, token: str, new_password: str
+    ) -> AuthResult[Identity]:
         http = self._ensure_http()
         try:
             resp = await http.put(
@@ -530,14 +559,16 @@ class SupabaseAuthClient(BaseAuthClient):
         except httpx.HTTPError as e:
             raise AuthBackendError(f"Supabase reset_password network error: {e}") from e
         if resp.status_code in (400, 401, 403, 404):
-            raise InvalidTokenError("Recovery token is invalid or expired")
+            return AuthResult(
+                error=InvalidTokenError("Recovery token is invalid or expired")
+            )
         if not resp.is_success:
             raise self._backend_error("reset_password", resp)
-        return self._to_user_info(resp.json())
+        return AuthResult(value=self._to_identity(resp.json()))
 
     # -- Email confirmation ------------------------------------------------------
 
-    async def confirm_email(self, token: str) -> UserInfo:
+    async def verify_email(self, token: str) -> AuthResult[Identity]:
         http = self._ensure_http()
         try:
             resp = await http.post(
@@ -545,27 +576,20 @@ class SupabaseAuthClient(BaseAuthClient):
                 json={"type": "signup", "token": token},
             )
         except httpx.HTTPError as e:
-            raise AuthBackendError(f"Supabase confirm_email network error: {e}") from e
+            raise AuthBackendError(f"Supabase verify_email network error: {e}") from e
         if resp.status_code in (400, 401, 403, 404):
-            raise InvalidTokenError("Confirmation token is invalid or expired")
+            return AuthResult(
+                error=InvalidTokenError("Confirmation token is invalid or expired")
+            )
         if not resp.is_success:
-            raise self._backend_error("confirm_email", resp)
+            raise self._backend_error("verify_email", resp)
         data = resp.json()
         user_data = data.get("user", data)
-        return self._to_user_info(user_data)
+        return AuthResult(value=self._to_identity(user_data))
 
     # -- Sessions ----------------------------------------------------------------
 
-    async def list_sessions(
-        self,
-        *,
-        user_id: str | uuid.UUID | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[Any]:
-        return []
-
-    async def sign_out(self, session_id: str | uuid.UUID) -> None:
+    async def revoke_session(self, session_id: str) -> AuthResult[bool]:
         http = self._ensure_http()
         try:
             resp = await http.post(
@@ -573,12 +597,13 @@ class SupabaseAuthClient(BaseAuthClient):
                 headers={"Authorization": f"Bearer {session_id}"},
             )
         except httpx.HTTPError as e:
-            raise AuthBackendError(f"Supabase sign_out network error: {e}") from e
+            raise AuthBackendError(f"Supabase revoke_session network error: {e}") from e
         if not resp.is_success and resp.status_code != 401:
             # 401 means the token's already invalid — treat as success.
-            raise self._backend_error("sign_out", resp)
+            raise self._backend_error("revoke_session", resp)
+        return AuthResult(value=True)
 
-    async def sign_out_all(self, user_id: str | uuid.UUID) -> None:
+    async def revoke_all_sessions(self, user_id: str) -> AuthResult[bool]:
         http = self._ensure_http()
         try:
             resp = await http.post(
@@ -587,19 +612,28 @@ class SupabaseAuthClient(BaseAuthClient):
                 params={"scope": "global"},
             )
         except httpx.HTTPError as e:
-            raise AuthBackendError(f"Supabase sign_out_all network error: {e}") from e
+            raise AuthBackendError(
+                f"Supabase revoke_all_sessions network error: {e}"
+            ) from e
         if not resp.is_success and resp.status_code != 401:
-            raise self._backend_error("sign_out_all", resp)
+            raise self._backend_error("revoke_all_sessions", resp)
+        return AuthResult(value=True)
 
     # -- OAuth -------------------------------------------------------------------
 
-    def get_oauth_authorization_url(
+    def authorization_url(
         self,
-        provider: str | AuthProvider,
+        *,
+        provider: str | AuthProvider | None = None,
+        organization: str | None = None,
+        connection: str | None = None,
+        domain: str | None = None,
         state: str,
-        scopes: list[str] | None = None,
         redirect_uri: str | None = None,
+        scopes: list[str] | None = None,
     ) -> str:
+        if provider is None:
+            raise ValueError("Supabase authorization_url requires a provider")
         provider_name = (
             provider.value if isinstance(provider, AuthProvider) else provider
         )
@@ -613,13 +647,11 @@ class SupabaseAuthClient(BaseAuthClient):
 
     async def sign_in_with_oauth(
         self,
-        provider: str | AuthProvider,
         code: str,
         *,
+        provider: str | AuthProvider | None = None,
         redirect_uri: str | None = None,
-        user_agent: str | None = None,
-        ip_address: str | None = None,
-    ) -> AuthResult:
+    ) -> AuthOutcome:
         http = self._ensure_http()
         uri = redirect_uri or self._config.redirect_uri
         body: dict[str, Any] = {"auth_code": code}
@@ -637,17 +669,21 @@ class SupabaseAuthClient(BaseAuthClient):
                 f"Supabase sign_in_with_oauth network error: {e}"
             ) from e
         if resp.status_code in (400, 401, 403):
-            raise InvalidCredentialsError("OAuth code rejected by Supabase")
+            return AuthOutcome(
+                status=AuthStatus.INVALID_CREDENTIALS,
+                error=InvalidCredentialsError("OAuth code rejected by Supabase"),
+            )
         if not resp.is_success:
             logger.error("Supabase OAuth token exchange failed: %s", resp.text)
             raise self._backend_error("sign_in_with_oauth", resp)
-        return self._to_auth_result(resp.json())
+        return self._to_outcome(resp.json())
 
     # -- Organizations (database-backed) -----------------------------------------
 
-    def _to_org_info(self, org: AuthOrganization) -> OrgInfo:
-        return OrgInfo(
+    def _to_org(self, org: AuthOrganization) -> Org:
+        return Org(
             id=str(org.id),
+            tenant_id=None,
             name=org.name,
             slug=org.slug,
             metadata=org.metadata or {},
@@ -655,8 +691,8 @@ class SupabaseAuthClient(BaseAuthClient):
             updated_at=org.updated_at,
         )
 
-    def _to_org_member_info(self, member: SupabaseOrgMember) -> OrgMemberInfo:
-        return OrgMemberInfo(
+    def _to_org_member(self, member: SupabaseOrgMember) -> OrgMember:
+        return OrgMember(
             org_id=str(member.org_id),
             user_id=str(member.user_id),
             role=member.role,
@@ -669,154 +705,126 @@ class SupabaseAuthClient(BaseAuthClient):
         *,
         name: str,
         slug: str,
-        creator_id: str | uuid.UUID,
+        creator_id: str,
         **kwargs: Any,
-    ) -> OrgInfo:
-        """Raises:
-        OrgSlugConflictError: Slug is already taken.
+    ) -> AuthResult[Org]:
+        """Create an org; creator becomes the owner.
+
+        Expected failure attached as ``result.error``:
+            OrgSlugConflictError: Slug is already taken.
         """
-        now = datetime.now(UTC)
         org = await (
             self._db()
             .insert(AuthOrganization)
-            .values(name=name, slug=slug, created_at=now, updated_at=now)
+            .values(name=name, slug=slug)
             .ignore_conflicts(target=AuthOrganization.slug)
             .returning(AuthOrganization)
             .execute()
         )
         if org is None:
-            raise OrgSlugConflictError(slug)
+            return AuthResult(error=OrgSlugConflictError(slug))
 
         await (
             self._db()
             .insert(SupabaseOrgMember)
-            .values(
-                org_id=org.id,
-                user_id=str(creator_id),
-                role="owner",
-                created_at=now,
-                updated_at=now,
-            )
+            .values(org_id=org.id, user_id=str(creator_id), role="owner")
             .execute()
         )
-        return self._to_org_info(org)
-
-    async def _resolve_org_id(
-        self,
-        *,
-        org_id: str | uuid.UUID | None,
-        slug: str | None,
-    ) -> str | None:
-        """Translate (org_id, slug) → canonical id.
-
-        Exactly one must be provided. Returns the canonical id, or ``None``
-        when ``slug`` was given but no matching org exists. Raises
-        ``ValueError`` when neither or both are provided.
-        """
-        if (org_id is None) == (slug is None):
-            raise ValueError("Provide exactly one of org_id= or slug=")
-        if slug is not None:
-            org = await (
-                self._db()
-                .select(AuthOrganization)
-                .where(AuthOrganization.slug == slug)
-                .first_or_none()
-            )
-            return str(org.id) if org else None
-        return str(org_id)
+        return AuthResult(value=self._to_org(org))
 
     async def get_org(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-    ) -> OrgInfo:
-        """Raises:
-        OrgNotFoundError: No org matches the given id or slug.
+        self, *, org_id: str | None = None, slug: str | None = None
+    ) -> AuthResult[Org]:
+        """Get an org by id or slug (pass exactly one).
+
+        Expected failure attached as ``result.error``:
+            OrgNotFoundError: No matching org.
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        org = await (
-            self._db()
-            .select(AuthOrganization)
-            .where(AuthOrganization.id == canonical)
-            .first_or_none()
+        self._check_org_ref(org_id, slug)
+        q = self._db().select(AuthOrganization)
+        q = (
+            q.where(AuthOrganization.id == org_id)
+            if org_id is not None
+            else q.where(AuthOrganization.slug == slug)
         )
-        if org is None:
-            raise OrgNotFoundError(f"No org with id {canonical!r}")
-        return self._to_org_info(org)
+        result = await q.first_or_none()
+        if result is None:
+            return AuthResult(
+                error=OrgNotFoundError(f"No org matching {org_id or slug!r}")
+            )
+        return AuthResult(value=self._to_org(result))
 
     async def update_org(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
-        org_slug: str | None = None,
-        name: str | None = None,
+        org_id: str | None = None,
         slug: str | None = None,
+        name: str | None = None,
+        new_slug: str | None = None,
         **kwargs: Any,
-    ) -> OrgInfo:
-        """Identify by ``org_id`` or ``org_slug``; ``slug`` is the new value.
+    ) -> AuthResult[Org]:
+        """Update an org's fields. Address by ``org_id`` or ``slug`` (one).
 
-        Raises:
-            OrgNotFoundError: Org identifier did not resolve.
+        ``name`` / ``new_slug`` are the new values to assign (``new_slug`` is
+        spelled distinctly so it never collides with the addressing ``slug``).
+
+        Expected failures attached as ``result.error``:
+            OrgNotFoundError: No such org.
             OrgSlugConflictError: New slug collides with another org.
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=org_slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {org_slug!r}")
-        existing = await (
-            self._db()
-            .select(AuthOrganization)
-            .where(AuthOrganization.id == canonical)
-            .first_or_none()
+        self._check_org_ref(org_id, slug)
+        q = self._db().select(AuthOrganization)
+        q = (
+            q.where(AuthOrganization.id == org_id)
+            if org_id is not None
+            else q.where(AuthOrganization.slug == slug)
         )
+        existing = await q.first_or_none()
         if existing is None:
-            raise OrgNotFoundError(f"No org with id {canonical!r}")
+            return AuthResult(
+                error=OrgNotFoundError(f"No org matching {org_id or slug!r}")
+            )
 
         updates: dict[str, Any] = {"updated_at": datetime.now(UTC)}
         if name is not None:
             updates["name"] = name
-        if slug is not None:
-            updates["slug"] = slug
+        if new_slug is not None:
+            updates["slug"] = new_slug
 
         try:
             [result] = await (
                 self._db()
                 .update(AuthOrganization)
                 .set(**updates)
-                .where(AuthOrganization.id == canonical)
+                .where(AuthOrganization.id == existing.id)
                 .returning(AuthOrganization)
                 .execute()
             )
-        except Exception as e:
-            if slug is not None:
-                raise OrgSlugConflictError(slug) from e
+        except Exception:
+            if new_slug is not None:
+                return AuthResult(error=OrgSlugConflictError(new_slug))
             raise
-        return self._to_org_info(result)
+        return AuthResult(value=self._to_org(result))
 
     async def delete_org(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
+        self, *, org_id: str | None = None, slug: str | None = None
     ) -> bool:
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            return False
-        existing = await (
-            self._db()
-            .select(AuthOrganization)
-            .where(AuthOrganization.id == canonical)
-            .first_or_none()
+        """Delete an org (by id or slug) and its memberships. ``False`` if absent."""
+        self._check_org_ref(org_id, slug)
+        q = self._db().select(AuthOrganization)
+        q = (
+            q.where(AuthOrganization.id == org_id)
+            if org_id is not None
+            else q.where(AuthOrganization.slug == slug)
         )
+        existing = await q.first_or_none()
         if existing is None:
             return False
 
         await (
             self._db()
             .delete(AuthOrganization)
-            .where(AuthOrganization.id == canonical)
+            .where(AuthOrganization.id == existing.id)
             .execute()
         )
         return True
@@ -824,10 +832,11 @@ class SupabaseAuthClient(BaseAuthClient):
     async def list_orgs(
         self,
         *,
-        user_id: str | uuid.UUID | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[OrgInfo]:
+        user_id: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> Page[Org]:
+        offset = int(cursor) if cursor else 0
         q = (
             self._db()
             .select(AuthOrganization)
@@ -838,38 +847,42 @@ class SupabaseAuthClient(BaseAuthClient):
                 SupabaseOrgMember,
                 SupabaseOrgMember.org_id == AuthOrganization.id,
             ).where(SupabaseOrgMember.user_id == str(user_id))
-        if limit is not None:
-            q = q.limit(limit)
-        if offset is not None:
-            q = q.offset(offset)
-        return [self._to_org_info(o) for o in await q.execute()]
+        q = q.limit(limit).offset(offset)
+        items = [self._to_org(o) for o in await q.execute()]
+        has_more = len(items) == limit
+        next_cursor = str(offset + limit) if has_more else None
+        return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
-    async def add_org_member(
+    async def add_member(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
+        user_id: str,
+        org_id: str | None = None,
         slug: str | None = None,
-        user_id: str | uuid.UUID,
         role: str = "member",
-    ) -> OrgMemberInfo:
-        """Raises:
-        OrgNotFoundError: Org identifier did not resolve.
-        MemberAlreadyExistsError: User is already a member.
+    ) -> AuthResult[OrgMember]:
+        """Add a user to an org (by id or slug).
+
+        Expected failures attached as ``result.error``:
+            OrgNotFoundError: A given slug matches no org.
+            MemberAlreadyExistsError: User is already a member.
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
+        self._check_org_ref(org_id, slug)
+        db = self._db()
+        canonical = org_id
         if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        now = datetime.now(UTC)
-        member = await (
-            self._db()
-            .insert(SupabaseOrgMember)
-            .values(
-                org_id=canonical,
-                user_id=str(user_id),
-                role=role,
-                created_at=now,
-                updated_at=now,
+            org = await (
+                db.select(AuthOrganization)
+                .where(AuthOrganization.slug == slug)
+                .first_or_none()
             )
+            if org is None:
+                return AuthResult(error=OrgNotFoundError(f"No org matching {slug!r}"))
+            canonical = org.id
+
+        member = await (
+            db.insert(SupabaseOrgMember)
+            .values(org_id=canonical, user_id=str(user_id), role=role)
             .ignore_conflicts(
                 target=(SupabaseOrgMember.org_id, SupabaseOrgMember.user_id),
             )
@@ -877,189 +890,194 @@ class SupabaseAuthClient(BaseAuthClient):
             .execute()
         )
         if member is None:
-            raise MemberAlreadyExistsError()
-        return self._to_org_member_info(member)
+            return AuthResult(error=MemberAlreadyExistsError())
+        return AuthResult(value=self._to_org_member(member))
 
-    async def update_org_member(
+    async def update_member(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-        user_id: str | uuid.UUID,
+        user_id: str,
         role: str,
-    ) -> OrgMemberInfo:
-        """Raises:
-        OrgNotFoundError: Org identifier did not resolve.
-        OrgMemberNotFoundError: User is not a member of the org.
+        org_id: str | None = None,
+        slug: str | None = None,
+    ) -> AuthResult[OrgMember]:
+        """Change a member's role in an org (by id or slug).
+
+        Expected failure attached as ``result.error``:
+            OrgMemberNotFoundError: User is not a member (or no such org).
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        existing = await (
-            self._db()
-            .select(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == canonical)
-            .where(SupabaseOrgMember.user_id == str(user_id))
-            .first_or_none()
+        self._check_org_ref(org_id, slug)
+        db = self._db()
+        sel = db.select(SupabaseOrgMember).where(
+            SupabaseOrgMember.user_id == str(user_id)
         )
+        if org_id is not None:
+            sel = sel.where(SupabaseOrgMember.org_id == org_id)
+        else:
+            sel = sel.inner_join(
+                AuthOrganization, AuthOrganization.id == SupabaseOrgMember.org_id
+            ).where(AuthOrganization.slug == slug)
+        existing = await sel.first_or_none()
         if existing is None:
-            raise OrgMemberNotFoundError(
-                f"User {user_id!r} is not a member of org {canonical!r}"
+            return AuthResult(
+                error=OrgMemberNotFoundError(
+                    f"User {user_id!r} is not a member of org {org_id or slug!r}"
+                )
             )
 
+        # existing.org_id is the canonical id — reuse it, no extra lookup.
         [result] = await (
-            self._db()
-            .update(SupabaseOrgMember)
+            db.update(SupabaseOrgMember)
             .set(role=role, updated_at=datetime.now(UTC))
-            .where(SupabaseOrgMember.org_id == canonical)
+            .where(SupabaseOrgMember.org_id == existing.org_id)
             .where(SupabaseOrgMember.user_id == str(user_id))
             .returning(SupabaseOrgMember)
             .execute()
         )
-        return self._to_org_member_info(result)
+        return AuthResult(value=self._to_org_member(result))
 
-    async def remove_org_member(
+    async def remove_member(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
+        user_id: str,
+        org_id: str | None = None,
         slug: str | None = None,
-        user_id: str | uuid.UUID,
-    ) -> bool:
-        """Returns ``False`` if the org or membership does not exist.
+    ) -> AuthResult[bool]:
+        """Remove a member from an org (by id or slug).
 
-        Raises:
+        ``result.value`` is ``True`` if a row was removed, ``False`` if the user
+        wasn't a member.
+
+        Expected failure attached as ``result.error``:
             LastOwnerError: Removing this member would leave the org without an owner.
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            return False
-        existing = await (
-            self._db()
-            .select(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == canonical)
-            .where(SupabaseOrgMember.user_id == str(user_id))
-            .first_or_none()
+        self._check_org_ref(org_id, slug)
+        db = self._db()
+        sel = db.select(SupabaseOrgMember).where(
+            SupabaseOrgMember.user_id == str(user_id)
         )
+        if org_id is not None:
+            sel = sel.where(SupabaseOrgMember.org_id == org_id)
+        else:
+            sel = sel.inner_join(
+                AuthOrganization, AuthOrganization.id == SupabaseOrgMember.org_id
+            ).where(AuthOrganization.slug == slug)
+        existing = await sel.first_or_none()
         if existing is None:
-            return False
+            return AuthResult(value=False)
 
         if existing.role == "owner":
             owner_count = await (
-                self._db()
-                .select(SupabaseOrgMember)
-                .where(SupabaseOrgMember.org_id == canonical)
+                db.select(SupabaseOrgMember)
+                .where(SupabaseOrgMember.org_id == existing.org_id)
                 .where(SupabaseOrgMember.role == "owner")
                 .count()
             )
             if owner_count <= 1:
                 logger.error(
                     "Remove org member failed: cannot remove last owner of org %s",
-                    canonical,
+                    existing.org_id,
                 )
-                raise LastOwnerError(
-                    f"Cannot remove the last owner of org {canonical!r}"
+                return AuthResult(
+                    error=LastOwnerError(
+                        f"Cannot remove the last owner of org {existing.org_id!r}"
+                    )
                 )
 
         await (
-            self._db()
-            .delete(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == canonical)
+            db.delete(SupabaseOrgMember)
+            .where(SupabaseOrgMember.org_id == existing.org_id)
             .where(SupabaseOrgMember.user_id == str(user_id))
             .execute()
         )
-        return True
+        return AuthResult(value=True)
 
-    async def list_org_members(
+    async def list_members(
         self,
         *,
-        org_id: str | uuid.UUID | None = None,
+        org_id: str | None = None,
         slug: str | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-    ) -> list[OrgMemberInfo]:
-        """Raises:
-        OrgNotFoundError: Org identifier did not resolve.
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> Page[OrgMember]:
+        """List members of an org (by id or slug; cursor-paginated).
+
+        An unknown org yields an empty page (no existence query needed).
         """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
+        self._check_org_ref(org_id, slug)
+        db = self._db()
+        offset = int(cursor) if cursor else 0
+        q = db.select(SupabaseOrgMember)
+        if org_id is not None:
+            q = q.where(SupabaseOrgMember.org_id == org_id)
+        else:
+            q = q.inner_join(
+                AuthOrganization, AuthOrganization.id == SupabaseOrgMember.org_id
+            ).where(AuthOrganization.slug == slug)
         q = (
-            self._db()
-            .select(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == canonical)
-            .order_by(SupabaseOrgMember.created_at, asc=True)
+            q.order_by(SupabaseOrgMember.created_at, asc=True)
+            .limit(limit)
+            .offset(offset)
         )
-        if limit is not None:
-            q = q.limit(limit)
-        if offset is not None:
-            q = q.offset(offset)
-        return [self._to_org_member_info(m) for m in await q.execute()]
-
-    async def get_org_member(
-        self,
-        *,
-        org_id: str | uuid.UUID | None = None,
-        slug: str | None = None,
-        user_id: str | uuid.UUID,
-    ) -> OrgMemberInfo:
-        """Raises:
-        OrgNotFoundError: Org identifier did not resolve.
-        OrgMemberNotFoundError: User is not a member of the org.
-        """
-        canonical = await self._resolve_org_id(org_id=org_id, slug=slug)
-        if canonical is None:
-            raise OrgNotFoundError(f"No org with slug {slug!r}")
-        member = await (
-            self._db()
-            .select(SupabaseOrgMember)
-            .where(SupabaseOrgMember.org_id == canonical)
-            .where(SupabaseOrgMember.user_id == str(user_id))
-            .first_or_none()
-        )
-        if member is None:
-            raise OrgMemberNotFoundError(
-                f"User {user_id!r} is not a member of org {canonical!r}"
-            )
-        return self._to_org_member_info(member)
+        items = [self._to_org_member(m) for m in await q.execute()]
+        has_more = len(items) == limit
+        next_cursor = str(offset + limit) if has_more else None
+        return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
     # -- Organization session context --------------------------------------------
 
     async def set_active_org(
         self,
         *,
-        session_id: str | uuid.UUID,
-        org_id: str | uuid.UUID | None,
-    ) -> TokenPair:
-        """Raises:
-        OrgMemberNotFoundError: User is not a member of the target org.
+        session_id: str,
+        org_id: str | None = None,
+        slug: str | None = None,
+    ) -> AuthResult[TokenSet]:
+        """Switch a session's active org (by id or slug).
+
+        Pass neither ``org_id`` nor ``slug`` to clear the active org. On success
+        ``result.value`` is the org-context :class:`TokenSet`. Expected failure
+        (attached to ``result.error``): ``OrgMemberNotFoundError`` when the user
+        isn't a member of the target org.
         """
-        if org_id is None:
-            return TokenPair(
-                access_token="",
-                refresh_token="",
+        if org_id is None and slug is None:
+            return AuthResult(
+                value=TokenSet(
+                    access_token="",
+                    refresh_token=None,
+                    id_token=None,
+                    token_type="bearer",
+                    expires_in=0,
+                    expires_at=datetime.now(UTC),
+                )
+            )
+
+        self._check_org_ref(org_id, slug)
+        user_id = str(session_id)
+        db = self._db()
+        sel = db.select(SupabaseOrgMember).where(SupabaseOrgMember.user_id == user_id)
+        if org_id is not None:
+            sel = sel.where(SupabaseOrgMember.org_id == org_id)
+        else:
+            sel = sel.inner_join(
+                AuthOrganization, AuthOrganization.id == SupabaseOrgMember.org_id
+            ).where(AuthOrganization.slug == slug)
+        member = await sel.first_or_none()
+        if member is None:
+            return AuthResult(
+                error=OrgMemberNotFoundError(
+                    f"User {user_id!r} is not a member of org {org_id or slug!r}"
+                )
+            )
+
+        signed = self._sign_org_context(user_id, str(member.org_id), member.role)
+        return AuthResult(
+            value=TokenSet(
+                access_token=signed,
+                refresh_token=None,
+                id_token=None,
                 token_type="bearer",
                 expires_in=0,
                 expires_at=datetime.now(UTC),
             )
-
-        user_id = str(session_id)
-        role = await (
-            self._db()
-            .select(SupabaseOrgMember.role)
-            .where(SupabaseOrgMember.org_id == str(org_id))
-            .where(SupabaseOrgMember.user_id == user_id)
-            .first_or_none()
-        )
-        if role is None:
-            raise OrgMemberNotFoundError(
-                f"User {user_id!r} is not a member of org {org_id!r}"
-            )
-
-        signed = self._sign_org_context(user_id, str(org_id), role)
-        return TokenPair(
-            access_token=signed,
-            refresh_token="",
-            token_type="bearer",
-            expires_in=0,
-            expires_at=datetime.now(UTC),
         )
