@@ -50,6 +50,28 @@ class AuthBackendError(AuthError):
         super().__init__(message, code="auth_backend_error")
 
 
+class CapabilityNotSupportedError(AuthError):
+    """Raised when a backend is asked for a capability it does not provide.
+
+    The IdP-first ``BaseAuthClientV2`` keeps every operation on one interface
+    for ergonomics, so a caller can invoke any method without narrowing the
+    type. A backend that cannot fulfil an optional capability leaves the
+    base's default in place, which raises this — a clear, catchable signal
+    naming the missing capability, rather than a misleading stub return or an
+    ``AttributeError``. Pair with the ``supports_*`` flags to check ahead of
+    time when you'd rather branch than catch.
+    """
+
+    def __init__(self, capability: str, backend: str | None = None):
+        subject = f"The {backend} auth backend" if backend else "This auth backend"
+        super().__init__(
+            f"{subject} does not support the {capability!r} capability.",
+            code="capability_not_supported",
+        )
+        self.capability = capability
+        self.backend = backend
+
+
 class ConfirmationURLMissingError(AuthError):
     """Raised when a confirmation URL is missing."""
 
@@ -79,14 +101,43 @@ class EmailSendError(AuthError):
 
 
 class OrgMismatchError(AuthError):
-    """Raised when ``assert_same_org`` finds the session belongs to a different org.
+    """Raised when ``require_org`` finds the session's active org isn't the one asked.
 
-    Used as the default tenant-scoping failure so handlers can map it to a
-    403 (or whatever their framework prefers) without inspecting strings.
+    The authorization failure that pairs with authentication: the token was
+    valid (the user is who they say) but the session is bound to a different
+    active org than the route requested, so the request is forbidden. Handlers
+    map it to a 403 — distinct from the ``None`` that ``authenticate`` returns
+    for a missing or invalid token (a 401). To act in the requested org, switch
+    to it first with ``set_active_org``.
     """
 
-    def __init__(self, message: str = "Session does not belong to this organization"):
+    def __init__(self, message: str = "Session is not bound to this organization"):
         super().__init__(message, code="org_mismatch")
+
+
+class ForbiddenError(AuthError):
+    """Raised when the active-org role or permission check fails.
+
+    The companion to :class:`OrgMismatchError` for the *within*-org authorization
+    step: the session is bound to the right org, but its role
+    (``require_role``) or permission set (``require_permission`` / ``has``) does
+    not satisfy what the route requires. Handlers map it to a 403.
+    """
+
+    def __init__(self, message: str = "Insufficient role or permission"):
+        super().__init__(message, code="forbidden")
+
+
+class TenantMismatchError(AuthError):
+    """Raised when ``assert_same_tenant`` finds the session is in a different tenant.
+
+    The multi-tenant analogue of ``OrgMismatchError``: a tenant is the
+    isolation boundary (its own user pool / signing keys), so a cross-tenant
+    access is the strongest scoping failure. Map it to a 403/404.
+    """
+
+    def __init__(self, message: str = "Session does not belong to this tenant"):
+        super().__init__(message, code="tenant_mismatch")
 
 
 # ── Credential / token errors ────────────────────────────────────

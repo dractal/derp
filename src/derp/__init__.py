@@ -6,10 +6,10 @@ from derp.auth import (
     AuthUser,
     BaseAuthClient,
     EmailConfig,
+    Identity,
     JWTConfig,
     NativeAuthClient,
     NativeAuthConfig,
-    UserInfo,
 )
 from derp.auth.email import EmailClient
 from derp.config import (
@@ -38,7 +38,7 @@ __all__ = [
     "DerpConfig",
     "AuthConfig",
     "AuthUser",
-    "UserInfo",
+    "Identity",
     "BaseAuthClient",
     "NativeAuthClient",
     "NativeAuthConfig",

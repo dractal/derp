@@ -2,31 +2,48 @@
 
 from __future__ import annotations
 
-from derp.auth.base import BaseAuthClient
+from derp.auth.base import (
+    AuthOutcome,
+    AuthResult,
+    BaseAuthClient,
+    Challenge,
+    Enrollment,
+    FactorInfo,
+    FactorType,
+    Identity,
+    Invitation,
+    MFAStatus,
+    Org,
+    OrgMember,
+    Page,
+    Session,
+    Tenant,
+    TokenSet,
+)
 from derp.auth.email import EmailClient
 from derp.auth.exceptions import (
     AuthError,
     ConfirmationURLMissingError,
     EmailSendError,
+    ForbiddenError,
     OrgMismatchError,
     PasswordValidationError,
     SignupDisabledError,
 )
+from derp.auth.gcip_client import GCIPAuthClient
 from derp.auth.jwt import TokenPair, TokenPayload
 from derp.auth.models import (
+    AuthInvitation,
     AuthOrganization,
     AuthOrgMember,
     AuthProvider,
     AuthRequest,
-    AuthResult,
     AuthSession,
+    AuthStatus,
     AuthUser,
-    CursorResult,
-    OrgInfo,
-    OrgMemberInfo,
-    SessionInfo,
+    GCIPOrgMember,
+    InvitationState,
     SupabaseOrgMember,
-    UserInfo,
     WorkOSOrganization,
 )
 from derp.auth.native_client import NativeAuthClient
@@ -47,6 +64,7 @@ from derp.auth.workos_client import WorkOSAuthClient
 from derp.config import (
     AuthConfig,
     EmailConfig,
+    GCIPConfig,
     GitHubOAuthConfig,
     GoogleOAuthConfig,
     JWTConfig,
@@ -60,6 +78,7 @@ __all__ = [
     # Config
     "AuthConfig",
     "EmailConfig",
+    "GCIPConfig",
     "GitHubOAuthConfig",
     "GoogleOAuthConfig",
     "JWTConfig",
@@ -71,25 +90,40 @@ __all__ = [
     "AuthError",
     "ConfirmationURLMissingError",
     "EmailSendError",
+    "ForbiddenError",
     "OrgMismatchError",
     "PasswordValidationError",
     "SignupDisabledError",
     # JWT
     "TokenPair",
     "TokenPayload",
-    # Models
+    # Result / domain types
+    "AuthOutcome",
     "AuthResult",
-    "CursorResult",
+    "AuthStatus",
+    "Identity",
+    "Session",
+    "TokenSet",
+    "Org",
+    "OrgMember",
+    "Invitation",
+    "Tenant",
+    "Page",
+    "FactorType",
+    "FactorInfo",
+    "MFAStatus",
+    "Enrollment",
+    "Challenge",
+    # DB models
+    "AuthInvitation",
     "AuthOrgMember",
     "AuthOrganization",
     "AuthProvider",
     "AuthRequest",
     "AuthSession",
     "AuthUser",
-    "OrgInfo",
-    "OrgMemberInfo",
-    "SessionInfo",
-    "UserInfo",
+    "GCIPOrgMember",
+    "InvitationState",
     # Password
     "Argon2Hasher",
     "PasswordHasher",
@@ -104,6 +138,7 @@ __all__ = [
     "EmailClient",
     # Client
     "BaseAuthClient",
+    "GCIPAuthClient",
     "NativeAuthClient",
     "SupabaseAuthClient",
     "SupabaseOrgMember",

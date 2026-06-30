@@ -4,13 +4,8 @@ from __future__ import annotations
 
 import enum
 from collections.abc import Mapping
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict
-
-from derp.auth.jwt import TokenPair
 from derp.orm import (
     FK,
     JSONB,
@@ -38,64 +33,44 @@ class AuthProvider(enum.StrEnum):
     GITHUB = "github"
 
 
+class AuthStatus(enum.StrEnum):
+    """Outcome of a sign-up / sign-in step.
+
+    Sign-in is neither always one-shot nor always a success: continuation
+    states and *expected* user failures (wrong password, taken email) are
+    routine outcomes, modelled here as data rather than exceptions. Only
+    ``COMPLETE`` carries tokens. Genuinely exceptional failures (provider
+    5xx/network ``AuthBackendError``, misconfiguration) still raise.
+
+    ``INVALID_CREDENTIALS`` deliberately collapses wrong-password and
+    unknown-user to avoid enumeration leaks.
+    """
+
+    COMPLETE = "complete"  # tokens issued
+    MFA_REQUIRED = "mfa_required"  # a second factor must be satisfied first
+    VERIFICATION_REQUIRED = "verification_required"  # confirm email/phone first
+    INVALID_CREDENTIALS = "invalid_credentials"  # wrong password OR unknown user
+    EMAIL_EXISTS = "email_exists"  # sign-up against an existing account
+    WEAK_PASSWORD = "weak_password"  # password failed policy
+    INVALID_TOKEN = "invalid_token"  # magic link / oob code unknown/expired/used
+    ACCOUNT_DISABLED = "account_disabled"  # user is banned/suspended
+
+
+class InvitationState(enum.StrEnum):
+    """Lifecycle of an org invitation."""
+
+    PENDING = "pending"  # awaiting acceptance
+    ACCEPTED = "accepted"  # redeemed; the invitee is now a member
+    REVOKED = "revoked"  # withdrawn before acceptance
+    EXPIRED = "expired"  # past its expiry without acceptance
+
+
 @runtime_checkable
 class AuthRequest(Protocol):
     """Protocol for objects that carry HTTP headers (e.g. FastAPI Request)."""
 
     @property
     def headers(self) -> Mapping[str, str]: ...
-
-
-class UserInfo(BaseModel):
-    """Unified user information returned by all auth backends."""
-
-    id: str
-    email: str
-    first_name: str | None = None
-    last_name: str | None = None
-    username: str | None = None
-    image_url: str | None = None
-    role: str
-    is_active: bool
-    is_superuser: bool
-    email_confirmed_at: datetime | None
-    last_sign_in_at: datetime | None
-    created_at: datetime
-    updated_at: datetime
-    metadata: dict[str, Any]
-
-    model_config = ConfigDict(frozen=True)
-
-
-@dataclass(frozen=True, kw_only=True)
-class AuthResult:
-    """Result of a sign-up or sign-in operation."""
-
-    user: UserInfo
-    tokens: TokenPair
-
-
-@dataclass(frozen=True, kw_only=True)
-class CursorResult[T]:
-    """Cursor-paginated result."""
-
-    data: list[T]
-    has_more: bool
-    next_cursor: str | None = None
-
-
-class SessionInfo(BaseModel):
-    """Unified session information returned by authenticate."""
-
-    user_id: str
-    session_id: str
-    role: str
-    expires_at: datetime
-    metadata: dict[str, Any]
-    org_id: str | None = None
-    org_role: str | None = None
-
-    model_config = ConfigDict(frozen=True)
 
 
 class AuthUser(Table, table="users"):
@@ -151,31 +126,6 @@ class AuthSession(Table, table="auth_sessions"):
             Index(cls.session_id),
             Index(cls.token),
         ]
-
-
-class OrgInfo(BaseModel):
-    """Unified organization information returned by all auth backends."""
-
-    id: str
-    name: str
-    slug: str
-    metadata: dict[str, Any]
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = ConfigDict(frozen=True)
-
-
-class OrgMemberInfo(BaseModel):
-    """Unified organization membership information."""
-
-    org_id: str
-    user_id: str
-    role: str
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = ConfigDict(frozen=True)
 
 
 class AuthOrganization(Table, table="organizations"):
@@ -250,3 +200,56 @@ class WorkOSOrganization(Table, table="organizations"):
 
     id: Varchar[L[255]] = Field(primary=True)
     slug: Varchar[L[255]] = Field(unique=True)
+
+
+class GCIPOrgMember(Table, table="org_members"):
+    """Organization membership for IdP-layered backends (GCIP).
+
+    Identical to :class:`AuthOrgMember` except ``user_id`` is the IdP's user id
+    (a string — GCIP's ``localId``), with no FK to a users table: the IdP owns
+    users, derp owns the org layer. The org itself is still a derp-owned row in
+    :class:`AuthOrganization` (a UUID), so ``org_id`` keeps its FK.
+    """
+
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
+    org_id: UUID = Field(foreign_key=AuthOrganization.id, on_delete=FK.CASCADE)
+    user_id: Varchar[L[255]] = Field()  # IdP uid (GCIP localId), no FK
+    role: Varchar[L[50]] = Field(default="member")
+    created_at: TimestampTZ = Field(default=Fn.now())
+    updated_at: TimestampTZ = Field(default=Fn.now())
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [
+            Index(cls.org_id, cls.user_id, unique=True),
+            Index(cls.org_id),
+            Index(cls.user_id),
+        ]
+
+
+class AuthInvitation(Table, table="org_invitations"):
+    """A pending invite for an email to join an org.
+
+    Backend-agnostic: invitations reference the org (a derp-owned UUID) and an
+    email — never a user, since the invitee may not have an account yet.
+    ``token`` is the opaque secret embedded in the invite link; ``state``
+    tracks the lifecycle (:class:`InvitationState`).
+    """
+
+    id: UUID = Field(primary=True, default=Fn.gen_random_uuid())
+    org_id: UUID = Field(foreign_key=AuthOrganization.id, on_delete=FK.CASCADE)
+    email: Varchar[L[255]] = Field()
+    role: Varchar[L[50]] = Field(default="member")
+    state: Enum[InvitationState] = Field(default=InvitationState.PENDING)
+    token: Varchar[L[255]] = Field(unique=True)
+    expires_at: Nullable[TimestampTZ] = Field()
+    created_at: TimestampTZ = Field(default=Fn.now())
+    updated_at: TimestampTZ = Field(default=Fn.now())
+
+    @classmethod
+    def indexes(cls) -> list[Index]:
+        return [
+            Index(cls.token),
+            Index(cls.org_id),
+            Index(cls.email),
+        ]
