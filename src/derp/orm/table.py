@@ -256,11 +256,19 @@ class Table:
         return None
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize instance to a dict."""
+        """Serialize instance to a dict.
+
+        Columns absent on a partially-hydrated instance (e.g. from a partial
+        SELECT) serialize as ``None`` rather than raising — matching
+        ``derp.chorm.table.Table.to_dict`` so the two ORMs behave identically.
+        """
         ga = object.__getattribute__
         result: dict[str, Any] = {}
         for name, attr_name in type(self).__slot_map__.items():
-            result[name] = ga(self, attr_name)
+            try:
+                result[name] = ga(self, attr_name)
+            except AttributeError:
+                result[name] = None
         return result
 
     def to_json(self) -> str:

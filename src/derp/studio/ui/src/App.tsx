@@ -18,6 +18,7 @@ import {
 } from "./components/ui/sidebar";
 import { Toaster } from "./components/ui/sonner";
 import { AuthPage } from "./routes/AuthPage";
+import { ClickHousePage } from "./routes/ClickHousePage";
 import { DatabasePage } from "./routes/DatabasePage";
 import { EmailPage } from "./routes/EmailPage";
 import { KVPage } from "./routes/KVPage";
@@ -27,6 +28,7 @@ import { StoragePage } from "./routes/StoragePage";
 
 const ROUTE_LABELS: Record<string, string> = {
   "/database": "Database",
+  "/clickhouse": "ClickHouse",
   "/storage": "Storage",
   "/auth": "Authentication",
   "/email": "Email Server",
@@ -82,6 +84,7 @@ export default function App(): JSX.Element {
             <Routes>
               <Route path="/" element={<LandingPage />} />
               <Route path="/database" element={<DatabasePage />} />
+              <Route path="/clickhouse" element={<ClickHousePage />} />
               <Route path="/storage" element={<StoragePage />} />
               <Route path="/auth" element={<AuthPage />} />
               <Route path="/email" element={<EmailPage />} />

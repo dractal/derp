@@ -9,7 +9,10 @@ from typing import Annotated
 import asyncpg
 import typer
 
-from derp.cli.commands.generate import create_rename_resolver, make_rename_callback
+from derp.cli.commands.db.generate import (
+    create_rename_resolver,
+    make_rename_callback,
+)
 from derp.config import ConfigError, DerpConfig
 from derp.orm.loader import discover_tables
 from derp.orm.migrations.categorize import (

@@ -9,9 +9,11 @@ from typing import Self
 from derp.ai import AIClient
 from derp.auth.base import BaseAuthClient
 from derp.auth.email import EmailClient
+from derp.auth.gcip_client import GCIPAuthClient
 from derp.auth.native_client import NativeAuthClient
 from derp.auth.supabase_client import SupabaseAuthClient
 from derp.auth.workos_client import WorkOSAuthClient
+from derp.chorm import ClickHouseEngine
 from derp.config import DerpConfig
 from derp.kv.base import KVClient
 from derp.kv.valkey import ValkeyClient
@@ -51,6 +53,19 @@ class DerpClient:
             if config.database.replica_url is not None
             else None
         )
+        self._ch: ClickHouseEngine | None = (
+            ClickHouseEngine(
+                config.clickhouse.url,
+                host=config.clickhouse.host,
+                port=config.clickhouse.port,
+                username=config.clickhouse.username,
+                password=config.clickhouse.password,
+                database=config.clickhouse.database,
+                secure=config.clickhouse.secure,
+            )
+            if config.clickhouse is not None
+            else None
+        )
         self._email: EmailClient | None = (
             EmailClient(self._config.email) if self._config.email is not None else None
         )
@@ -67,6 +82,8 @@ class DerpClient:
                 self._auth = SupabaseAuthClient(self._config.auth.supabase)
             elif self._config.auth.workos is not None:
                 self._auth = WorkOSAuthClient(self._config.auth.workos)
+            elif self._config.auth.gcip is not None:
+                self._auth = GCIPAuthClient(self._config.auth.gcip)
         self._kv: KVClient | None = (
             ValkeyClient(self._config.kv.valkey)
             if self._config.kv is not None and self._config.kv.valkey is not None
@@ -127,6 +144,8 @@ class DerpClient:
         await self._db.connect()
         if self._replica_db is not None:
             await self._replica_db.connect()
+        if self._ch is not None:
+            await self._ch.connect()
         if self._storage is not None:
             await self._storage.connect()
         if self._kv is not None:
@@ -176,6 +195,7 @@ class DerpClient:
         for client in [
             self._db,
             self._replica_db,
+            self._ch,
             self._storage,
             self._kv,
             self._payments,
@@ -217,6 +237,15 @@ class DerpClient:
         if not self._in_session:
             raise ValueError("Not in a session. Call `connect()` first.")
         return self._db
+
+    @property
+    def ch(self) -> ClickHouseEngine:
+        """Get the ClickHouse engine."""
+        if not self._in_session:
+            raise ValueError("Not in a session. Call `connect()` first.")
+        if self._ch is None:
+            raise ValueError("`ClickHouseConfig` was not passed to `DerpConfig`.")
+        return self._ch
 
     @property
     def email(self) -> EmailClient:

@@ -11,7 +11,7 @@ from pathlib import Path
 import asyncpg
 from typer.testing import CliRunner
 
-from derp.cli.commands.migrate import _LOCK_KEY, _LOCK_NAMESPACE, _compute_hash
+from derp.cli.commands.db.migrate import _LOCK_KEY, _LOCK_NAMESPACE, _compute_hash
 from derp.cli.main import app
 from derp.config import MIGRATIONS_TABLE
 
@@ -106,7 +106,7 @@ class TestGenerateCommand:
 
     def test_generate_creates_migration(self, cli_env: dict):
         """Test that generate creates migration files."""
-        result = runner.invoke(app, ["generate", "--name", "initial"])
+        result = runner.invoke(app, ["db", "generate", "--name", "initial"])
 
         assert result.exit_code == 0
         assert "Created migration:" in result.stdout
@@ -131,17 +131,19 @@ class TestGenerateCommand:
     def test_generate_no_changes(self, cli_env: dict):
         """Test generate when schema is up to date."""
         # First generate
-        result = runner.invoke(app, ["generate", "--name", "initial"])
+        result = runner.invoke(app, ["db", "generate", "--name", "initial"])
         assert result.exit_code == 0
 
         # Second generate should show no changes
-        result = runner.invoke(app, ["generate", "--name", "second"])
+        result = runner.invoke(app, ["db", "generate", "--name", "second"])
         assert result.exit_code == 0
         assert "No changes detected" in result.stdout
 
     def test_generate_custom_migration(self, cli_env: dict):
         """Test generating a custom (empty) migration."""
-        result = runner.invoke(app, ["generate", "--name", "custom_change", "--custom"])
+        result = runner.invoke(
+            app, ["db", "generate", "--name", "custom_change", "--custom"]
+        )
 
         assert result.exit_code == 0
         assert "Created custom migration:" in result.stdout
@@ -160,11 +162,11 @@ class TestMigrateCommand:
     def test_migrate_applies_migrations(self, cli_env: dict):
         """Test that migrate applies pending migrations."""
         # Generate a migration first
-        result = runner.invoke(app, ["generate", "--name", "initial"])
+        result = runner.invoke(app, ["db", "generate", "--name", "initial"])
         assert result.exit_code == 0
 
         # Apply migrations
-        result = runner.invoke(app, ["migrate"])
+        result = runner.invoke(app, ["db", "migrate"])
 
         assert result.exit_code == 0
         assert "Applied" in result.stdout or "Applied 1 migration" in result.stdout
@@ -172,20 +174,20 @@ class TestMigrateCommand:
     def test_migrate_no_pending(self, cli_env: dict):
         """Test migrate when no migrations are pending."""
         # Generate and apply
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
 
         # Try to migrate again
-        result = runner.invoke(app, ["migrate"])
+        result = runner.invoke(app, ["db", "migrate"])
 
         assert result.exit_code == 0
         assert "No pending migrations" in result.stdout
 
     def test_migrate_dry_run(self, cli_env: dict):
         """Test migrate --dry-run shows SQL without executing."""
-        runner.invoke(app, ["generate", "--name", "initial"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
 
-        result = runner.invoke(app, ["migrate", "--dry-run"])
+        result = runner.invoke(app, ["db", "migrate", "--dry-run"])
 
         assert result.exit_code == 0
         assert "Dry run complete" in result.stdout
@@ -196,16 +198,16 @@ class TestStatusCommand:
 
     def test_status_no_migrations(self, cli_env: dict):
         """Test status when no migrations exist."""
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["db", "status"])
 
         assert result.exit_code == 0
         assert "No migrations found" in result.stdout
 
     def test_status_shows_pending(self, cli_env: dict):
         """Test status shows pending migrations."""
-        runner.invoke(app, ["generate", "--name", "initial"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
 
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["db", "status"])
 
         assert result.exit_code == 0
         assert "[ ]" in result.stdout  # Pending marker
@@ -214,10 +216,10 @@ class TestStatusCommand:
 
     def test_status_shows_applied(self, cli_env: dict):
         """Test status shows applied migrations."""
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
 
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["db", "status"])
 
         assert result.exit_code == 0
         assert "[x]" in result.stdout  # Applied marker
@@ -229,7 +231,7 @@ class TestPushCommand:
 
     def test_push_applies_changes(self, cli_env: dict):
         """Test push applies schema changes directly."""
-        result = runner.invoke(app, ["push", "--force"])
+        result = runner.invoke(app, ["db", "push", "--force"])
 
         assert result.exit_code == 0
         assert (
@@ -239,24 +241,24 @@ class TestPushCommand:
 
     def test_push_dry_run(self, cli_env: dict):
         """Test push --dry-run shows SQL without executing."""
-        result = runner.invoke(app, ["push", "--dry-run"])
+        result = runner.invoke(app, ["db", "push", "--dry-run"])
 
         assert result.exit_code == 0
         assert "Dry run complete" in result.stdout or "No changes" in result.stdout
 
     def test_push_shows_no_changes_after_migrate(self, cli_env: dict):
         """After generate + migrate, push should see zero diff."""
-        runner.invoke(app, ["generate", "--name", "initial"])
-        result = runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        result = runner.invoke(app, ["db", "migrate"])
         assert result.exit_code == 0
 
-        result = runner.invoke(app, ["push", "--force", "--dry-run"])
+        result = runner.invoke(app, ["db", "push", "--force", "--dry-run"])
         assert result.exit_code == 0, result.output
         assert "No changes" in result.stdout
 
     def test_push_ignores_rls_changes_when_configured(self, cli_env: dict):
         """Push should ignore standalone RLS drift when ignore_rls is enabled."""
-        result = runner.invoke(app, ["push", "--force"])
+        result = runner.invoke(app, ["db", "push", "--force"])
         assert result.exit_code == 0, result.output
 
         db_url = cli_env["TEST_DATABASE_URL"]
@@ -265,13 +267,13 @@ class TestPushCommand:
         config_path = Path(cli_env["cwd"]) / "derp.toml"
         config_path.write_text(config_path.read_text() + "ignore_rls = true\n")
 
-        result = runner.invoke(app, ["push", "--force", "--dry-run"])
+        result = runner.invoke(app, ["db", "push", "--force", "--dry-run"])
         assert result.exit_code == 0, result.output
         assert "No changes" in result.stdout
 
     def test_push_summary_includes_only_creates_when_no_drops(self, cli_env: dict):
         """Initial push against an empty DB should show only [+] creates."""
-        result = runner.invoke(app, ["push", "--apply-all"])
+        result = runner.invoke(app, ["db", "push", "--apply-all"])
         assert result.exit_code == 0, result.output
         assert "Push will apply" in result.stdout
         assert "create" in result.stdout
@@ -280,13 +282,13 @@ class TestPushCommand:
 
     def test_force_is_alias_for_apply_all(self, cli_env: dict):
         """--force should still work as an alias for --apply-all."""
-        result = runner.invoke(app, ["push", "--force"])
+        result = runner.invoke(app, ["db", "push", "--force"])
         assert result.exit_code == 0, result.output
         assert "Schema pushed successfully" in result.stdout
 
     def test_apply_all_and_skip_drops_are_mutually_exclusive(self, cli_env: dict):
         """Conflicting non-interactive flags should exit non-zero with a clear error."""
-        result = runner.invoke(app, ["push", "--apply-all", "--skip-drops"])
+        result = runner.invoke(app, ["db", "push", "--apply-all", "--skip-drops"])
         assert result.exit_code == 2
         assert "mutually exclusive" in result.output
 
@@ -339,14 +341,14 @@ class User(Table, table="users"):
         db_url = cli_env["TEST_DATABASE_URL"]
 
         # Initial push: creates users (with is_active) + posts.
-        result = runner.invoke(app, ["push", "--apply-all"])
+        result = runner.invoke(app, ["db", "push", "--apply-all"])
         assert result.exit_code == 0, result.output
         assert _table_exists(db_url, "posts")
 
         self._shrink_schema(cli_env)
 
         # --skip-drops: posts table and is_active column should survive.
-        result = runner.invoke(app, ["push", "--skip-drops"])
+        result = runner.invoke(app, ["db", "push", "--skip-drops"])
         assert result.exit_code == 0, result.output
         assert _table_exists(db_url, "posts"), "posts should not be dropped"
         rows = _query(
@@ -358,7 +360,7 @@ class User(Table, table="users"):
 
     def test_skip_drops_summary_shows_skipped_count(self, cli_env: dict):
         """When drops are skipped alongside additions, output should report it."""
-        runner.invoke(app, ["push", "--apply-all"])
+        runner.invoke(app, ["db", "push", "--apply-all"])
 
         # Mixed change set: drop posts+is_active AND add users.handle.
         schema_path = Path(cli_env["cwd"]) / "schema.py"
@@ -379,7 +381,7 @@ class User(Table, table="users"):
         )
         _evict_schema_cache()
 
-        result = runner.invoke(app, ["push", "--skip-drops"])
+        result = runner.invoke(app, ["db", "push", "--skip-drops"])
         assert result.exit_code == 0, result.output
         # The "Schema pushed successfully (N applied, M skipped)" footer.
         assert "skipped" in result.output
@@ -387,43 +389,43 @@ class User(Table, table="users"):
     def test_apply_all_drops_everything(self, cli_env: dict):
         """--apply-all should drop columns and tables that left the schema."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["push", "--apply-all"])
+        runner.invoke(app, ["db", "push", "--apply-all"])
         assert _table_exists(db_url, "posts")
 
         self._shrink_schema(cli_env)
 
-        result = runner.invoke(app, ["push", "--apply-all"])
+        result = runner.invoke(app, ["db", "push", "--apply-all"])
         assert result.exit_code == 0, result.output
         assert not _table_exists(db_url, "posts"), "posts should have been dropped"
 
     def test_interactive_choice_1_applies_all(self, cli_env: dict):
         """Selecting '1' at the categorized prompt applies everything."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["push", "--apply-all"])
+        runner.invoke(app, ["db", "push", "--apply-all"])
         self._shrink_schema(cli_env)
 
-        result = runner.invoke(app, ["push"], input="1\n")
+        result = runner.invoke(app, ["db", "push"], input="1\n")
         assert result.exit_code == 0, result.output
         assert not _table_exists(db_url, "posts")
 
     def test_interactive_choice_2_skips_drops(self, cli_env: dict):
         """Selecting '2' (default when drops exist) preserves drop targets."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["push", "--apply-all"])
+        runner.invoke(app, ["db", "push", "--apply-all"])
         self._shrink_schema(cli_env)
 
         # Just hit return — default is "Skip drops" because drops exist
-        result = runner.invoke(app, ["push"], input="\n")
+        result = runner.invoke(app, ["db", "push"], input="\n")
         assert result.exit_code == 0, result.output
         assert _table_exists(db_url, "posts"), "default should preserve drops"
 
     def test_interactive_choice_4_cancels(self, cli_env: dict):
         """Selecting '4' aborts without applying anything."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["push", "--apply-all"])
+        runner.invoke(app, ["db", "push", "--apply-all"])
         self._shrink_schema(cli_env)
 
-        result = runner.invoke(app, ["push"], input="4\n")
+        result = runner.invoke(app, ["db", "push"], input="4\n")
         assert result.exit_code != 0
         assert _table_exists(db_url, "posts")
 
@@ -434,12 +436,12 @@ class User(Table, table="users"):
         users.is_active. We answer 'y' to the first only, 'n' to the rest.
         """
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["push", "--apply-all"])
+        runner.invoke(app, ["db", "push", "--apply-all"])
         self._shrink_schema(cli_env)
 
         # Choice 3 = review each. Then a generous stream of "y\nn\n..." pairs;
         # extra inputs are ignored once the loop ends.
-        result = runner.invoke(app, ["push"], input="3\n" + "y\nn\n" * 10)
+        result = runner.invoke(app, ["db", "push"], input="3\n" + "y\nn\n" * 10)
         assert result.exit_code == 0, result.output
 
         # At least one drop should have happened (we said "y" first), but
@@ -460,11 +462,11 @@ class User(Table, table="users"):
     def test_interactive_review_each_quit_stops(self, cli_env: dict):
         """Answering 'q' during review-each should stop and apply nothing more."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["push", "--apply-all"])
+        runner.invoke(app, ["db", "push", "--apply-all"])
         self._shrink_schema(cli_env)
 
         # Choice 3 = review each, then 'q' immediately to quit before any "y".
-        result = runner.invoke(app, ["push"], input="3\nq\n")
+        result = runner.invoke(app, ["db", "push"], input="3\nq\n")
         assert result.exit_code == 0, result.output
         assert _table_exists(db_url, "posts"), "no drops should have been applied"
 
@@ -475,9 +477,9 @@ class TestPullCommand:
     def test_pull_creates_snapshot(self, cli_env: dict):
         """Test pull creates a snapshot from database."""
         # First push some schema
-        runner.invoke(app, ["push", "--force"])
+        runner.invoke(app, ["db", "push", "--force"])
 
-        result = runner.invoke(app, ["pull"])
+        result = runner.invoke(app, ["db", "pull"])
 
         assert result.exit_code == 0
         assert "Introspected database" in result.stdout
@@ -485,9 +487,9 @@ class TestPullCommand:
 
     def test_pull_with_migration_flag(self, cli_env: dict):
         """Test pull --migration creates a migration entry."""
-        runner.invoke(app, ["push", "--force"])
+        runner.invoke(app, ["db", "push", "--force"])
 
-        result = runner.invoke(app, ["pull", "--migration", "--name", "baseline"])
+        result = runner.invoke(app, ["db", "pull", "--migration", "--name", "baseline"])
 
         assert result.exit_code == 0
         assert "Created migration:" in result.stdout
@@ -502,7 +504,7 @@ class TestCheckCommand:
 
     def test_check_no_snapshots(self, cli_env: dict):
         """Test check fails when no snapshots exist."""
-        result = runner.invoke(app, ["check"])
+        result = runner.invoke(app, ["db", "check"])
 
         assert result.exit_code == 1
         # Message is output to stderr, check combined output
@@ -510,9 +512,9 @@ class TestCheckCommand:
 
     def test_check_schema_synced(self, cli_env: dict):
         """Test check passes when schema is synced."""
-        runner.invoke(app, ["generate", "--name", "initial"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
 
-        result = runner.invoke(app, ["check"])
+        result = runner.invoke(app, ["db", "check"])
 
         assert result.exit_code == 0
         assert "Schema is up to date" in result.stdout
@@ -523,13 +525,13 @@ class TestDropCommand:
 
     def test_drop_migration(self, cli_env: dict):
         """Test dropping a specific migration."""
-        runner.invoke(app, ["generate", "--name", "initial"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
 
         migrations_dir = Path(cli_env["cwd"]) / "drizzle"
         folders_before = list(migrations_dir.glob("0000_*"))
         assert len(folders_before) == 1
 
-        result = runner.invoke(app, ["drop", "0000", "--force"])
+        result = runner.invoke(app, ["db", "drop", "0000", "--force"])
 
         assert result.exit_code == 0
         assert "Deleted" in result.stdout or "dropped" in result.stdout.lower()
@@ -539,11 +541,11 @@ class TestDropCommand:
 
     def test_drop_all_migrations(self, cli_env: dict):
         """Test dropping all migrations."""
-        runner.invoke(app, ["generate", "--name", "first"])
+        runner.invoke(app, ["db", "generate", "--name", "first"])
         # Manually create second migration by modifying schema
-        runner.invoke(app, ["generate", "--name", "second", "--custom"])
+        runner.invoke(app, ["db", "generate", "--name", "second", "--custom"])
 
-        result = runner.invoke(app, ["drop", "--all", "--force"])
+        result = runner.invoke(app, ["db", "drop", "--all", "--force"])
 
         assert result.exit_code == 0
         assert "All migrations dropped" in result.stdout
@@ -558,7 +560,7 @@ class TestGenerateDownSQL:
 
     def test_generate_creates_down_sql(self, cli_env: dict):
         """Test that generate creates a down.sql file."""
-        result = runner.invoke(app, ["generate", "--name", "initial"])
+        result = runner.invoke(app, ["db", "generate", "--name", "initial"])
         assert result.exit_code == 0
         assert "down.sql" in result.stdout
 
@@ -573,7 +575,7 @@ class TestGenerateDownSQL:
 
     def test_down_sql_is_inverse_of_up(self, cli_env: dict):
         """Test that down.sql contains inverse operations (DROP for CREATE)."""
-        result = runner.invoke(app, ["generate", "--name", "initial"])
+        result = runner.invoke(app, ["db", "generate", "--name", "initial"])
         assert result.exit_code == 0
 
         migrations_dir = Path(cli_env["cwd"]) / "drizzle"
@@ -594,8 +596,8 @@ class TestHashValidation:
     def test_migrate_stores_correct_hash(self, cli_env: dict):
         """Hash stored in derp_migrations must match _compute_hash of the SQL file."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["generate", "--name", "initial"])
-        result = runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        result = runner.invoke(app, ["db", "migrate"])
         assert result.exit_code == 0
 
         migrations_dir = Path(cli_env["cwd"]) / "drizzle"
@@ -614,8 +616,8 @@ class TestHashValidation:
         """A tampered migration should prevent any new migrations from running."""
         db_url = cli_env["TEST_DATABASE_URL"]
 
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
 
         # Snapshot applied versions before tampering
         rows_before = _query(db_url, f"SELECT version FROM {MIGRATIONS_TABLE}")
@@ -628,9 +630,9 @@ class TestHashValidation:
             "-- tampered\nDROP TABLE users CASCADE;"
         )
 
-        runner.invoke(app, ["generate", "--name", "second", "--custom"])
+        runner.invoke(app, ["db", "generate", "--name", "second", "--custom"])
 
-        result = runner.invoke(app, ["migrate"])
+        result = runner.invoke(app, ["db", "migrate"])
         assert result.exit_code == 1
         assert "modified" in result.output.lower()
 
@@ -645,14 +647,14 @@ class TestHashValidation:
         """When hashes match, new migrations apply and store correct hashes."""
         db_url = cli_env["TEST_DATABASE_URL"]
 
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
 
         migrations_dir = Path(cli_env["cwd"]) / "drizzle"
-        runner.invoke(app, ["generate", "--name", "second", "--custom"])
+        runner.invoke(app, ["db", "generate", "--name", "second", "--custom"])
         _make_custom_migration_executable(migrations_dir, "0001")
 
-        result = runner.invoke(app, ["migrate"])
+        result = runner.invoke(app, ["db", "migrate"])
         assert result.exit_code == 0
 
         # Both migrations should have correct hashes
@@ -674,8 +676,8 @@ class TestAdvisoryLock:
     def test_lock_released_after_successful_migrate(self, cli_env: dict):
         """Advisory lock should be free after a successful migration."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["generate", "--name", "initial"])
-        result = runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        result = runner.invoke(app, ["db", "migrate"])
         assert result.exit_code == 0
 
         # pg_try_advisory_lock returns true if the lock is available
@@ -699,16 +701,16 @@ class TestAdvisoryLock:
         """Advisory lock should be released even when migration fails."""
         db_url = cli_env["TEST_DATABASE_URL"]
 
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
 
         # Tamper to trigger hash mismatch
         migrations_dir = Path(cli_env["cwd"]) / "drizzle"
         folders = list(migrations_dir.glob("0000_*"))
         (folders[0] / "migration.sql").write_text("-- tampered\nSELECT 1;")
-        runner.invoke(app, ["generate", "--name", "second", "--custom"])
+        runner.invoke(app, ["db", "generate", "--name", "second", "--custom"])
 
-        result = runner.invoke(app, ["migrate"])
+        result = runner.invoke(app, ["db", "migrate"])
         assert result.exit_code == 1
 
         # Lock should still be free despite the failure
@@ -734,13 +736,13 @@ class TestRollbackCommand:
     def test_rollback_drops_tables(self, cli_env: dict):
         """Rollback should execute down.sql, actually removing tables."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
 
         assert _table_exists(db_url, "users")
         assert _table_exists(db_url, "posts")
 
-        result = runner.invoke(app, ["rollback"])
+        result = runner.invoke(app, ["db", "rollback"])
         assert result.exit_code == 0
 
         # Tables should be gone
@@ -754,10 +756,10 @@ class TestRollbackCommand:
     def test_rollback_dry_run_preserves_state(self, cli_env: dict):
         """Dry run should leave database completely unchanged."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
 
-        result = runner.invoke(app, ["rollback", "--dry-run"])
+        result = runner.invoke(app, ["db", "rollback", "--dry-run"])
         assert result.exit_code == 0
         assert "Dry run complete" in result.stdout
 
@@ -769,9 +771,9 @@ class TestRollbackCommand:
 
     def test_rollback_no_applied(self, cli_env: dict):
         """Test rollback when no migrations are applied."""
-        runner.invoke(app, ["generate", "--name", "initial"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
 
-        result = runner.invoke(app, ["rollback"])
+        result = runner.invoke(app, ["db", "rollback"])
 
         assert result.exit_code == 0
         assert "No applied migrations" in result.stdout
@@ -780,17 +782,17 @@ class TestRollbackCommand:
         """Rollback --all should drop all tables and clear tracking."""
         db_url = cli_env["TEST_DATABASE_URL"]
         migrations_dir = Path(cli_env["cwd"]) / "drizzle"
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
-        runner.invoke(app, ["generate", "--name", "second", "--custom"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "second", "--custom"])
         _make_custom_migration_executable(migrations_dir, "0001")
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "migrate"])
 
         # Both applied
         rows = _query(db_url, f"SELECT version FROM {MIGRATIONS_TABLE}")
         assert len(rows) == 2
 
-        result = runner.invoke(app, ["rollback", "--all"])
+        result = runner.invoke(app, ["db", "rollback", "--all"])
         assert result.exit_code == 0
 
         # All tables and tracking rows gone
@@ -802,14 +804,14 @@ class TestRollbackCommand:
     def test_rollback_then_migrate_recreates_tables(self, cli_env: dict):
         """Round-trip: tables dropped by rollback are recreated by migrate."""
         db_url = cli_env["TEST_DATABASE_URL"]
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
         assert _table_exists(db_url, "users")
 
-        runner.invoke(app, ["rollback"])
+        runner.invoke(app, ["db", "rollback"])
         assert not _table_exists(db_url, "users")
 
-        result = runner.invoke(app, ["migrate"])
+        result = runner.invoke(app, ["db", "migrate"])
         assert result.exit_code == 0
         assert _table_exists(db_url, "users")
         assert _table_exists(db_url, "posts")
@@ -821,13 +823,13 @@ class TestRollbackCommand:
         """Rollback --to should leave earlier migrations' tables intact."""
         db_url = cli_env["TEST_DATABASE_URL"]
         migrations_dir = Path(cli_env["cwd"]) / "drizzle"
-        runner.invoke(app, ["generate", "--name", "initial"])
-        runner.invoke(app, ["migrate"])
-        runner.invoke(app, ["generate", "--name", "second", "--custom"])
+        runner.invoke(app, ["db", "generate", "--name", "initial"])
+        runner.invoke(app, ["db", "migrate"])
+        runner.invoke(app, ["db", "generate", "--name", "second", "--custom"])
         _make_custom_migration_executable(migrations_dir, "0001")
-        runner.invoke(app, ["migrate"])
+        runner.invoke(app, ["db", "migrate"])
 
-        result = runner.invoke(app, ["rollback", "--to", "0000"])
+        result = runner.invoke(app, ["db", "rollback", "--to", "0000"])
         assert result.exit_code == 0
 
         # Initial migration's tables should survive
@@ -850,4 +852,4 @@ class TestVersionCommand:
         result = runner.invoke(app, ["version"])
 
         assert result.exit_code == 0
-        assert "derp version" in result.stdout
+        assert "derp-py" in result.stdout

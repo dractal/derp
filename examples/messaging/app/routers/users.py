@@ -41,7 +41,9 @@ async def update_current_user_profile(
             detail="No fields to update",
         )
 
-    updated_user = await derp.auth.update_user(user_id=user.id, **updates)
+    updated_user = (
+        await derp.auth.update_user(user_id=user.id, **updates)
+    ).raise_for_status()
     return UserPublicResponse.model_validate(updated_user)
 
 
@@ -88,7 +90,9 @@ async def upload_avatar(
     )
 
     avatar_url = derp.storage.get_url(bucket="avatars", key=key)
-    await derp.auth.update_user(user_id=user.id, avatar_url=avatar_url)
+    (
+        await derp.auth.update_user(user_id=user.id, avatar_url=avatar_url)
+    ).raise_for_status()
 
     return AvatarUploadResponse(avatar_url=avatar_url)
 

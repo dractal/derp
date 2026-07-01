@@ -26,6 +26,7 @@ dependencies = [
     "stripe[async]>=13.0.1",
     "fastapi>=0.128.0",
     "uvicorn>=0.40.0",
+    "clickhouse-connect>=1.0.1",
 ]
 
 [project.scripts]
@@ -79,6 +80,8 @@ dev = [
     "sqlalchemy[asyncio]>=2.0",
     "tortoise-orm>=0.22",
     "fal-client>=0.13.2",
+    "chdb>=4.1.8",
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.ty.rules]

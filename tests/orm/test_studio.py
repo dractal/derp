@@ -461,3 +461,93 @@ def test_database_table_rows_clamps_limit(temp_dir: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["limit"] == 500
+
+
+# --- ClickHouse API endpoint tests ---
+
+
+def _mock_ch_derp() -> MagicMock:
+    mock = _make_mock_derp()
+    mock.config.clickhouse = MagicMock()
+    mock.config.clickhouse.introspect_database = "default"
+    mock.ch = MagicMock()
+    return mock
+
+
+def test_clickhouse_tables_endpoint(temp_dir: Path) -> None:
+    """ClickHouse tables endpoint returns engine/columns plus row counts."""
+    from derp.chorm.migrations.snapshot import (
+        ColumnSnapshot,
+        EngineSnapshot,
+        SchemaSnapshot,
+        TableSnapshot,
+    )
+
+    mock_derp = _mock_ch_derp()
+    mock_derp.ch.fetch = AsyncMock(return_value=[{"name": "events", "total_rows": 7}])
+
+    snapshot = SchemaSnapshot(
+        tables=[
+            TableSnapshot(
+                name="events",
+                database="default",
+                columns=[
+                    ColumnSnapshot(name="id", type="UInt64"),
+                    ColumnSnapshot(name="payload", type="Nullable(String)"),
+                ],
+                engine=EngineSnapshot(name="MergeTree", order_by="id"),
+            )
+        ]
+    )
+
+    with patch("derp.studio.server.ch_introspect", AsyncMock(return_value=snapshot)):
+        client = _create_app_with_mock_derp(temp_dir, mock_derp)
+        response = client.get("/api/clickhouse/tables")
+
+    assert response.status_code == 200
+    table = response.json()["tables"][0]
+    assert table["name"] == "events"
+    assert table["row_count"] == 7
+    assert table["engine"]["name"] == "MergeTree"
+    assert table["engine"]["order_by"] == "id"
+    assert table["columns"][1]["nullable"] is True
+
+
+def test_clickhouse_tables_requires_config(temp_dir: Path) -> None:
+    """The endpoint 400s when no [clickhouse] section is configured."""
+    mock_derp = _make_mock_derp()
+    mock_derp.config.clickhouse = None
+
+    client = _create_app_with_mock_derp(temp_dir, mock_derp)
+    response = client.get("/api/clickhouse/tables")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "ClickHouse is not configured."
+
+
+def test_clickhouse_rows_endpoint(temp_dir: Path) -> None:
+    """Rows endpoint returns paginated rows and a total count."""
+    mock_derp = _mock_ch_derp()
+    mock_derp.ch.fetch = AsyncMock(side_effect=[[{"n": 100}], [{"id": 1}, {"id": 2}]])
+
+    client = _create_app_with_mock_derp(temp_dir, mock_derp)
+    response = client.get("/api/clickhouse/tables/events/rows?limit=2&offset=0")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 100
+    assert data["limit"] == 2
+    assert len(data["rows"]) == 2
+
+
+def test_clickhouse_rows_rejects_bad_table_name(temp_dir: Path) -> None:
+    """A non-identifier table name is rejected before any query runs."""
+    mock_derp = _mock_ch_derp()
+    mock_derp.ch.fetch = AsyncMock()
+
+    client = _create_app_with_mock_derp(temp_dir, mock_derp)
+    response = client.get("/api/clickhouse/tables/ev;drop/rows")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid table name."
+    mock_derp.ch.fetch.assert_not_called()

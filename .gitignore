@@ -19,4 +19,9 @@ src/derp/studio/static/
 # Docs build output
 docs/_build/
 
+# Coverage data
+.coverage
+.coverage.*
+htmlcov/
+
 .DS_Store

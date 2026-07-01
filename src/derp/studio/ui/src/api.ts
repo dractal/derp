@@ -4,6 +4,7 @@ export type ConfigSection = Record<string, unknown>;
 
 export interface StudioConfig {
   database: ConfigSection;
+  clickhouse: ConfigSection | null;
   storage: ConfigSection | null;
   auth: ConfigSection | null;
   email: ConfigSection | null;
@@ -563,4 +564,75 @@ export async function fetchCharges(
   signal?: AbortSignal,
 ): Promise<StripeListResponse<StripeCharge>> {
   return fetchStripeList<StripeCharge>("charges", limit, startingAfter, signal);
+}
+
+// --- ClickHouse (read-only) ---
+
+export interface ClickHouseEngineInfo {
+  name: string;
+  order_by: string | null;
+  partition_by: string | null;
+  primary_key: string | null;
+  sample_by: string | null;
+  ttl: string | null;
+  settings: Record<string, string>;
+}
+
+export interface ClickHouseColumnInfo {
+  name: string;
+  type: string;
+  default: string | null;
+  materialized: string | null;
+  codec: string | null;
+  ttl: string | null;
+  comment: string | null;
+  nullable: boolean;
+}
+
+export interface ClickHouseIndexInfo {
+  name: string;
+  expression: string;
+  type: string;
+  granularity: number;
+}
+
+export interface ClickHouseTableInfo {
+  name: string;
+  database: string | null;
+  engine: ClickHouseEngineInfo | null;
+  row_count: number;
+  columns: ClickHouseColumnInfo[];
+  indexes: ClickHouseIndexInfo[];
+}
+
+export async function fetchClickHouseTables(
+  signal?: AbortSignal,
+): Promise<{ tables: ClickHouseTableInfo[] }> {
+  const response = await fetch("/api/clickhouse/tables", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load ClickHouse tables: HTTP ${response.status}`);
+  }
+  return (await response.json()) as { tables: ClickHouseTableInfo[] };
+}
+
+export async function fetchClickHouseTableRows(
+  table: string,
+  limit: number = 50,
+  offset: number = 0,
+  signal?: AbortSignal,
+): Promise<TableRowsResponse> {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  const response = await fetch(
+    `/api/clickhouse/tables/${encodeURIComponent(table)}/rows?${params}`,
+    { headers: { Accept: "application/json" }, signal },
+  );
+  if (!response.ok) {
+    throw new Error(`Failed to load ClickHouse rows: HTTP ${response.status}`);
+  }
+  return (await response.json()) as TableRowsResponse;
 }

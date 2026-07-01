@@ -145,12 +145,28 @@ Environment variables starting with `$` are resolved at load time.
 
 ### Auth
 
-Email/password, magic links, Google/GitHub OAuth, JWTs, organizations. Native, Supabase, or WorkOS backend.
+Email/password, magic links, Google/GitHub OAuth, JWTs, organizations. Native, Supabase, WorkOS, or Google Cloud Identity Platform (GCIP) backend — exactly one, selected by config.
 
 ```python
 user, tokens = await derp.auth.sign_up(email="alice@example.com", password="s3cure!")
 session = await derp.auth.authenticate(request)  # from Bearer token
 org = await derp.auth.create_org(name="Acme", slug="acme", creator_id=user.id)
+```
+
+**Google Cloud Identity Platform (GCIP)** is a hosted IdP backend (a peer of
+Supabase/WorkOS). It verifies Google-issued RS256 ID tokens locally, runs
+user-facing flows through the API-key Identity Toolkit endpoints, and user
+administration through a service-account-signed token. GCIP sends its own
+magic-link and password-reset emails, so — unlike the native backend — it does
+**not** require an `[email]` block. It has no organization concept, so the org
+methods raise `NotImplementedError`.
+
+```toml
+[auth.gcip]
+project_id = "$GCIP_PROJECT_ID"
+api_key = "$GCIP_API_KEY"                       # GCIP Web API key
+service_account_json = "$GCIP_SERVICE_ACCOUNT_JSON"  # full SA key JSON
+# redirect_uri = "https://yourapp.com/callback"
 ```
 
 ### Payments (Stripe)
