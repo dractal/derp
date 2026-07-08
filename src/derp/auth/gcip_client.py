@@ -134,8 +134,10 @@ class _Connection:
 
     http: httpx.AsyncClient
     jwks: AsyncJWKS
-    client_email: str
-    private_key: str
+    # Service-account fields are None on a verify-only deployment (no
+    # ``service_account_json`` configured); admin calls guard on them.
+    client_email: str | None
+    private_key: str | None
     private_key_id: str | None
     token_uri: str
     access_token: str | None = None
@@ -236,30 +238,52 @@ class GCIPAuthClient(BaseAuthClient):
         GCIP spans several hosts (Identity Toolkit, secure-token, the OAuth
         token endpoint), so the HTTP client carries no ``base_url`` and every
         call uses a fully-qualified URL. :class:`AsyncJWKS` shares that HTTP
-        client to fetch and cache the secure-token signing keys. The
-        service-account JSON is parsed here so a malformed key fails at startup
+        client to fetch and cache the secure-token signing keys.
+
+        The service-account JSON is optional (a verify-only deployment omits
+        it); when present it is parsed here so a malformed key fails at startup
         rather than on the first admin call (the ``$ENV`` ref is already resolved
-        by the config loader, so this is literal JSON).
+        by the config loader, so this is literal JSON). When absent, the SA
+        fields stay ``None`` and admin methods raise a clear error at the point
+        of use.
         """
         if self._conn is not None:
             return
-        try:
-            sa = json.loads(self._config.service_account_json)
-        except (ValueError, json.JSONDecodeError) as e:
-            raise AuthBackendError("GCIP service_account_json is not valid JSON") from e
-        if not isinstance(sa, dict) or not {"client_email", "private_key"} <= sa.keys():
-            raise AuthBackendError(
-                "GCIP service_account_json is missing required fields "
-                "(client_email, private_key)"
-            )
+        client_email: str | None = None
+        private_key: str | None = None
+        private_key_id: str | None = None
+        token_uri = _DEFAULT_TOKEN_URI
+        if self._config.service_account_json is not None:
+            try:
+                sa = json.loads(self._config.service_account_json)
+            except (ValueError, json.JSONDecodeError) as e:
+                raise AuthBackendError(
+                    "GCIP service_account_json is not valid JSON"
+                ) from e
+            if (
+                not isinstance(sa, dict)
+                or not {
+                    "client_email",
+                    "private_key",
+                }
+                <= sa.keys()
+            ):
+                raise AuthBackendError(
+                    "GCIP service_account_json is missing required fields "
+                    "(client_email, private_key)"
+                )
+            client_email = sa["client_email"]
+            private_key = sa["private_key"]
+            private_key_id = sa.get("private_key_id")
+            token_uri = sa.get("token_uri", _DEFAULT_TOKEN_URI)
         http = httpx.AsyncClient(timeout=30.0)
         self._conn = _Connection(
             http=http,
             jwks=AsyncJWKS(self.JWKS_URL, http),
-            client_email=sa["client_email"],
-            private_key=sa["private_key"],
-            private_key_id=sa.get("private_key_id"),
-            token_uri=sa.get("token_uri", _DEFAULT_TOKEN_URI),
+            client_email=client_email,
+            private_key=private_key,
+            private_key_id=private_key_id,
+            token_uri=token_uri,
         )
 
     async def disconnect(self) -> None:
@@ -283,6 +307,37 @@ class GCIPAuthClient(BaseAuthClient):
         if self._conn is None:
             raise AuthNotConnectedError()
         return self._conn
+
+    # ------------------------------------------------------------------
+    # Feature-credential guards
+    #
+    # Only ``project_id`` is required to verify tokens; each of the credentials
+    # below gates one feature and is validated here, at the point of use, so a
+    # verify-only deployment can omit them and still call ``authenticate``.
+    # ------------------------------------------------------------------
+
+    def _require_api_key(self) -> str:
+        """Return the Web API key, or explain that sign-in needs it."""
+        key = self._config.public_api_key
+        if key is None:
+            raise AuthBackendError(
+                "GCIP sign-in, sign-up, OAuth, magic-link, password-reset and "
+                "token-refresh operations require `public_api_key` in "
+                "[auth.gcip]. Omit them by signing in client-side with the "
+                "Firebase JS SDK and using this backend only to verify tokens."
+            )
+        return key
+
+    def _require_org_secret(self) -> str:
+        """Return the active-org HMAC secret, or explain that orgs need it."""
+        secret = self._config.org_context_secret
+        if secret is None:
+            raise AuthBackendError(
+                "GCIP active-org features (set_active_org and X-Org-Context "
+                "resolution) require `org_context_secret` (>= 32 chars) in "
+                "[auth.gcip]."
+            )
+        return secret
 
     # ------------------------------------------------------------------
     # Error helpers
@@ -332,6 +387,17 @@ class GCIPAuthClient(BaseAuthClient):
         read, so N concurrent requests on a cold/expired token (or N requests
         that all 401 at once) mint exactly one token and the rest reuse it.
         """
+        # Admin endpoints need a service account; a verify-only deployment has
+        # none, so fail here (covers every admin method — they all route through
+        # ``_admin_request`` → here) rather than emitting an opaque token error.
+        if conn.client_email is None or conn.private_key is None:
+            raise AuthBackendError(
+                "GCIP user-administration operations (get/find/list/update/"
+                "delete user and revoke_all_sessions) require "
+                "`service_account_json` in [auth.gcip]."
+            )
+        client_email, private_key = conn.client_email, conn.private_key
+
         # Fast path: a still-valid cached token needs no lock.
         if (
             not force
@@ -359,14 +425,14 @@ class GCIPAuthClient(BaseAuthClient):
             now = int(time.time())
             assertion = pyjwt.encode(
                 {
-                    "iss": conn.client_email,
-                    "sub": conn.client_email,
+                    "iss": client_email,
+                    "sub": client_email,
                     "aud": conn.token_uri,
                     "scope": _ADMIN_SCOPE,
                     "iat": now,
                     "exp": now + 3600,
                 },
-                conn.private_key,
+                private_key,
                 algorithm="RS256",
                 headers={"kid": conn.private_key_id},
             )
@@ -444,9 +510,7 @@ class GCIPAuthClient(BaseAuthClient):
     ) -> httpx.Response:
         """Make an API-key-authenticated user-facing call."""
         conn = self._ensure_connected()
-        url = (
-            f"{self.IDENTITY_TOOLKIT_BASE}/{endpoint}?key={self._config.public_api_key}"
-        )
+        url = f"{self.IDENTITY_TOOLKIT_BASE}/{endpoint}?key={self._require_api_key()}"
         try:
             resp = await conn.http.post(url, json=json)
         except httpx.HTTPError as e:
@@ -633,6 +697,18 @@ class GCIPAuthClient(BaseAuthClient):
         raw = request.headers.get(_ORG_CONTEXT_HEADER)
         if not raw:
             return session
+        # Active orgs are opt-in: with no `org_context_secret` configured there
+        # is nothing to verify the pointer against, so ignore any header and
+        # stay identity-only rather than raise (authenticate never raises on a
+        # client-supplied pointer).
+        secret = self._config.org_context_secret
+        if secret is None:
+            logger.debug(
+                "org-context header present but org_context_secret is unset; "
+                "ignoring for user %s",
+                session.user_id,
+            )
+            return session
         # Verify the signed pointer (``org_id:slug:sig``, HMAC bound to the user
         # — see set_active_org for the matching format). A malformed or foreign
         # pointer is ignored, yielding an identity-only session. Each branch
@@ -646,7 +722,7 @@ class GCIPAuthClient(BaseAuthClient):
             return session
         org_id, slug, sig = parts
         expected = hmac.new(
-            self._config.org_context_secret.encode(),
+            secret.encode(),
             f"{session.user_id}:{org_id}:{slug}".encode(),
             hashlib.sha256,
         ).hexdigest()
@@ -1015,7 +1091,7 @@ class GCIPAuthClient(BaseAuthClient):
             InvalidTokenError: Refresh token is unknown, expired, or revoked.
         """
         conn = self._ensure_connected()
-        url = f"{self.SECURE_TOKEN_BASE}/token?key={self._config.public_api_key}"
+        url = f"{self.SECURE_TOKEN_BASE}/token?key={self._require_api_key()}"
         try:
             resp = await conn.http.post(
                 url,
@@ -1226,6 +1302,8 @@ class GCIPAuthClient(BaseAuthClient):
         """
         self._check_org_ref(org_id, slug, allow_clear=True)
         if org_id is None and slug is None:
+            # Clearing the active org mints an empty credential and needs no
+            # secret (there is nothing to sign).
             return AuthResult(
                 value=TokenSet(
                     access_token="",
@@ -1236,6 +1314,9 @@ class GCIPAuthClient(BaseAuthClient):
                     expires_at=datetime.now(UTC),
                 )
             )
+        # Fail fast on a missing secret before any DB I/O — signing the pointer
+        # needs it, and it is a config error, not an expected auth failure.
+        secret = self._require_org_secret()
         user_id = str(session_id)
         db = self._db()
         # One query for both fields — the pointer carries slug *and* id, and
@@ -1265,7 +1346,7 @@ class GCIPAuthClient(BaseAuthClient):
         # expiry — authority over the current role/membership is the DB, resolved
         # per request in authenticate (which recomputes this exact signature).
         sig = hmac.new(
-            self._config.org_context_secret.encode(),
+            secret.encode(),
             f"{user_id}:{member_org_id}:{member_slug}".encode(),
             hashlib.sha256,
         ).hexdigest()

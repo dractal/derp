@@ -118,6 +118,31 @@ def connected_client(
     return gcip_client
 
 
+@pytest.fixture
+def verify_only_client(rsa_keypair) -> GCIPAuthClient:
+    """A connected client configured with only ``project_id``.
+
+    No API key, service account, or org secret — the minimal verify-only
+    deployment. The connection carries no SA fields (as ``connect()`` leaves
+    them when ``service_account_json`` is unset) so the point-of-use guards
+    fire. JWKS still returns the test public key so token verification works.
+    """
+    _, public_key = rsa_keypair
+    jwks = MagicMock()
+    jwks.get_signing_key = AsyncMock(return_value=public_key)
+
+    client = GCIPAuthClient(GCIPConfig(project_id=PROJECT_ID))
+    client._conn = _Connection(
+        http=AsyncMock(),
+        jwks=jwks,
+        client_email=None,
+        private_key=None,
+        private_key_id=None,
+        token_uri="https://oauth2.googleapis.com/token",
+    )
+    return client
+
+
 # ── ID-token / response builders ──────────────────────────────────
 
 
@@ -212,12 +237,28 @@ class TestConfig:
         )
         assert cfg.project_id == PROJECT_ID
 
+    def test_project_id_is_the_only_required_field(self) -> None:
+        # Verify-only deployments configure a single field; the three feature
+        # credentials default to None and are checked at the point of use.
+        cfg = GCIPConfig(project_id=PROJECT_ID)
+        assert cfg.project_id == PROJECT_ID
+        assert cfg.public_api_key is None
+        assert cfg.service_account_json is None
+        assert cfg.org_context_secret is None
+
+    def test_missing_project_id_is_rejected(self, service_account_json: str) -> None:
+        with pytest.raises(ValidationError):
+            GCIPConfig(  # ty:ignore[missing-argument]
+                public_api_key=API_KEY,
+                service_account_json=service_account_json,
+            )
+
     @pytest.mark.parametrize(
-        "missing",
-        ["project_id", "public_api_key", "service_account_json", "org_context_secret"],
+        "optional",
+        ["public_api_key", "service_account_json", "org_context_secret"],
     )
-    def test_missing_required_field(
-        self, service_account_json: str, missing: str
+    def test_feature_credentials_are_optional(
+        self, service_account_json: str, optional: str
     ) -> None:
         fields = {
             "project_id": PROJECT_ID,
@@ -225,9 +266,14 @@ class TestConfig:
             "service_account_json": service_account_json,
             "org_context_secret": "secret-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         }
-        del fields[missing]
+        del fields[optional]
+        cfg = GCIPConfig(**fields)  # ty:ignore[invalid-argument-type]
+        assert getattr(cfg, optional) is None
+
+    def test_org_context_secret_enforces_min_length_when_set(self) -> None:
+        # None is allowed, but a supplied secret must clear the 32-char floor.
         with pytest.raises(ValidationError):
-            GCIPConfig(**fields)  # ty:ignore[invalid-argument-type]
+            GCIPConfig(project_id=PROJECT_ID, org_context_secret="too-short")
 
     def test_single_backend_enforced(self, gcip_config: GCIPConfig) -> None:
         with pytest.raises(ValidationError):
@@ -435,6 +481,77 @@ class TestAuthenticate:
         request.headers = {"Authorization": "Bearer some.token"}
         with pytest.raises(AuthNotConnectedError):
             await gcip_client.authenticate(request)
+
+
+# ── Verify-only deployment (project_id only) ──────────────────────
+
+
+class TestVerifyOnly:
+    """A deployment that configures only ``project_id``.
+
+    ``authenticate`` / ``verify_token`` work with no credentials; every method
+    that needs one raises a clear ``AuthBackendError`` naming the missing config.
+    """
+
+    async def test_connect_without_service_account(self) -> None:
+        client = GCIPAuthClient(GCIPConfig(project_id=PROJECT_ID))
+        await client.connect()
+        try:
+            assert client._conn is not None
+            assert client._conn.client_email is None
+            assert client._conn.private_key is None
+        finally:
+            await client.disconnect()
+
+    async def test_authenticate_works_without_any_credentials(
+        self, verify_only_client, rsa_keypair
+    ) -> None:
+        token = _make_id_token(rsa_keypair, role="admin")
+        request = MagicMock()
+        request.headers = {"Authorization": f"Bearer {token}"}
+        session = await verify_only_client.authenticate(request)
+        assert session is not None
+        assert session.user_id == TEST_UID
+        assert session.roles == ("admin",)
+        assert session.org_id is None
+
+    async def test_org_context_header_ignored_without_secret(
+        self, verify_only_client, rsa_keypair
+    ) -> None:
+        """A stray org-context header degrades to identity-only, never 500s."""
+        token = _make_id_token(rsa_keypair)
+        request = MagicMock()
+        request.headers = {
+            "Authorization": f"Bearer {token}",
+            "X-Org-Context": "org-1:acme:deadbeef",
+        }
+        session = await verify_only_client.authenticate(request)
+        assert session is not None
+        assert session.org_id is None
+        assert session.org_role is None
+
+    async def test_admin_method_without_service_account_raises(
+        self, verify_only_client
+    ) -> None:
+        with pytest.raises(AuthBackendError, match="service_account_json"):
+            await verify_only_client.get_user(TEST_UID)
+
+    async def test_sign_in_without_api_key_raises(self, verify_only_client) -> None:
+        with pytest.raises(AuthBackendError, match="public_api_key"):
+            await verify_only_client.sign_in_with_password(
+                identifier=TEST_EMAIL, password=TEST_PASSWORD
+            )
+
+    async def test_refresh_without_api_key_raises(self, verify_only_client) -> None:
+        with pytest.raises(AuthBackendError, match="public_api_key"):
+            await verify_only_client.refresh("some-refresh-token")
+
+    async def test_set_active_org_without_secret_raises(
+        self, verify_only_client
+    ) -> None:
+        # A real org bind needs a secret to sign the pointer.
+        with pytest.raises(AuthBackendError, match="org_context_secret"):
+            await verify_only_client.set_active_org(session_id=TEST_UID, slug="acme")
 
 
 # ── Admin token minting + 401 refresh ─────────────────────────────
