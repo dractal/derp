@@ -235,15 +235,32 @@ class WorkOSConfig(_StrictModel):
 
 
 class GCIPConfig(_StrictModel):
-    """Configuration for Google Cloud Identity Platform."""
+    """Configuration for Google Cloud Identity Platform.
+
+    Only ``project_id`` is always required — it fixes the expected issuer and
+    audience for token verification, which is all :meth:`~derp.auth.gcip_client.
+    GCIPAuthClient.authenticate` (the per-request hot path) needs. The three
+    credentials below are each required only by the feature that consumes them,
+    and are validated at the point of use with a clear error, so a verify-only
+    deployment (sign-in handled client-side by the Firebase JS SDK) configures a
+    single field.
+    """
 
     project_id: str
-    public_api_key: str
-    service_account_json: str  # JSON string or $ENV reference
-    # HMAC key for the derp-signed active-org pointer. Critical secret — store
-    # in env / secret manager, never source-control. Rotating it invalidates
-    # every active-org pointer (clients must call set_active_org again).
-    org_context_secret: str = Field(min_length=32)
+    # Required only for server-side sign-in / sign-up / OAuth / magic-link /
+    # password-reset / token-refresh — the API-key-authenticated Identity Toolkit
+    # endpoints. Omit when sign-in happens client-side via the Firebase JS SDK.
+    public_api_key: str | None = None
+    # Required only for user administration (get/find/list/update/delete user,
+    # revoke_all_sessions) — the service-account-authenticated admin endpoints.
+    # JSON string or $ENV reference.
+    service_account_json: str | None = None
+    # Required only for active-org features (set_active_org and X-Org-Context
+    # resolution). HMAC key for the derp-signed active-org pointer — a critical
+    # secret; store in env / secret manager, never source-control. Rotating it
+    # invalidates every active-org pointer (clients must call set_active_org
+    # again). Must be >= 32 chars when set.
+    org_context_secret: str | None = Field(default=None, min_length=32)
     redirect_uri: str | None = None
     invitation_ttl_hours: int = 7 * 24  # 7 days
     # Active-org role → permission grants. Populated into ``Session.permissions``
@@ -506,9 +523,11 @@ migrations_dir = "{DEFAULT_MIGRATIONS_DIR}"      # Directory for migration files
 # jwt_secret = "$SUPABASE_JWT_SECRET"
 
 # [auth.gcip]
-# project_id = "$GCIP_PROJECT_ID"
-# api_key = "$GCIP_API_KEY"  # GCIP Web API key (unauthenticated endpoints)
-# service_account_json = "$GCIP_SERVICE_ACCOUNT_JSON"  # full SA key JSON
+# project_id = "$GCIP_PROJECT_ID"  # the only always-required field
+# # The rest are needed only by the feature that uses them:
+# public_api_key = "$GCIP_API_KEY"  # server-side sign-in / refresh (Web API key)
+# service_account_json = "$GCIP_SERVICE_ACCOUNT_JSON"  # user administration
+# org_context_secret = "$GCIP_ORG_CONTEXT_SECRET"  # active orgs (>= 32 chars)
 # redirect_uri = "https://yourapp.com/callback"
 
 # [kv.valkey]
