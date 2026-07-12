@@ -948,6 +948,7 @@ class TestSnapshotDifferComplexScenarios:
 
         create_table = [s for s in statements if isinstance(s, CreateTableStatement)]
         create_idx = [s for s in statements if isinstance(s, CreateIndexStatement)]
+        create_fk = [s for s in statements if isinstance(s, CreateForeignKeyStatement)]
 
         assert len(create_table) == 1
         table_stmt = create_table[0]
@@ -955,7 +956,9 @@ class TestSnapshotDifferComplexScenarios:
         assert len(table_stmt.columns) == 4
         assert table_stmt.primary_key is not None
         assert len(table_stmt.unique_constraints) == 1
-        assert len(table_stmt.foreign_keys) == 1
+        # FKs are emitted as ALTER TABLE after the CREATE, never inline.
+        assert table_stmt.foreign_keys == []
+        assert [s.name for s in create_fk] == ["posts_author_fkey"]
         assert len(create_idx) == 1
 
     def test_statement_ordering(self):

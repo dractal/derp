@@ -9,6 +9,7 @@ from typing import Annotated
 import asyncpg
 import typer
 
+from derp.cli.commands.db._common import schema_errors
 from derp.cli.commands.db.generate import (
     create_rename_resolver,
     make_rename_callback,
@@ -36,7 +37,10 @@ from derp.orm.migrations.convertors import (  # noqa: F401
 from derp.orm.migrations.convertors import enum as enum_convertors  # noqa: F401
 from derp.orm.migrations.convertors.base import ConvertorRegistry
 from derp.orm.migrations.filters import filter_rls_statements
-from derp.orm.migrations.introspect.postgres import PostgresIntrospector
+from derp.orm.migrations.introspect.postgres import (
+    PostgresIntrospector,
+    canonicalize_check_expressions,
+)
 from derp.orm.migrations.snapshot.differ import SnapshotDiffer
 from derp.orm.migrations.snapshot.normalize import get_normalizer
 from derp.orm.migrations.snapshot.serializer import serialize_schema
@@ -140,7 +144,15 @@ def push(
             typer.echo(f"Introspected {len(db_snapshot.tables)} existing table(s)")
 
             # Serialize desired schema
-            desired_snapshot = serialize_schema(tables, schema="public")
+            with schema_errors():
+                desired_snapshot = serialize_schema(tables, schema="public")
+
+            # PostgreSQL re-deparses CHECK expressions, so the authored text
+            # never matches what the catalog reports. Ask the server to spell
+            # them its way before diffing, or every push re-plans a DROP + ADD.
+            desired_snapshot = await canonicalize_check_expressions(
+                pool, desired_snapshot, db_snapshot
+            )
 
             # Normalize both snapshots for comparison
             normalizer = get_normalizer(desired_snapshot.dialect)
@@ -160,7 +172,8 @@ def push(
 
             # Diff
             differ = SnapshotDiffer(db_norm, desired_norm, rename_callback)
-            statements = differ.diff()
+            with schema_errors():
+                statements = differ.diff()
 
             # Filter out RLS/policy changes when ignore_rls is enabled
             if config.database.ignore_rls:

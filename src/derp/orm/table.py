@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from typing import Any, ClassVar, Self, dataclass_transform, get_args, get_origin
 
 from derp.orm.column.base import Column, Field, FieldSpec
+from derp.orm.constraint import Constraint
 from derp.orm.index import Index
 
 
@@ -60,10 +61,16 @@ class Table:
     __explicit_table__: ClassVar[bool]
     __columns__: ClassVar[dict[str, Column[Any]]]
     _resolved_indexes: ClassVar[list[Index]]
+    _resolved_constraints: ClassVar[list[Constraint]]
 
     @classmethod
     def indexes(cls) -> Sequence[Index]:
         """Override to define indexes for this table."""
+        return []
+
+    @classmethod
+    def constraints(cls) -> Sequence[Constraint]:
+        """Override to define table-level constraints for this table."""
         return []
 
     def __init_subclass__(cls, table: str | None = None, **kwargs: Any) -> None:
@@ -156,8 +163,9 @@ class Table:
         # Validate nullable annotations
         cls._validate_nullable_annotations(hints)
 
-        # Resolve indexes from the indexes() classmethod.
+        # Resolve indexes and constraints from their classmethods.
         cls._resolved_indexes = list(cls.indexes())
+        cls._resolved_constraints = list(cls.constraints())
 
     def __init__(self, **kwargs: Any) -> None:
         columns = type(self).__columns__
@@ -302,6 +310,10 @@ class Table:
         for col_name, col in columns.items():
             col_def = f"    {col_name} {col.sql_type()}"
 
+            # COLLATE binds to the type, before any column constraints.
+            if col.collation:
+                col_def += f' COLLATE "{col.collation}"'
+
             if col.primary_key:
                 col_def += " PRIMARY KEY"
             if not col.nullable and not col.primary_key:
@@ -331,6 +343,16 @@ class Table:
             fk_sql = col.foreign_key_sql()
             if fk_sql:
                 constraints.append(f"    FOREIGN KEY ({col_name}) {fk_sql}")
+
+            # Column-level check constraint
+            if col.check is not None:
+                constraints.append(
+                    f"    CONSTRAINT {table_name}_{col_name}_check CHECK ({col.check})"
+                )
+
+        # Table-level constraints (UNIQUE, CHECK)
+        for constraint in cls._resolved_constraints:
+            constraints.append(f"    {constraint.to_ddl(table_name)}")
 
         # Indexes
         for idx in cls._resolved_indexes:

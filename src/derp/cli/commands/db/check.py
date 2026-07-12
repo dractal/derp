@@ -6,7 +6,8 @@ from pathlib import Path
 
 import typer
 
-from derp.config import ConfigError, DerpConfig
+from derp.cli.commands.db._common import load_offline_config, schema_errors
+from derp.config import ConfigError
 from derp.orm.loader import discover_tables
 from derp.orm.migrations.filters import filter_rls_statements
 from derp.orm.migrations.journal import load_journal, load_latest_snapshot
@@ -56,7 +57,7 @@ def check() -> None:
       1 - Schema changes detected (migration needed)
     """
     try:
-        config = DerpConfig.load()
+        config = load_offline_config()
     except ConfigError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -89,7 +90,8 @@ def check() -> None:
     prev_snapshot = SchemaSnapshot.model_validate(prev_snapshot_data)
 
     # Serialize current schema
-    current_snapshot = serialize_schema(tables, schema="public")
+    with schema_errors():
+        current_snapshot = serialize_schema(tables, schema="public")
 
     # Normalize for comparison
     normalizer = get_normalizer("postgresql")
@@ -98,7 +100,8 @@ def check() -> None:
 
     # Diff
     differ = SnapshotDiffer(prev_norm, current_norm)
-    statements = differ.diff()
+    with schema_errors():
+        statements = differ.diff()
 
     # Filter out RLS/policy changes when ignore_rls is enabled
     if config.database.ignore_rls:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Callable
 
+from derp.orm.migrations.errors import SchemaError
 from derp.orm.migrations.snapshot.models import (
     CheckConstraintSnapshot,
     ColumnSnapshot,
@@ -25,6 +26,7 @@ from derp.orm.migrations.statements.types import (
     AlterColumnNullableStatement,
     AlterColumnTypeStatement,
     AlterEnumAddValueStatement,
+    CheckConstraintDefinition,
     ColumnDefinition,
     CreateCheckConstraintStatement,
     CreateEnumStatement,
@@ -47,7 +49,6 @@ from derp.orm.migrations.statements.types import (
     DropTableStatement,
     DropUniqueConstraintStatement,
     EnableRLSStatement,
-    ForeignKeyDefinition,
     IndexColumnSpec,
     PrimaryKeyDefinition,
     RenameColumnStatement,
@@ -94,10 +95,16 @@ def _index_definitions_equal(old: IndexSnapshot, new: IndexSnapshot) -> bool:
 
     Skips ``concurrently`` (a build-time hint that doesn't survive in pg_index)
     and ``name`` (callers only invoke us when names already match).
+
+    ``column_specs`` is only compared when both sides have it. A snapshot
+    written before that field existed records nothing but the flat ``columns``
+    list, and inventing specs for it would report a difference — and rebuild
+    the index — on the first run after an upgrade.
     """
+    specs_comparable = bool(old.column_specs) and bool(new.column_specs)
     return (
         old.columns == new.columns
-        and old.column_specs == new.column_specs
+        and (not specs_comparable or old.column_specs == new.column_specs)
         and old.unique == new.unique
         and old.where == new.where
         and old.method == new.method
@@ -234,11 +241,19 @@ def _column_to_definition(col: ColumnSnapshot) -> ColumnDefinition:
         generated=col.generated,
         identity=col.identity.model_dump() if col.identity else None,
         array_dimensions=col.array_dimensions,
+        collation=col.collation,
     )
 
 
 def _table_to_create_statement(table: TableSnapshot) -> CreateTableStatement:
-    """Convert a TableSnapshot to a CreateTableStatement."""
+    """Convert a TableSnapshot to a CreateTableStatement.
+
+    Foreign keys are deliberately left out. Like drizzle-kit, the differ emits
+    every FK as a separate ``ALTER TABLE ... ADD CONSTRAINT`` after all tables
+    exist, so a cycle between two tables — or a self-reference — needs no
+    dependency ordering and no special handling. The ``CREATE TABLE`` phase can
+    run in any order because nothing in it references another table.
+    """
     columns = [_column_to_definition(col) for col in table.columns.values()]
 
     # Primary key
@@ -259,20 +274,9 @@ def _table_to_create_statement(table: TableSnapshot) -> CreateTableStatement:
         for uc in table.unique_constraints.values()
     ]
 
-    # Foreign keys
-    foreign_keys = [
-        ForeignKeyDefinition(
-            name=fk.name,
-            columns=fk.columns,
-            references_schema=fk.references_schema,
-            references_table=fk.references_table,
-            references_columns=fk.references_columns,
-            on_delete=fk.on_delete.value if fk.on_delete else None,
-            on_update=fk.on_update.value if fk.on_update else None,
-            deferrable=fk.deferrable,
-            initially_deferred=fk.initially_deferred,
-        )
-        for fk in table.foreign_keys.values()
+    check_constraints = [
+        CheckConstraintDefinition(name=cc.name, expression=cc.expression)
+        for cc in table.check_constraints.values()
     ]
 
     return CreateTableStatement(
@@ -281,7 +285,24 @@ def _table_to_create_statement(table: TableSnapshot) -> CreateTableStatement:
         columns=columns,
         primary_key=pk,
         unique_constraints=unique_constraints,
-        foreign_keys=foreign_keys,
+        check_constraints=check_constraints,
+        foreign_keys=[],
+    )
+
+
+def columns_match(old_col: ColumnSnapshot, new_col: ColumnSnapshot) -> bool:
+    """Whether two columns are similar enough to be a rename candidate.
+
+    Same type, nullability, default and collation. Collation is part of the
+    identity so a rename cannot smuggle a collation change past the guard in
+    ``_diff_column``. Shared with the CLI's rename prompt, which must agree with
+    the differ about what counts as a candidate.
+    """
+    return (
+        old_col.type == new_col.type
+        and old_col.not_null == new_col.not_null
+        and old_col.default == new_col.default
+        and old_col.collation == new_col.collation
     )
 
 
@@ -351,67 +372,6 @@ class SnapshotDiffer:
     def get_warnings(self) -> list[str]:
         """Get any warnings generated during diff."""
         return self._warnings
-
-    def _sort_tables_by_fk_deps(self, table_keys: set[str]) -> list[str]:
-        """Sort tables by foreign key dependencies (topological sort).
-
-        Tables that are referenced by other tables come first.
-        This ensures CREATE TABLE statements are in the correct order.
-        """
-        if not table_keys:
-            return []
-
-        # Build dependency graph
-        # deps[table] = set of tables that 'table' depends on (references)
-        deps: dict[str, set[str]] = {key: set() for key in table_keys}
-
-        for table_key in table_keys:
-            table = self.new.tables[table_key]
-            for fk in table.foreign_keys.values():
-                ref_table = fk.references_table
-                ref_schema = fk.references_schema or "public"
-                if ref_schema == "public":
-                    ref_key = ref_table
-                else:
-                    ref_key = f"{ref_schema}.{ref_table}"
-                # Only add dependency if referenced table is in the set being created
-                if ref_key in table_keys:
-                    deps[table_key].add(ref_key)
-
-        # Topological sort using Kahn's algorithm
-        result: list[str] = []
-        # Count incoming edges (how many tables depend on each table)
-        in_degree = {key: 0 for key in table_keys}
-        for table_key, table_deps in deps.items():
-            for dep in table_deps:
-                in_degree[dep] = in_degree.get(dep, 0)  # ensure dep exists
-
-        # Reverse: count how many tables each table depends on
-        for table_key in table_keys:
-            in_degree[table_key] = len(deps[table_key])
-
-        # Start with tables that have no dependencies
-        queue = [key for key in table_keys if in_degree[key] == 0]
-
-        while queue:
-            # Sort for deterministic ordering
-            queue.sort()
-            current = queue.pop(0)
-            result.append(current)
-
-            # Remove this table from dependencies of others
-            for table_key in table_keys:
-                if current in deps[table_key]:
-                    deps[table_key].remove(current)
-                    in_degree[table_key] -= 1
-                    if in_degree[table_key] == 0:
-                        queue.append(table_key)
-
-        # If not all tables processed, there's a cycle - just return remaining
-        remaining = table_keys - set(result)
-        result.extend(sorted(remaining))
-
-        return result
 
     def _diff_schemas(self) -> None:
         """Diff database schemas (not tables, the namespace)."""
@@ -536,12 +496,14 @@ class SnapshotDiffer:
         old_tables = set(self.old.tables.keys())
         new_tables = set(self.new.tables.keys())
 
-        # Sort new tables by FK dependencies (referenced tables first)
-        tables_to_create = new_tables - old_tables
-        sorted_tables = self._sort_tables_by_fk_deps(tables_to_create)
+        # Create every new table, then wire up all their foreign keys. No
+        # topological sort: FKs are emitted as ALTER TABLE after the whole
+        # CREATE TABLE phase, so nothing in a CREATE references a table that
+        # doesn't exist yet. Cycles and self-references need no special case.
+        # Sorted for a deterministic plan across runs.
+        tables_to_create = sorted(new_tables - old_tables)
 
-        # Create new tables in dependency order
-        for table_key in sorted_tables:
+        for table_key in tables_to_create:
             table = self.new.tables[table_key]
             self._statements.append(_table_to_create_statement(table))
 
@@ -563,6 +525,12 @@ class SnapshotDiffer:
                         with_options=idx.with_options,
                     )
                 )
+
+        # Foreign keys for the new tables, once every table exists.
+        for table_key in tables_to_create:
+            table = self.new.tables[table_key]
+            for fk in table.foreign_keys.values():
+                self._statements.append(_make_create_foreign_key(table, fk))
 
         # Drop removed tables (reverse order - dependent tables first)
         for table_key in old_tables - new_tables:
@@ -601,17 +569,6 @@ class SnapshotDiffer:
         # Diff RLS settings
         self._diff_rls(old_table, new_table)
 
-    def _columns_match(self, old_col: ColumnSnapshot, new_col: ColumnSnapshot) -> bool:
-        """Check if two columns are similar enough to be a rename candidate.
-
-        Columns match if they have the same type, nullability, and default value.
-        """
-        return (
-            old_col.type == new_col.type
-            and old_col.not_null == new_col.not_null
-            and old_col.default == new_col.default
-        )
-
     def _diff_columns(self, old_table: TableSnapshot, new_table: TableSnapshot) -> None:
         """Diff columns within a table, detecting potential renames."""
         old_cols = set(old_table.columns.keys())
@@ -626,7 +583,7 @@ class SnapshotDiffer:
             old_col = old_table.columns[old_name]
             for new_name in sorted(added):
                 new_col = new_table.columns[new_name]
-                if self._columns_match(old_col, new_col):
+                if columns_match(old_col, new_col):
                     rename_candidates.append((old_name, new_name, old_col, new_col))
 
         # Resolve renames via callback, tracking which columns are already matched
@@ -688,6 +645,27 @@ class SnapshotDiffer:
         new_col: ColumnSnapshot,
     ) -> None:
         """Diff a single column."""
+        # Collation is set at CREATE time and never altered. ALTER TABLE ...
+        # ALTER COLUMN ... TYPE ... COLLATE takes an ACCESS EXCLUSIVE lock,
+        # rewrites the column, rebuilds every index whose key includes it, and
+        # changes comparison semantics for rows already stored. Emitting nothing
+        # would be worse than refusing: `generate` persists the snapshot whenever
+        # it writes a migration, so an unapplied collation would be silently
+        # baked in and never diffed again.
+        #
+        # An *undeclared* collation (`new_col.collation is None`) means the
+        # schema has no opinion, not "make it the database default". A column
+        # someone collated by hand, or a database derp is being adopted into,
+        # is left alone rather than blocking every unrelated migration.
+        if new_col.collation is not None and old_col.collation != new_col.collation:
+            raise SchemaError(
+                f"{table_name}.{new_col.name}: collation cannot be changed in "
+                f"place ({old_col.collation or 'database default'} -> "
+                f"{new_col.collation or 'database default'}). Add a new column "
+                f"with the desired collation, backfill it, and drop the old one "
+                f"— or revert the `collate=` annotation."
+            )
+
         # Type change
         if old_col.type != new_col.type:
             self._statements.append(

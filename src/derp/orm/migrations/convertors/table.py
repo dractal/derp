@@ -26,6 +26,10 @@ def _column_def_to_sql(col: ColumnDefinition) -> str:
         col_type += "[]" * col.array_dimensions
     parts.append(col_type)
 
+    # COLLATE binds to the type, before any column constraints.
+    if col.collation:
+        parts.append(f'COLLATE "{col.collation}"')
+
     # Primary key
     if col.primary_key:
         parts.append("PRIMARY KEY")

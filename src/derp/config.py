@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
+import warnings
 from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
@@ -21,18 +22,37 @@ class ConfigError(Exception):
     """Configuration error."""
 
 
+class ConfigWarning(UserWarning):
+    """Emitted when a non-strict load leaves ``$VAR`` references unresolved."""
+
+
+def _format_missing(missing: dict[str, list[str]]) -> str:
+    """Render unresolved env vars grouped by the section they appear under."""
+    return "; ".join(
+        f"[{section}] {', '.join('$' + name for name in names)}"
+        for section, names in sorted(missing.items())
+    )
+
+
 def _resolve_env_value(
     value: Any,
     *,
     _path: tuple[str, ...] = (),
     _env_vars: dict[tuple[str, ...], str] | None = None,
-    _missing: list[str] | None = None,
-    _root: bool = True,
+    _missing: dict[str, list[str]] | None = None,
 ) -> Any:
+    """Substitute ``$VAR`` references, recording — never raising on — misses.
+
+    Unset variables are left as their literal ``$VAR`` text and recorded in
+    ``_missing``, keyed by the top-level section they appear under. Whether a
+    miss is fatal is :meth:`DerpConfig.load`'s decision, because an offline
+    command has no business failing over an unset key in a section it never
+    reads.
+    """
     if _env_vars is None:
         _env_vars = {}
     if _missing is None:
-        _missing = []
+        _missing = {}
     if isinstance(value, str):
         if value.startswith("$"):
             env_name = value[1:]
@@ -40,50 +60,34 @@ def _resolve_env_value(
                 raise ConfigError("Invalid environment variable reference: '$'")
             env_value = os.environ.get(env_name)
             if env_value is None:
-                _missing.append(env_name)
+                section = _path[0] if _path else ""
+                _missing.setdefault(section, []).append(env_name)
                 return value
             _env_vars[_path] = env_name
             return env_value
         return value
     if isinstance(value, list):
-        result = [
+        return [
             _resolve_env_value(
-                item,
-                _path=(*_path, str(i)),
-                _env_vars=_env_vars,
-                _missing=_missing,
-                _root=False,
+                item, _path=(*_path, str(i)), _env_vars=_env_vars, _missing=_missing
             )
             for i, item in enumerate(value)
         ]
-    elif isinstance(value, tuple):
-        result = tuple(
+    if isinstance(value, tuple):
+        return tuple(
             _resolve_env_value(
-                item,
-                _path=(*_path, str(i)),
-                _env_vars=_env_vars,
-                _missing=_missing,
-                _root=False,
+                item, _path=(*_path, str(i)), _env_vars=_env_vars, _missing=_missing
             )
             for i, item in enumerate(value)
         )
-    elif isinstance(value, dict):
-        result = {
+    if isinstance(value, dict):
+        return {
             key: _resolve_env_value(
-                val,
-                _path=(*_path, key),
-                _env_vars=_env_vars,
-                _missing=_missing,
-                _root=False,
+                val, _path=(*_path, key), _env_vars=_env_vars, _missing=_missing
             )
             for key, val in value.items()
         }
-    else:
-        return value
-    if _root and _missing:
-        names = ", ".join(f"${v}" for v in _missing)
-        raise ConfigError(f"Missing environment variables: {names}")
-    return result
+    return value
 
 
 class _StrictModel(BaseModel):
@@ -435,9 +439,37 @@ class DerpConfig(_StrictModel):
     ai: AIConfig | None = None
 
     _env_vars: dict[tuple[str, ...], str] = {}
+    _missing_env: dict[str, list[str]] = {}
+
+    @property
+    def missing_env(self) -> dict[str, list[str]]:
+        """Env vars referenced by ``derp.toml`` that were unset at load time.
+
+        Keyed by top-level section. Only ever non-empty after a non-strict
+        load, since a strict one raises instead. Those values hold the literal
+        ``$VAR`` text rather than a resolved value.
+        """
+        return self._missing_env
 
     @classmethod
-    def load(cls, path: str | Path = CONFIG_FILE) -> DerpConfig:
+    def load(
+        cls,
+        path: str | Path = CONFIG_FILE,
+        *,
+        strict: bool = True,
+    ) -> DerpConfig:
+        """Load ``derp.toml``, substituting ``$VAR`` references.
+
+        Args:
+            path: Path to the config file.
+            strict: When True (the default), an unset ``$VAR`` anywhere in the
+              file raises. That is the right behaviour at runtime, where any
+              section may be read. Pass False from commands that never touch
+              the sections in question — ``derp db generate`` has no business
+              failing over an unset ``$FAL_KEY`` in ``[ai]``. Unresolved values
+              keep their literal ``$VAR`` text, a :class:`ConfigWarning` names
+              them, and :attr:`missing_env` records them.
+        """
         config_path = Path(path)
 
         if not config_path.exists():
@@ -450,7 +482,19 @@ class DerpConfig(_StrictModel):
             raw = tomllib.load(f)
 
         env_vars: dict[tuple[str, ...], str] = {}
-        data = _resolve_env_value(raw, _env_vars=env_vars)
+        missing: dict[str, list[str]] = {}
+        data = _resolve_env_value(raw, _env_vars=env_vars, _missing=missing)
+
+        if missing:
+            detail = _format_missing(missing)
+            if strict:
+                raise ConfigError(f"Missing environment variables: {detail}")
+            warnings.warn(
+                f"Unresolved environment variables: {detail}. Those values are "
+                "left as literal text and are not usable.",
+                ConfigWarning,
+                stacklevel=2,
+            )
 
         try:
             config = cls(**data)
@@ -458,6 +502,7 @@ class DerpConfig(_StrictModel):
             raise ConfigError("Failed to load configuration.") from e
 
         config._env_vars = env_vars
+        config._missing_env = missing
         return config
 
     def redacted_dump(self) -> dict:

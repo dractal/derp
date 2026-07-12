@@ -853,3 +853,64 @@ class TestVersionCommand:
 
         assert result.exit_code == 0
         assert "derp-py" in result.stdout
+
+
+class TestOfflineCommandsTolerateUnsetEnv:
+    """``derp db generate`` and ``check`` never open a connection, so an unset
+    ``$FAL_KEY`` in an unrelated ``[ai]`` section must not stop them. Commands
+    that do connect keep the strict default.
+    """
+
+    @staticmethod
+    def _write(temp_dir: Path) -> None:
+        (temp_dir / "derp.toml").write_text(
+            "[database]\n"
+            'db_url = "postgresql://localhost/x"\n'
+            'schema_path = "schema.py"\n'
+            'migrations_dir = "migrations"\n'
+            "\n"
+            "[ai]\n"
+            'api_key = "sk-test"\n'
+            'fal_api_key = "$FAL_KEY"\n'
+        )
+        (temp_dir / "schema.py").write_text(
+            "from derp.orm import UUID, Field, Table, Text\n"
+            "\n"
+            'class Doc(Table, table="docs"):\n'
+            "    id: UUID = Field(primary=True)\n"
+            "    title: Text = Field()\n"
+        )
+
+    def test_generate_succeeds_with_unset_unrelated_var(
+        self, temp_dir: Path, monkeypatch
+    ):
+        os.chdir(temp_dir)
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        self._write(temp_dir)
+
+        result = runner.invoke(app, ["db", "generate", "--name", "init"])
+
+        assert result.exit_code == 0, result.output
+        assert (temp_dir / "migrations" / "0000_init" / "migration.sql").exists()
+
+    def test_generate_warns_about_the_unset_var(self, temp_dir: Path, monkeypatch):
+        os.chdir(temp_dir)
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        self._write(temp_dir)
+
+        result = runner.invoke(app, ["db", "generate", "--name", "init"])
+
+        assert "Warning: Unresolved environment variables: [ai] $FAL_KEY" in (
+            result.output
+        )
+
+    def test_connecting_command_still_hard_fails(self, temp_dir: Path, monkeypatch):
+        """``push`` reads db_url, so it keeps the strict default."""
+        os.chdir(temp_dir)
+        monkeypatch.delenv("FAL_KEY", raising=False)
+        self._write(temp_dir)
+
+        result = runner.invoke(app, ["db", "push", "--dry-run"])
+
+        assert result.exit_code == 1
+        assert "Missing environment variables: [ai] $FAL_KEY" in result.output

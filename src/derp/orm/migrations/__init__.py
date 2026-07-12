@@ -1,5 +1,6 @@
 """Drizzle-style migration infrastructure for Derp ORM."""
 
+from derp.orm.migrations.errors import SchemaError
 from derp.orm.migrations.journal import JournalEntry, MigrationJournal
 from derp.orm.migrations.snapshot.models import (
     CheckConstraintSnapshot,
@@ -17,6 +18,8 @@ from derp.orm.migrations.snapshot.models import (
 )
 
 __all__ = [
+    # Errors
+    "SchemaError",
     # Journal
     "JournalEntry",
     "MigrationJournal",

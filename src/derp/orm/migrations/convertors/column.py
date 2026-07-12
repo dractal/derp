@@ -37,6 +37,10 @@ class AddColumnConvertor(StatementConvertor[AddColumnStatement]):
             col_type += "[]" * col.array_dimensions
         parts.append(col_type)
 
+        # COLLATE binds to the type, before any column constraints.
+        if col.collation:
+            parts.append(f'COLLATE "{col.collation}"')
+
         # NOT NULL
         if col.not_null:
             parts.append("NOT NULL")

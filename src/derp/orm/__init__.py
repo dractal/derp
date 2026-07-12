@@ -44,6 +44,7 @@ from derp.orm.column.types import (
     Varchar,
     Vector,
 )
+from derp.orm.constraint import Check, Constraint, Unique
 from derp.orm.engine import DatabaseEngine
 from derp.orm.expression_base import ComparisonOperator, Expression
 from derp.orm.index import Index, IndexColumn, IndexMethod, NullsPosition
@@ -110,6 +111,10 @@ __all__ = [
     "IndexColumn",
     "IndexMethod",
     "NullsPosition",
+    # Constraints
+    "Constraint",
+    "Check",
+    "Unique",
     # Literal shorthand for strict type checkers
     "L",
 ]

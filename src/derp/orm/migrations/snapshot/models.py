@@ -72,6 +72,7 @@ class ColumnSnapshot(BaseModel):
     generated: str | None = None  # Generated column expression (STORED)
     identity: IdentityConfig | None = None
     array_dimensions: int = 0  # For array types
+    collation: str | None = None  # None means the database default
 
 
 class ForeignKeySnapshot(BaseModel):

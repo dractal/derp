@@ -69,7 +69,10 @@ def test_studio_errors_when_env_missing(temp_dir: Path) -> None:
     result = runner.invoke(app, ["studio"])
 
     assert result.exit_code == 1
-    assert "Missing environment variables: $TEST_DATABASE_URL" in result.output
+    # The error names the section, so it's obvious which one needs the value.
+    assert (
+        "Missing environment variables: [database] $TEST_DATABASE_URL" in result.output
+    )
 
 
 def test_studio_runs_uvicorn_with_host_port(

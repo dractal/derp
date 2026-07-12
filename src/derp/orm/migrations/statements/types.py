@@ -40,6 +40,7 @@ class ColumnDefinition(BaseModel):
     generated: str | None = None  # GENERATED ALWAYS AS (expr) STORED
     identity: dict | None = None  # Identity column config
     array_dimensions: int = 0
+    collation: str | None = None
 
 
 class UniqueConstraintDefinition(BaseModel):

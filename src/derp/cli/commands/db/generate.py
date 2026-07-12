@@ -9,6 +9,7 @@ from typing import Annotated
 
 import typer
 
+from derp.cli.commands.db._common import load_offline_config, schema_errors
 from derp.config import ConfigError, DerpConfig
 from derp.orm.loader import discover_tables
 
@@ -39,19 +40,10 @@ from derp.orm.migrations.safety import (
     format_destructive_warnings,
     has_high_risk_operations,
 )
-from derp.orm.migrations.snapshot.differ import SnapshotDiffer
-from derp.orm.migrations.snapshot.models import ColumnSnapshot, SchemaSnapshot
+from derp.orm.migrations.snapshot.differ import SnapshotDiffer, columns_match
+from derp.orm.migrations.snapshot.models import SchemaSnapshot
 from derp.orm.migrations.snapshot.normalize import get_normalizer
 from derp.orm.migrations.snapshot.serializer import serialize_schema
-
-
-def _columns_match(old_col: ColumnSnapshot, new_col: ColumnSnapshot) -> bool:
-    """Check if two columns are similar enough to be a rename candidate."""
-    return (
-        old_col.type == new_col.type
-        and old_col.not_null == new_col.not_null
-        and old_col.default == new_col.default
-    )
 
 
 def _find_rename_candidates(
@@ -81,7 +73,7 @@ def _find_rename_candidates(
             old_col = old_table.columns[old_name]
             for new_name in sorted(added):
                 new_col = new_table.columns[new_name]
-                if _columns_match(old_col, new_col):
+                if columns_match(old_col, new_col):
                     candidates.append(
                         (old_table.name, old_name, new_name, old_col.type)
                     )
@@ -169,7 +161,7 @@ def generate(
     and generates migration SQL with a new snapshot file.
     """
     try:
-        config = DerpConfig.load()
+        config = load_offline_config()
     except ConfigError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1)
@@ -207,12 +199,13 @@ def generate(
 
     # Serialize current schema to snapshot
     next_version = get_next_version(journal)
-    current_snapshot = serialize_schema(
-        tables,
-        schema="public",
-        snapshot_id=next_version,
-        prev_id=prev_snapshot.id if prev_snapshot.id else None,
-    )
+    with schema_errors():
+        current_snapshot = serialize_schema(
+            tables,
+            schema="public",
+            snapshot_id=next_version,
+            prev_id=prev_snapshot.id if prev_snapshot.id else None,
+        )
 
     # Normalize both snapshots for comparison (save originals for disk)
     normalizer = get_normalizer("postgresql")
@@ -227,7 +220,8 @@ def generate(
 
     # Diff snapshots
     differ = SnapshotDiffer(prev_norm, current_norm, rename_callback)
-    statements = differ.diff()
+    with schema_errors():
+        statements = differ.diff()
 
     # Filter out RLS/policy changes when ignore_rls is enabled
     if config.database.ignore_rls:

@@ -18,6 +18,7 @@ from derp.orm.migrations.snapshot.models import (
     ForeignKeySnapshot,
     IdentityConfig,
     IdentityGeneration,
+    IndexColumnSnapshot,
     IndexMethod,
     IndexSnapshot,
     PolicyCommand,
@@ -242,11 +243,15 @@ class PostgresIntrospector:
                 a.attnotnull AS not_null,
                 pg_get_expr(d.adbin, d.adrelid) AS column_default,
                 a.attidentity AS identity,
-                a.attgenerated AS generated
+                a.attgenerated AS generated,
+                CASE WHEN co.collname IS NOT NULL AND co.collname <> 'default'
+                     THEN co.collname
+                END AS collation
             FROM pg_attribute a
             JOIN pg_class c ON c.oid = a.attrelid
             JOIN pg_namespace n ON n.oid = c.relnamespace
             LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+            LEFT JOIN pg_collation co ON co.oid = a.attcollation
             WHERE n.nspname = $1
               AND c.relname = $2
               AND a.attnum > 0
@@ -287,6 +292,7 @@ class PostgresIntrospector:
                     else None
                 ),
                 identity=identity,
+                collation=row["collation"],
             )
 
         return columns
@@ -457,16 +463,9 @@ class PostgresIntrospector:
         )
 
         for row in rows:
-            # Extract expression from "CHECK (expression)"
-            definition = row["definition"]
-            if definition.upper().startswith("CHECK (") and definition.endswith(")"):
-                expression = definition[7:-1]
-            else:
-                expression = definition
-
             check_constraints[row["constraint_name"]] = CheckConstraintSnapshot(
                 name=row["constraint_name"],
-                expression=expression,
+                expression=_strip_check_wrapper(row["definition"]),
             )
 
         return check_constraints
@@ -474,7 +473,20 @@ class PostgresIntrospector:
     async def _get_indexes(
         self, conn: asyncpg.Connection, schema: str, table: str
     ) -> dict[str, IndexSnapshot]:
-        """Get indexes for a table (excluding PK and unique constraint indexes)."""
+        """Get indexes for a table (excluding PK and unique constraint indexes).
+
+        One row per index *key column*, plus rows for INCLUDE columns. Walking
+        ``pg_index``'s parallel arrays is the only way to recover the per-column
+        metadata the serializer emits — collation, opclass, sort order, nulls
+        position. Joining ``pg_attribute`` on ``attnum = ANY(indkey)`` instead,
+        as this used to, loses all of it, silently drops expression indexes
+        (whose ``indkey`` entry is ``0``, matching no attribute), and reports
+        INCLUDE columns as key columns.
+
+        ``opcdefault`` and the ``default`` collation are reported as ``None``:
+        the ORM omits them, so recording them here would make every index
+        compare unequal and churn on each push.
+        """
         indexes: dict[str, IndexSnapshot] = {}
 
         rows = await conn.fetch(
@@ -482,17 +494,45 @@ class PostgresIntrospector:
             SELECT
                 i.relname AS index_name,
                 ix.indisunique AS is_unique,
+                -- pg_index.indnullsnotdistinct exists only on PostgreSQL 15+.
+                -- Reading it via to_jsonb() keeps this query parseable on older
+                -- servers, where the key is simply absent from the row.
+                COALESCE(
+                    (to_jsonb(ix) ->> 'indnullsnotdistinct')::boolean, false
+                ) AS nulls_not_distinct,
                 am.amname AS index_method,
-                array_agg(
-                  a.attname ORDER BY array_position(ix.indkey, a.attnum)
-                ) AS columns,
-                pg_get_expr(ix.indpred, ix.indrelid) AS where_clause
+                pg_get_expr(ix.indpred, ix.indrelid) AS where_clause,
+                i.reloptions AS with_options,
+                k.ord AS ord,
+                (k.ord > ix.indnkeyatts) AS is_include,
+                a.attname AS column_name,
+                CASE WHEN ix.indkey[k.ord - 1] = 0
+                     THEN pg_get_indexdef(ix.indexrelid, k.ord::int, true)
+                END AS expression,
+                CASE WHEN k.ord <= ix.indnkeyatts
+                      AND co.collname IS NOT NULL
+                      AND co.collname <> 'default'
+                     THEN co.collname
+                END AS collation,
+                CASE WHEN k.ord <= ix.indnkeyatts AND NOT op.opcdefault
+                     THEN op.opcname
+                END AS opclass,
+                CASE WHEN k.ord <= ix.indnkeyatts
+                     THEN (ix.indoption[k.ord - 1] & 1) = 1
+                END AS is_desc,
+                CASE WHEN k.ord <= ix.indnkeyatts
+                     THEN (ix.indoption[k.ord - 1] & 2) = 2
+                END AS is_nulls_first
             FROM pg_index ix
             JOIN pg_class i ON i.oid = ix.indexrelid
             JOIN pg_class t ON t.oid = ix.indrelid
             JOIN pg_namespace n ON n.oid = t.relnamespace
             JOIN pg_am am ON am.oid = i.relam
-            JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+            CROSS JOIN LATERAL generate_series(1, ix.indnatts) AS k(ord)
+            LEFT JOIN pg_attribute a
+              ON a.attrelid = ix.indrelid AND a.attnum = ix.indkey[k.ord - 1]
+            LEFT JOIN pg_collation co ON co.oid = ix.indcollation[k.ord - 1]
+            LEFT JOIN pg_opclass op ON op.oid = ix.indclass[k.ord - 1]
             WHERE n.nspname = $1
               AND t.relname = $2
               AND NOT ix.indisprimary
@@ -500,19 +540,56 @@ class PostgresIntrospector:
                   SELECT 1 FROM pg_constraint c
                   WHERE c.conindid = ix.indexrelid AND c.contype IN ('u', 'p')
               )
-            GROUP BY i.relname, ix.indisunique, am.amname, ix.indpred, ix.indrelid
+            ORDER BY i.relname, k.ord
             """,
             schema,
             table,
         )
 
+        columns: dict[str, list[str]] = {}
+        specs: dict[str, list[IndexColumnSnapshot]] = {}
+        include: dict[str, list[str]] = {}
+
         for row in rows:
-            indexes[row["index_name"]] = IndexSnapshot(
-                name=row["index_name"],
-                columns=list(row["columns"]),
-                unique=row["is_unique"],
-                method=_map_index_method(row["index_method"]),
-                where=row["where_clause"],
+            name = row["index_name"]
+            if name not in indexes:
+                indexes[name] = IndexSnapshot(
+                    name=name,
+                    columns=[],
+                    unique=row["is_unique"],
+                    method=_map_index_method(row["index_method"]),
+                    where=row["where_clause"],
+                    nulls_not_distinct=bool(row["nulls_not_distinct"]),
+                    with_options=_parse_reloptions(row["with_options"]),
+                )
+                columns[name], specs[name], include[name] = [], [], []
+
+            if row["is_include"]:
+                include[name].append(row["column_name"])
+                continue
+
+            expression = row["expression"]
+            columns[name].append(
+                row["column_name"] if expression is None else f"({expression})"
+            )
+            specs[name].append(
+                IndexColumnSnapshot(
+                    name=row["column_name"],
+                    expression=expression,
+                    opclass=row["opclass"],
+                    order="DESC" if row["is_desc"] else "ASC",
+                    nulls="FIRST" if row["is_nulls_first"] else "LAST",
+                    collation=row["collation"],
+                )
+            )
+
+        for name, index in indexes.items():
+            indexes[name] = index.model_copy(
+                update={
+                    "columns": columns[name],
+                    "column_specs": specs[name],
+                    "include": include[name],
+                }
             )
 
         return indexes
@@ -605,3 +682,134 @@ def _map_policy_command(cmd: str) -> PolicyCommand:
         "d": PolicyCommand.DELETE,
     }
     return mapping.get(cmd, PolicyCommand.ALL)
+
+
+def _parse_reloptions(reloptions: list[str] | None) -> dict[str, str]:
+    """Turn ``pg_class.reloptions`` (``{fillfactor=70}``) into a dict."""
+    if not reloptions:
+        return {}
+    options: dict[str, str] = {}
+    for option in reloptions:
+        key, _, value = option.partition("=")
+        options[key] = value
+    return options
+
+
+_PROBE_TABLE = "_derp_check_probe"
+
+
+def _quote(identifier: str) -> str:
+    """Double-quote an SQL identifier, escaping any embedded quotes."""
+    escaped = identifier.replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _strip_check_wrapper(definition: str) -> str:
+    """Turn ``CHECK (expr)`` from ``pg_get_constraintdef`` into ``expr``."""
+    if definition.upper().startswith("CHECK (") and definition.endswith(")"):
+        return definition[7:-1]
+    return definition
+
+
+async def canonicalize_check_expressions(
+    pool: asyncpg.Pool,
+    desired: SchemaSnapshot,
+    live: SchemaSnapshot,
+) -> SchemaSnapshot:
+    """Rewrite ``desired``'s CHECK expressions into PostgreSQL's own spelling.
+
+    PostgreSQL does not store a CHECK expression as written. It parses,
+    type-resolves and re-deparses it, so ``status IN ('a', 'b')`` comes back as
+    ``status = ANY (ARRAY['a'::text, 'b'::text])``. Comparing the authored text
+    against ``pg_get_constraintdef`` therefore never matches, and every
+    ``derp push`` would re-plan a DROP + ADD of a constraint that already exists.
+
+    Reproducing that rewrite offline would mean reimplementing the parser's type
+    resolution. Instead, ask the server: for each table, create a temporary table
+    with the same column types, attach the authored constraints to it, and read
+    back the deparsed definitions. The work happens inside a rolled-back
+    transaction on an empty temp table, so nothing is validated, written, or left
+    behind, and the real table is only touched by ``LIKE`` (an ``ACCESS SHARE``
+    lock).
+
+    Only constraints that already exist in ``live`` under the same name are
+    probed, and only on tables that exist in ``live``. Everything else is going
+    to be emitted as a fresh ``ADD CONSTRAINT`` with the authored text, so there
+    is nothing to compare it against — and probing it would be wrong: a check on
+    a column this very migration adds cannot be attached to a copy of the table
+    as it exists today.
+
+    Best-effort by design. If the server will not give us a temp table — a
+    read-only replica, a role without ``TEMP`` on the database — the authored
+    expressions are returned unchanged. That costs a redundant DROP + ADD of an
+    identical constraint; it is not worth failing the migration over.
+    """
+    probed: dict[str, dict[str, str]] = {}
+
+    for table_key, table in desired.tables.items():
+        live_table = live.tables.get(table_key)
+        if live_table is None:
+            continue
+
+        comparable = [
+            cc
+            for name, cc in table.check_constraints.items()
+            if name in live_table.check_constraints
+        ]
+        if not comparable:
+            continue
+
+        source = f"{_quote(table.schema_name)}.{_quote(table.name)}"
+        try:
+            async with pool.acquire() as conn:
+                transaction = conn.transaction()
+                await transaction.start()
+                try:
+                    await conn.execute(
+                        f"CREATE TEMP TABLE {_quote(_PROBE_TABLE)} (LIKE {source})"
+                    )
+                    for cc in comparable:
+                        await conn.execute(
+                            f"ALTER TABLE {_quote(_PROBE_TABLE)} ADD CONSTRAINT "
+                            f"{_quote(cc.name)} CHECK ({cc.expression})"
+                        )
+
+                    rows = await conn.fetch(
+                        """
+                        SELECT con.conname AS name,
+                               pg_get_constraintdef(con.oid) AS definition
+                        FROM pg_constraint con
+                        WHERE con.conrelid = $1::regclass AND con.contype = 'c'
+                        """,
+                        _PROBE_TABLE,
+                    )
+                    probed[table_key] = {
+                        row["name"]: _strip_check_wrapper(row["definition"])
+                        for row in rows
+                    }
+                finally:
+                    await transaction.rollback()
+        except asyncpg.PostgresError:
+            # No temp table, or an expression the server rejects. Either way the
+            # authored text stands; PostgreSQL reports the real problem when the
+            # migration runs.
+            continue
+
+    if not probed:
+        return desired
+
+    tables = dict(desired.tables)
+    for table_key, expressions in probed.items():
+        table = tables[table_key]
+        tables[table_key] = table.model_copy(
+            update={
+                "check_constraints": {
+                    name: cc.model_copy(
+                        update={"expression": expressions.get(name, cc.expression)}
+                    )
+                    for name, cc in table.check_constraints.items()
+                }
+            }
+        )
+
+    return desired.model_copy(update={"tables": tables})

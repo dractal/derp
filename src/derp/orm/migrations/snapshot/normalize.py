@@ -13,6 +13,8 @@ import re
 from derp.orm.migrations.snapshot.models import (
     ColumnSnapshot,
     ForeignKeySnapshot,
+    IndexColumnSnapshot,
+    IndexSnapshot,
     PrimaryKeySnapshot,
     SchemaSnapshot,
     TableSnapshot,
@@ -100,7 +102,18 @@ class PostgresNormalizer(SnapshotNormalizer):
         if default is not None:
             default = self._normalize_default(default)
 
-        return col.model_copy(update={"type": canonical_type, "default": default})
+        # "default" is PostgreSQL's name for *no explicit collation*. The
+        # serializer emits None for such a column, so treat them as the same
+        # thing or every push would plan a phantom collation change.
+        collation = None if col.collation == "default" else col.collation
+
+        return col.model_copy(
+            update={
+                "type": canonical_type,
+                "default": default,
+                "collation": collation,
+            }
+        )
 
     @staticmethod
     def _normalize_default(default: str) -> str:
@@ -175,6 +188,41 @@ class PostgresNormalizer(SnapshotNormalizer):
     # Internals
     # ------------------------------------------------------------------
 
+    def normalize_index_column(self, spec: IndexColumnSnapshot) -> IndexColumnSnapshot:
+        """Drop the per-column index defaults PostgreSQL always spells out.
+
+        ``ASC`` is the default sort order, and the default nulls position
+        follows it — ``NULLS LAST`` for ascending, ``NULLS FIRST`` for
+        descending. The introspector reads these back from ``indoption`` for
+        every column; the ORM only records them when they were asked for. Left
+        alone, ``Index("age", order="DESC")`` would never compare equal to the
+        index it created.
+        """
+        order = spec.order if spec.order == "DESC" else None
+        implied_nulls = "FIRST" if order == "DESC" else "LAST"
+        nulls = None if spec.nulls in (None, implied_nulls) else spec.nulls
+        collation = None if spec.collation == "default" else spec.collation
+        return spec.model_copy(
+            update={"order": order, "nulls": nulls, "collation": collation}
+        )
+
+    def normalize_index(self, index: IndexSnapshot) -> IndexSnapshot:
+        """Canonicalize an index so both snapshot sources agree.
+
+        Snapshots written before ``column_specs`` existed carry only the flat
+        ``columns`` list. They are left empty here rather than reconstructed —
+        ``_index_definitions_equal`` falls back to comparing ``columns`` when
+        either side lacks specs, which is the only honest comparison when one
+        snapshot never recorded opclass, sort order or collation.
+        """
+        return index.model_copy(
+            update={
+                "column_specs": [
+                    self.normalize_index_column(spec) for spec in index.column_specs
+                ]
+            }
+        )
+
     def _normalize_table(self, table: TableSnapshot) -> TableSnapshot:
         columns = {
             name: self.normalize_column(col) for name, col in table.columns.items()
@@ -186,6 +234,9 @@ class PostgresNormalizer(SnapshotNormalizer):
 
         ucs = self._rekey_unique_constraints(table.unique_constraints)
         fks = self._rekey_foreign_keys(table.foreign_keys)
+        indexes = {
+            name: self.normalize_index(idx) for name, idx in table.indexes.items()
+        }
 
         return table.model_copy(
             update={
@@ -193,6 +244,7 @@ class PostgresNormalizer(SnapshotNormalizer):
                 "primary_key": pk,
                 "unique_constraints": ucs,
                 "foreign_keys": fks,
+                "indexes": indexes,
             }
         )
 

@@ -6,14 +6,17 @@ models that can be compared for migration generation.
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from derp.orm.column.base import FK as OrmFK
 from derp.orm.column.base import Column
 from derp.orm.column.types import Enum as EnumColumn
-from derp.orm.index import _expression_to_literal_sql
+from derp.orm.constraint import Check as CheckConstraint
+from derp.orm.constraint import Unique as UniqueConstraint
+from derp.orm.index import NullsPosition, SortOrder, _expression_to_literal_sql
+from derp.orm.migrations.errors import SchemaError
 from derp.orm.migrations.snapshot.models import (
+    CheckConstraintSnapshot,
     ColumnSnapshot,
     EnumSnapshot,
     ForeignKeyAction,
@@ -105,6 +108,7 @@ def serialize_column(name: str, col: Column[Any]) -> ColumnSnapshot:
         generated=col.generated,
         identity=None,  # TODO: support identity columns
         array_dimensions=dimensions,
+        collation=col.collation,
     )
 
 
@@ -148,23 +152,6 @@ def serialize_foreign_key(
     )
 
 
-def serialize_index(
-    table_name: str,
-    column_name: str,
-    is_unique: bool = False,
-) -> tuple[str, IndexSnapshot]:
-    """Serialize an index to snapshot."""
-    prefix = "uniq" if is_unique else "idx"
-    index_name = f"{prefix}_{table_name}_{column_name}"
-
-    return index_name, IndexSnapshot(
-        name=index_name,
-        columns=[column_name],
-        unique=is_unique,
-        method=IndexMethod.BTREE,
-    )
-
-
 def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnapshot:
     """Serialize a Table class to a TableSnapshot."""
     table_name = table_cls.get_table_name()
@@ -174,6 +161,7 @@ def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnap
     foreign_keys: dict[str, ForeignKeySnapshot] = {}
     indexes: dict[str, IndexSnapshot] = {}
     unique_constraints: dict[str, UniqueConstraintSnapshot] = {}
+    check_constraints: dict[str, CheckConstraintSnapshot] = {}
     primary_key_columns: list[str] = []
 
     fk_counter = 0
@@ -202,6 +190,50 @@ def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnap
                 columns=[col_name],
             )
 
+        # Column-level check constraint
+        if col.check is not None:
+            cc_name = f"{table_name}_{col_name}_check"
+            check_constraints[cc_name] = CheckConstraintSnapshot(
+                name=cc_name,
+                expression=col.check,
+            )
+
+    # Table-level constraints. Unique ones must land in ``unique_constraints``
+    # rather than ``indexes``: PostgreSQL records them in ``pg_constraint``, and
+    # the introspector's index query excludes constraint-backed indexes. A
+    # multi-column uniqueness declared as ``Index(..., unique=True)`` would
+    # therefore never compare equal to the live database, and every ``derp push``
+    # would re-plan a DROP CONSTRAINT + CREATE UNIQUE INDEX rewrite.
+    for constraint in table_cls._resolved_constraints:
+        name = constraint.auto_name(table_name)
+        match constraint:
+            case UniqueConstraint():
+                if name in unique_constraints:
+                    raise SchemaError(
+                        f"{table_cls.__name__}: duplicate unique constraint "
+                        f"'{name}'. Pass name= to disambiguate."
+                    )
+                unique_constraints[name] = UniqueConstraintSnapshot(
+                    name=name,
+                    columns=list(constraint.columns),
+                    nulls_not_distinct=not constraint.nulls_distinct,
+                )
+            case CheckConstraint():
+                if name in check_constraints:
+                    raise SchemaError(
+                        f"{table_cls.__name__}: duplicate check constraint "
+                        f"'{name}'. Pass name= to disambiguate."
+                    )
+                check_constraints[name] = CheckConstraintSnapshot(
+                    name=name,
+                    expression=constraint.expression,
+                )
+            case _:
+                raise SchemaError(
+                    f"{table_cls.__name__}: cannot serialize constraint "
+                    f"{constraint!r} of type {type(constraint).__name__}."
+                )
+
     # Indexes
     for idx in table_cls._resolved_indexes:
         idx_name = idx.auto_name(table_name)
@@ -217,8 +249,8 @@ def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnap
                 name=c.name,
                 expression=c.expression,
                 opclass=c.opclass,
-                order=c.order.value if c.order is not None else None,
-                nulls=c.nulls.value if c.nulls is not None else None,
+                order=SortOrder(c.order).value if c.order is not None else None,
+                nulls=NullsPosition(c.nulls).value if c.nulls is not None else None,
                 collation=c.collation,
             )
             for c in idx.columns
@@ -253,7 +285,7 @@ def serialize_table(table_cls: type[Table], schema: str = "public") -> TableSnap
         foreign_keys=foreign_keys,
         indexes=indexes,
         unique_constraints=unique_constraints,
-        check_constraints={},  # TODO: support check constraints
+        check_constraints=check_constraints,
         rls_enabled=False,
         rls_forced=False,
     )
@@ -295,33 +327,6 @@ def extract_enums(
     return enums
 
 
-# Standard SQL type names that are NOT enums
-_SQL_BUILTIN_TYPES = frozenset(
-    {
-        "SERIAL",
-        "BIGSERIAL",
-        "SMALLINT",
-        "INTEGER",
-        "BIGINT",
-        "TEXT",
-        "BOOLEAN",
-        "TIMESTAMP",
-        "TIMESTAMP WITH TIME ZONE",
-        "DATE",
-        "TIME",
-        "TIME WITH TIME ZONE",
-        "INTERVAL",
-        "UUID",
-        "NUMERIC",
-        "REAL",
-        "DOUBLE PRECISION",
-        "JSON",
-        "JSONB",
-        "BYTEA",
-    }
-)
-
-
 def serialize_schema(
     tables: list[type[Table]],
     schema: str = "public",
@@ -348,9 +353,3 @@ def serialize_schema(
         policies={},
         roles={},
     )
-
-
-def _to_snake_case(name: str) -> str:
-    """Convert CamelCase to snake_case."""
-    pattern = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
-    return pattern.sub("_", name).lower()

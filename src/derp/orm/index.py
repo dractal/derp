@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 
 class IndexMethod(StrEnum):
@@ -49,14 +49,23 @@ class IndexColumn:
     name: str | Any | None = None
     expression: str | None = None
     opclass: str | None = None
-    order: SortOrder | None = None
-    nulls: NullsPosition | None = None
+    order: SortOrder | Literal["ASC", "DESC"] | None = None
+    nulls: NullsPosition | Literal["FIRST", "LAST"] | None = None
     collation: str | None = None
 
     def __post_init__(self) -> None:
-        """Allow Column descriptors as `name` input."""
+        """Allow Column descriptors as `name`, and plain strings for the enums.
+
+        ``Index(..., order="DESC")`` coerces, so ``IndexColumn`` must too —
+        otherwise a bare string reaches the serializer and blows up on
+        ``.value`` far from the call site that caused it.
+        """
         if self.name is not None and not isinstance(self.name, str):
             object.__setattr__(self, "name", _resolve_column_name(self.name))
+        if self.order is not None:
+            object.__setattr__(self, "order", SortOrder(self.order))
+        if self.nulls is not None:
+            object.__setattr__(self, "nulls", NullsPosition(self.nulls))
 
     def to_ddl(self) -> str:
         """Generate the DDL fragment for this column."""
@@ -72,9 +81,9 @@ class IndexColumn:
         if self.opclass is not None:
             parts.append(self.opclass)
         if self.order is not None:
-            parts.append(self.order.value)
+            parts.append(SortOrder(self.order).value)
         if self.nulls is not None:
-            parts.append(f"NULLS {self.nulls.value}")
+            parts.append(f"NULLS {NullsPosition(self.nulls).value}")
 
         return " ".join(parts)
 

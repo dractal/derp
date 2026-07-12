@@ -26,6 +26,11 @@ class Fn:
         return "gen_random_uuid()"
 
     @staticmethod
+    def uuidv7() -> str:
+        """Time-ordered UUID (RFC 9562 v7). Requires PostgreSQL 18 or newer."""
+        return "uuidv7()"
+
+    @staticmethod
     def now() -> str:
         return "now()"
 
@@ -52,6 +57,8 @@ class FieldSpec:
         "unique",
         "default",
         "generated",
+        "check",
+        "collate",
         "foreign_key",
         "on_delete",
         "on_update",
@@ -64,16 +71,24 @@ class FieldSpec:
         unique: bool = False,
         default: Any = dataclasses.MISSING,
         generated: str | None = None,
+        check: str | None = None,
+        collate: str | None = None,
         foreign_key: str | Column[Any] | None = None,
         on_delete: FK | None = None,
         on_update: FK | None = None,
     ) -> None:
         if generated is not None and default is not dataclasses.MISSING:
             raise ValueError("A column cannot have both `default` and `generated`.")
+        if check is not None and not check.strip():
+            raise ValueError("`check` must be a non-empty expression.")
+        if collate is not None and not collate.strip():
+            raise ValueError("`collate` must be a non-empty collation name.")
         self.primary = primary
         self.unique = unique
         self.default = default
         self.generated = generated
+        self.check = check.strip() if check else None
+        self.collate = collate.strip() if collate else None
         self.foreign_key = foreign_key
         self.on_delete = on_delete
         self.on_update = on_update
@@ -85,6 +100,8 @@ def Field(
     unique: bool = False,
     default: Any = dataclasses.MISSING,
     generated: str | None = None,
+    check: str | None = None,
+    collate: str | None = None,
     foreign_key: str | Column[Any] | None = None,
     on_delete: FK
     | Literal["cascade", "set null", "set default", "restrict"]
@@ -103,12 +120,23 @@ def Field(
     Generated columns::
 
         Field(generated="price * quantity")
+
+    Check constraints — raw SQL, named ``{table}_{column}_check``::
+
+        Field(check="status IN ('draft', 'live')")
+
+    Collation — byte-wise comparison for opaque text keys. Only applied when the
+    column is created; derp refuses to alter it in place::
+
+        Field(collate="C")
     """
     return FieldSpec(
         primary=primary,
         unique=unique,
         default=default,
         generated=generated,
+        check=check,
+        collate=collate,
         foreign_key=foreign_key,
         on_delete=(FK(on_delete.upper()) if isinstance(on_delete, str) else on_delete),
         on_update=(FK(on_update.upper()) if isinstance(on_update, str) else on_update),
@@ -131,6 +159,8 @@ class Column[T](Expression):
     _nullable: bool
     _default: Any
     _generated: str | None
+    _check: str | None
+    _collation: str | None
     _foreign_key: str | Column[Any] | None
     _on_delete: FK | None
     _on_update: FK | None
@@ -145,6 +175,8 @@ class Column[T](Expression):
         object.__setattr__(self, "_nullable", False)
         object.__setattr__(self, "_default", spec.default)
         object.__setattr__(self, "_generated", spec.generated)
+        object.__setattr__(self, "_check", spec.check)
+        object.__setattr__(self, "_collation", spec.collate)
         object.__setattr__(self, "_foreign_key", spec.foreign_key)
         object.__setattr__(self, "_on_delete", spec.on_delete)
         object.__setattr__(self, "_on_update", spec.on_update)
@@ -196,6 +228,16 @@ class Column[T](Expression):
     @property
     def generated(self) -> str | None:
         return self._generated
+
+    @property
+    def check(self) -> str | None:
+        """Raw SQL predicate for this column's CHECK constraint, if any."""
+        return self._check
+
+    @property
+    def collation(self) -> str | None:
+        """Collation name for this column, if any (e.g. ``"C"``)."""
+        return self._collation
 
     @property
     def foreign_key(self) -> str | Column[Any] | None:
